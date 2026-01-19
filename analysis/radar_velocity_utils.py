@@ -8,6 +8,7 @@ This module provides functions for:
 """
 
 import numpy as np
+from scipy import stats
 from scipy.signal import butter, filtfilt, detrend
 from scipy.integrate import cumulative_trapezoid
 from scipy.optimize import least_squares
@@ -381,4 +382,254 @@ def compute_alignment_metrics(t_reference, v_reference, t_sensor, v_sensor, dt_s
         'residuals': residuals_full,
         'v_sensor_aligned': v_sensor_aligned,
         'crop_samples': crop_samples
+    }
+
+
+def analyze_point_level_noise(radar_frames, t_imu, v_imu, time_shift_dt, 
+                               min_range=0.2, percentile_filter=99.5):
+    """
+    Analyze raw sensor noise at the individual radar point level.
+    
+    For every point in every frame, compares measured Doppler velocity against
+    expected velocity (IMU ground truth projected onto point direction).
+    
+    Method:
+        1. Interpolate IMU velocity at frame timestamp (time-shift corrected)
+        2. For each point: compute expected_doppler = direction · v_imu
+        3. Compute residual = measured_doppler - expected_doppler
+        4. Aggregate all residuals and compute statistics
+    
+    Args:
+        radar_frames: List of RadarVelocityFrame objects
+        t_imu: IMU timestamps (numpy array)
+        v_imu: IMU velocity reference signal (numpy array, x-axis)
+        time_shift_dt: Time shift to apply (from find_time_shift)
+        min_range: Minimum range threshold for valid points (meters)
+        percentile_filter: Percentile to use for outlier filtering (default 99.5)
+        
+    Returns:
+        Dictionary with:
+            'sigma_point': Standard deviation of point residuals (m/s)
+            'mean_bias': Mean bias of residuals (m/s)
+            'all_residuals': Raw array of all residuals
+            'clean_residuals': Filtered residuals (outliers removed)
+            'frames_analyzed': Number of frames processed
+            'points_analyzed': Total number of points
+            'outlier_fraction': Fraction of outliers removed
+            'skewness': Skewness of clean residuals
+            'kurtosis': Excess kurtosis of clean residuals
+    """
+    
+    # Create interpolator for IMU velocity (ground truth)
+    v_imu_interp = interp1d(t_imu, v_imu, kind='linear', fill_value='extrapolate')
+    
+    # Collect all point-level residuals
+    all_residuals = []
+    frames_analyzed = 0
+    points_analyzed = 0
+    
+    for frame in radar_frames:
+        if frame.velocities is None or len(frame.velocities) == 0:
+            continue
+        
+        # Apply time shift correction
+        t_corrected = frame.timestamp - time_shift_dt
+        
+        # Check if within IMU time bounds
+        if t_corrected < t_imu[0] or t_corrected > t_imu[-1]:
+            continue
+        
+        # Get ground truth body velocity at this instant
+        v_body_gt_x = float(v_imu_interp(t_corrected))
+        
+        # Construct 3D body velocity vector
+        # (Assuming Y and Z are approximately zero for dominant X-axis motion)
+        v_body_gt = np.array([v_body_gt_x, 0.0, 0.0])
+        
+        # Extract point data
+        positions = np.array(frame.positions)
+        measured_dopplers = np.array(frame.velocities)
+        
+        # Calculate ranges and filter valid points
+        ranges = np.linalg.norm(positions, axis=1)
+        valid_mask = ranges > min_range
+        
+        if np.sum(valid_mask) == 0:
+            continue
+        
+        # Unit direction vectors
+        directions = positions[valid_mask] / ranges[valid_mask, np.newaxis]
+        valid_measurements = measured_dopplers[valid_mask]
+        
+        # Expected Doppler velocity: v_expected = direction · v_body
+        expected_dopplers = directions @ v_body_gt
+        
+        # Residuals: measured - expected
+        residuals = valid_measurements - expected_dopplers
+        
+        all_residuals.extend(residuals)
+        frames_analyzed += 1
+        points_analyzed += len(residuals)
+    
+    all_residuals = np.array(all_residuals)
+    
+    # Filter extreme outliers for cleaner statistics
+    # Keep data within specified percentile to remove gross errors
+    lower_bound = np.percentile(all_residuals, (100 - percentile_filter) / 2)
+    upper_bound = np.percentile(all_residuals, 100 - (100 - percentile_filter) / 2)
+    clean_residuals = all_residuals[
+        (all_residuals >= lower_bound) & (all_residuals <= upper_bound)
+    ]
+    
+    outlier_fraction = (len(all_residuals) - len(clean_residuals)) / len(all_residuals)
+    
+    # Compute statistics
+    sigma_point = np.std(clean_residuals)
+    mean_bias = np.mean(clean_residuals)
+    skewness = stats.skew(clean_residuals)
+    kurtosis = stats.kurtosis(clean_residuals)
+    
+    return {
+        'sigma_point': sigma_point,
+        'mean_bias': mean_bias,
+        'all_residuals': all_residuals,
+        'clean_residuals': clean_residuals,
+        'frames_analyzed': frames_analyzed,
+        'points_analyzed': points_analyzed,
+        'outlier_fraction': outlier_fraction,
+        'skewness': skewness,
+        'kurtosis': kurtosis,
+        'lower_bound': lower_bound,
+        'upper_bound': upper_bound
+    }
+
+
+def analyze_point_noise_vs_ground_truth(radar_frames, times_imu, v_imu_x, time_shift_dt,
+                                         min_intensity=2.0, min_range=0.2,
+                                         outlier_percentile=99.0):
+    """
+    Calculate raw sensor noise (sigma_point) by comparing individual radar point
+    Doppler measurements against interpolated IMU ground truth velocity.
+    
+    For each radar point in each frame:
+    1. Correct frame timestamp: t_true = t_ros + time_shift_dt
+    2. Interpolate IMU velocity at t_true
+    3. Project IMU velocity onto point's direction: v_expected = r̂ · v_imu
+    4. Calculate residual: r = v_measured - v_expected
+    5. Aggregate all residuals to estimate sensor noise
+    
+    Args:
+        radar_frames: List of radar frame objects with timestamp, positions, velocities, intensities
+        times_imu: Array of IMU timestamps (s)
+        v_imu_x: Array of IMU velocity X-axis (m/s) - ground truth
+        time_shift_dt: Optimal time shift from find_time_shift (s)
+                       Sign convention: t_corrected = t_ros - time_shift_dt
+        min_intensity: Filter points below this intensity
+        min_range: Filter points below this range (m)
+        outlier_percentile: Keep residuals within [1, percentile] for clean statistics
+        
+    Returns:
+        dict with keys:
+            'sigma_point': Standard deviation of clean residuals (m/s)
+            'mean_bias': Mean of clean residuals (m/s) - should be ~0
+            'all_residuals': All residuals before outlier filtering
+            'clean_residuals': Residuals after outlier filtering
+            'total_points': Total number of points analyzed
+            'frames_analyzed': Number of frames with valid data
+            'skewness': Skewness of clean residuals
+            'kurtosis': Excess kurtosis of clean residuals
+    """
+    from scipy import stats
+    
+    # Create interpolator for IMU velocity (ground truth)
+    # Assume v_y and v_z are ~0 for X-axis pumping motion
+    v_imu_interp = interp1d(times_imu, v_imu_x, kind='linear', 
+                            bounds_error=False, fill_value='extrapolate')
+    
+    all_residuals = []
+    frames_analyzed = 0
+    
+    for frame in radar_frames:
+        if frame.velocities is None or len(frame.velocities) == 0:
+            continue
+        if frame.positions is None or len(frame.positions) == 0:
+            continue
+            
+        # 1. Correct frame timestamp
+        t_corrected = frame.timestamp + time_shift_dt
+        
+        # 2. Get ground truth body velocity at this instant
+        try:
+            v_body_gt_x = float(v_imu_interp(t_corrected))
+        except (ValueError, RuntimeError):
+            continue  # Out of interpolation bounds
+            
+        # Construct 3D body velocity vector (assume Y and Z ≈ 0 for pumping motion)
+        v_body_gt = np.array([v_body_gt_x, 0.0, 0.0])
+        
+        # 3. Process all points in this frame
+        positions = np.array(frame.positions)
+        measured_dopplers = np.array(frame.velocities)
+        intensities = np.array(frame.intensities) if frame.intensities is not None else np.ones(len(positions))
+        
+        # Apply filtering thresholds
+        ranges = np.linalg.norm(positions, axis=1)
+        valid_mask = (ranges >= min_range) & (intensities >= min_intensity)
+        
+        if np.sum(valid_mask) == 0:
+            continue
+            
+        # Unit direction vectors
+        valid_positions = positions[valid_mask]
+        valid_ranges = ranges[valid_mask]
+        directions = valid_positions / valid_ranges[:, None]
+        
+        valid_measurements = measured_dopplers[valid_mask]
+        
+        # 4. Calculate expected Doppler: r̂ · v_body
+        expected_dopplers = directions @ v_body_gt
+        
+        # 5. Calculate residuals: measured - expected
+        residuals = valid_measurements - expected_dopplers
+        
+        all_residuals.extend(residuals)
+        frames_analyzed += 1
+    
+    # Convert to array
+    all_residuals = np.array(all_residuals)
+    total_points = len(all_residuals)
+    
+    if total_points == 0:
+        return {
+            'sigma_point': np.nan,
+            'mean_bias': np.nan,
+            'all_residuals': np.array([]),
+            'clean_residuals': np.array([]),
+            'total_points': 0,
+            'frames_analyzed': 0,
+            'skewness': np.nan,
+            'kurtosis': np.nan
+        }
+    
+    # Filter outliers for clean statistics
+    lower_bound = np.percentile(all_residuals, 100 - outlier_percentile)
+    upper_bound = np.percentile(all_residuals, outlier_percentile)
+    clean_residuals = all_residuals[(all_residuals >= lower_bound) & 
+                                     (all_residuals <= upper_bound)]
+    
+    # Calculate statistics
+    sigma_point = np.std(clean_residuals)
+    mean_bias = np.mean(clean_residuals)
+    skewness = stats.skew(clean_residuals)
+    kurtosis = stats.kurtosis(clean_residuals)  # Excess kurtosis
+    
+    return {
+        'sigma_point': sigma_point,
+        'mean_bias': mean_bias,
+        'all_residuals': all_residuals,
+        'clean_residuals': clean_residuals,
+        'total_points': total_points,
+        'frames_analyzed': frames_analyzed,
+        'skewness': skewness,
+        'kurtosis': kurtosis
     }
