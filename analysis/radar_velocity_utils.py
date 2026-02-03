@@ -633,3 +633,148 @@ def analyze_point_noise_vs_ground_truth(radar_frames, times_imu, v_imu_x, time_s
         'skewness': skewness,
         'kurtosis': kurtosis
     }
+
+
+def analyze_noise_vs_intensity(radar_frames, times_imu, v_imu_x, time_shift_dt,
+                                intensity_bins=None, min_range=0.2,
+                                outlier_percentile=99.0):
+    """
+    Analyze how Doppler measurement noise varies with signal intensity.
+    
+    This helps determine the optimal MIN_INTENSITY threshold by finding the 
+    "knee of the curve" where noise stops decreasing significantly with 
+    increasing intensity.
+    
+    For each intensity bin:
+    1. Collect all radar points with intensity in that bin
+    2. Calculate residuals against IMU ground truth
+    3. Compute σ (standard deviation) of residuals
+    
+    Args:
+        radar_frames: List of radar frame objects
+        times_imu: Array of IMU timestamps (s)
+        v_imu_x: Array of IMU velocity X-axis (m/s) - ground truth
+        time_shift_dt: Optimal time shift from find_time_shift (s)
+        intensity_bins: Array of bin edges (e.g., [0, 2, 4, 6, 8, 10, 15, 20, 30])
+                       If None, uses default: np.arange(0, 31, 1)
+        min_range: Filter points below this range (m)
+        outlier_percentile: Keep residuals within [1, percentile] for clean statistics
+        
+    Returns:
+        dict with keys:
+            'bin_centers': Center of each intensity bin
+            'bin_edges': Edges used for binning
+            'sigma_per_bin': Standard deviation of residuals in each bin
+            'mean_per_bin': Mean of residuals in each bin (bias)
+            'count_per_bin': Number of points in each bin
+            'all_residuals': List of residual arrays (one per bin)
+            'all_intensities': Array of all intensities analyzed
+    """
+    from scipy import stats
+    
+    # Default bins: 0-1, 1-2, 2-3, ..., 29-30
+    if intensity_bins is None:
+        intensity_bins = np.arange(0, 31, 1)
+    
+    # Create interpolator for IMU velocity (ground truth)
+    v_imu_interp = interp1d(times_imu, v_imu_x, kind='linear', 
+                            bounds_error=False, fill_value='extrapolate')
+    
+    # Collect all points with their intensities and residuals
+    all_intensities = []
+    all_residuals = []
+    
+    for frame in radar_frames:
+        if frame.velocities is None or len(frame.velocities) == 0:
+            continue
+        if frame.positions is None or len(frame.positions) == 0:
+            continue
+        if frame.intensities is None:
+            continue
+            
+        # Correct frame timestamp
+        t_corrected = frame.timestamp - time_shift_dt
+        
+        # Get ground truth body velocity at this instant
+        try:
+            v_body_gt_x = float(v_imu_interp(t_corrected))
+        except (ValueError, RuntimeError):
+            continue
+            
+        # Construct 3D body velocity vector
+        v_body_gt = np.array([v_body_gt_x, 0.0, 0.0])
+        
+        # Process all points in this frame
+        positions = np.array(frame.positions)
+        measured_dopplers = np.array(frame.velocities)
+        intensities = np.array(frame.intensities)
+        
+        # Apply range filtering only
+        ranges = np.linalg.norm(positions, axis=1)
+        valid_mask = ranges >= min_range
+        
+        if np.sum(valid_mask) == 0:
+            continue
+            
+        # Unit direction vectors
+        valid_positions = positions[valid_mask]
+        valid_ranges = ranges[valid_mask]
+        directions = valid_positions / valid_ranges[:, None]
+        
+        valid_measurements = measured_dopplers[valid_mask]
+        valid_intensities = intensities[valid_mask]
+        
+        # Calculate expected Doppler and residuals
+        expected_dopplers = directions @ v_body_gt
+        residuals = valid_measurements - expected_dopplers
+        
+        all_intensities.extend(valid_intensities)
+        all_residuals.extend(residuals)
+    
+    all_intensities = np.array(all_intensities)
+    all_residuals = np.array(all_residuals)
+    
+    # Bin the data by intensity
+    bin_indices = np.digitize(all_intensities, intensity_bins) - 1
+    
+    # Calculate statistics for each bin
+    n_bins = len(intensity_bins) - 1
+    sigma_per_bin = []
+    mean_per_bin = []
+    count_per_bin = []
+    residuals_per_bin = []
+    
+    for i in range(n_bins):
+        mask = bin_indices == i
+        bin_residuals = all_residuals[mask]
+        
+        if len(bin_residuals) < 10:  # Need at least 10 points for reliable statistics
+            sigma_per_bin.append(np.nan)
+            mean_per_bin.append(np.nan)
+            count_per_bin.append(len(bin_residuals))
+            residuals_per_bin.append(bin_residuals)
+            continue
+        
+        # Filter outliers for this bin
+        lower = np.percentile(bin_residuals, 100 - outlier_percentile)
+        upper = np.percentile(bin_residuals, outlier_percentile)
+        clean = bin_residuals[(bin_residuals >= lower) & (bin_residuals <= upper)]
+        
+        sigma_per_bin.append(np.std(clean))
+        mean_per_bin.append(np.mean(clean))
+        count_per_bin.append(len(bin_residuals))
+        residuals_per_bin.append(bin_residuals)
+    
+    # Calculate bin centers
+    bin_centers = (intensity_bins[:-1] + intensity_bins[1:]) / 2
+    
+    return {
+        'bin_centers': bin_centers,
+        'bin_edges': intensity_bins,
+        'sigma_per_bin': np.array(sigma_per_bin),
+        'mean_per_bin': np.array(mean_per_bin),
+        'count_per_bin': np.array(count_per_bin),
+        'all_residuals': residuals_per_bin,
+        'all_intensities': all_intensities,
+        'all_residual_values': all_residuals
+    }
