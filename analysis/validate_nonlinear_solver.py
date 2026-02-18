@@ -1,0 +1,1151 @@
+"""
+PHASE 3: NONLINEAR SOLVER VALIDATION
+Full radar-inertial odometry with orientation and bias estimation.
+
+Based on the Backward Model formulation:
+- Position trajectory: B-spline control points
+- Orientation trajectory: SO(3) B-spline (using tangent space)
+- Biases: Constant accelerometer and gyroscope biases
+- Radar: Huber loss for outlier rejection
+- Accelerometer: L2 loss
+- Optimization: Levenberg-Marquardt
+"""
+
+import numpy as np
+from pathlib import Path
+import matplotlib.pyplot as plt
+from typing import Tuple, Optional
+from scipy import sparse
+from scipy.sparse.linalg import spsolve
+from scipy.spatial.transform import Rotation
+import time
+
+from rosbag_loader.loader import load_bag_topics
+from radar_velocity_utils import (
+    quat_to_rotation_matrix,
+    rotation_matrix_from_euler,
+    predict_doppler_velocity
+)
+from bspline_utils import (
+    UniformBSpline,
+    create_uniform_bspline_from_times,
+    build_minimum_snap_regularization
+)
+from generated_jacobians import (
+    radar_residual_with_jacobians,
+    accel_residual_with_jacobians,
+    Rot3
+)
+
+
+# ==================== Orientation Parameterization ====================
+
+def so3_exp(omega: np.ndarray) -> np.ndarray:
+    """
+    Exponential map from so(3) to SO(3).
+    
+    Args:
+        omega: 3D tangent vector
+        
+    Returns:
+        3x3 rotation matrix
+    """
+    theta = np.linalg.norm(omega)
+    if theta < 1e-8:
+        # Small angle approximation
+        return np.eye(3) + skew_symmetric(omega)
+    
+    axis = omega / theta
+    return Rotation.from_rotvec(theta * axis).as_matrix()
+
+
+def so3_log(R: np.ndarray) -> np.ndarray:
+    """
+    Logarithmic map from SO(3) to so(3).
+    
+    Args:
+        R: 3x3 rotation matrix
+        
+    Returns:
+        3D tangent vector
+    """
+    rotvec = Rotation.from_matrix(R).as_rotvec()
+    return rotvec
+
+
+def skew_symmetric(v: np.ndarray) -> np.ndarray:
+    """Create skew-symmetric matrix from 3D vector."""
+    return np.array([
+        [0, -v[2], v[1]],
+        [v[2], 0, -v[0]],
+        [-v[1], v[0], 0]
+    ])
+
+
+def quaternion_multiply(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
+    """
+    Multiply two quaternions [x, y, z, w].
+    
+    Args:
+        q1, q2: Quaternions in [x, y, z, w] format
+        
+    Returns:
+        Product quaternion
+    """
+    x1, y1, z1, w1 = q1
+    x2, y2, z2, w2 = q2
+    
+    return np.array([
+        w1*x2 + x1*w2 + y1*z2 - z1*y2,
+        w1*y2 - x1*z2 + y1*w2 + z1*x2,
+        w1*z2 + x1*y2 - y1*x2 + z1*w2,
+        w1*w2 - x1*x2 - y1*y2 - z1*z2
+    ])
+
+
+# ==================== State Representation ====================
+
+class TrajectoryState:
+    """
+    Complete trajectory state for non-linear optimization.
+    
+    State variables:
+    - Position control points (N_pos x 3)
+    - Orientation control points (N_ori x 3) in tangent space around nominal
+    - Accelerometer bias (3,)
+    - Gyroscope bias (3,)
+    """
+    
+    def __init__(
+        self,
+        pos_bspline: UniformBSpline,
+        ori_bspline: UniformBSpline,  # Stores tangent vectors
+        nominal_rotations: np.ndarray,  # Reference rotations for tangent space
+        acc_bias: np.ndarray = None,
+        gyr_bias: np.ndarray = None
+    ):
+        self.pos_bspline = pos_bspline
+        self.ori_bspline = ori_bspline
+        self.nominal_rotations = nominal_rotations  # (N_ori, 3, 3)
+        
+        self.acc_bias = acc_bias if acc_bias is not None else np.zeros(3)
+        self.gyr_bias = gyr_bias if gyr_bias is not None else np.zeros(3)
+    
+    def get_position(self, t: float, derivative: int = 0) -> np.ndarray:
+        """Get position (or velocity/acceleration) at time t."""
+        t_rel = t - self.pos_bspline.t_ref
+        return self.pos_bspline(t_rel, derivative=derivative)
+    
+    def get_rotation(self, t: float) -> np.ndarray:
+        """
+        Get rotation matrix at time t.
+        
+        Uses tangent space parameterization:
+        R(t) = R_nominal(t) * exp(delta_omega(t))
+        """
+        t_rel = t - self.ori_bspline.t_ref
+        
+        # Get tangent vector from spline
+        delta_omega = self.ori_bspline(t_rel, derivative=0)
+        
+        # Interpolate nominal rotation from control point locations
+        # Use closest nominal rotation for now (proper SLERP would be better)
+        ori_ctrl_times = np.linspace(self.ori_bspline.t_start, self.ori_bspline.t_end, 
+                                     len(self.nominal_rotations))
+        idx = np.argmin(np.abs(ori_ctrl_times - t_rel))
+        idx = max(0, min(idx, len(self.nominal_rotations) - 1))
+        R_nominal = self.nominal_rotations[idx]
+        
+        # Apply perturbation
+        R_delta = so3_exp(delta_omega)
+        return R_nominal @ R_delta
+    
+    def get_angular_velocity(self, t: float) -> np.ndarray:
+        """
+        Get angular velocity at time t.
+        
+        For small perturbations: omega ≈ d(delta_omega)/dt
+        Use B-spline derivative directly (much faster and more accurate)
+        """
+        t_rel = t - self.ori_bspline.t_ref
+        
+        # Get derivative of tangent vector (first-order approximation)
+        omega_tangent = self.ori_bspline(t_rel, derivative=1)
+        
+        # For small angles, omega in body frame ≈ time derivative of tangent vector
+        # (This is an approximation valid for small perturbations)
+        return omega_tangent
+    
+    def to_vector(self) -> np.ndarray:
+        """
+        Flatten state to optimization vector.
+        
+        Returns:
+            [pos_control_points (N_pos*3),
+             ori_control_points (N_ori*3),
+             acc_bias (3),
+             gyr_bias (3)]
+        """
+        pos_flat = self.pos_bspline.control_points.flatten()
+        ori_flat = self.ori_bspline.control_points.flatten()
+        
+        return np.concatenate([pos_flat, ori_flat, self.acc_bias, self.gyr_bias])
+    
+    def from_vector(self, x: np.ndarray):
+        """Update state from optimization vector."""
+        n_pos = self.pos_bspline.n_points * 3
+        n_ori = self.ori_bspline.n_points * 3
+        
+        self.pos_bspline.control_points = x[:n_pos].reshape(-1, 3)
+        self.ori_bspline.control_points = x[n_pos:n_pos+n_ori].reshape(-1, 3)
+        self.acc_bias = x[n_pos+n_ori:n_pos+n_ori+3]
+        self.gyr_bias = x[n_pos+n_ori+3:n_pos+n_ori+6]
+    
+    def get_state_size(self) -> int:
+        """Total number of optimization variables."""
+        return self.pos_bspline.n_points * 3 + self.ori_bspline.n_points * 3 + 6
+
+
+# ==================== Residual Functions ====================
+
+def huber_loss(r: float, delta: float = 1.0) -> float:
+    """
+    Huber loss function for robust estimation.
+    
+    Args:
+        r: Residual
+        delta: Threshold for switching from L2 to L1
+        
+    Returns:
+        rho(r)
+    """
+    abs_r = abs(r)
+    if abs_r <= delta:
+        return 0.5 * r**2
+    else:
+        return delta * (abs_r - 0.5 * delta)
+
+
+def huber_weight(r: float, delta: float = 1.0) -> float:
+    """
+    Weight function for iteratively reweighted least squares.
+    
+    w(r) = rho'(r) / r
+    """
+    abs_r = abs(r)
+    if abs_r <= delta:
+        return 1.0
+    else:
+        return delta / abs_r
+
+
+def compute_radar_residuals_nonlinear(
+    state: TrajectoryState,
+    radar_frames,
+    sensor_translation: np.ndarray,
+    sensor_rotation: np.ndarray,
+    min_range: float = 0.2,
+    huber_delta: float = 0.5
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Compute radar Doppler residuals with Huber weights.
+    
+    Returns:
+        residuals: (N,) array of weighted residuals
+        weights: (N,) array of Huber weights
+        times: (N,) array of measurement times
+    """
+    residuals = []
+    weights = []
+    times_list = []
+    
+    for frame in radar_frames:
+        t = frame.timestamp
+        
+        # Get state at measurement time
+        pos_world = state.get_position(t, derivative=0)
+        vel_world = state.get_position(t, derivative=1)
+        R_world_from_body = state.get_rotation(t)
+        omega_body = state.get_angular_velocity(t)
+        
+        n_points = frame.num_points()
+        for i in range(n_points):
+            p_s = frame.positions[i]  # position in sensor frame
+            range_val = frame.ranges[i] if frame.ranges is not None else np.linalg.norm(p_s)
+            
+            if range_val < min_range:
+                continue
+            
+            # Unit vector in sensor frame
+            unit_vector = p_s / np.linalg.norm(p_s)
+            
+            # Measured Doppler
+            v_doppler_meas = frame.velocities[i]
+            
+            # Predict Doppler (predict_doppler_velocity expects Nx3 array)
+            v_doppler_pred = predict_doppler_velocity(
+                vel_world,
+                omega_body,
+                R_world_from_body,
+                p_s.reshape(1, 3),  # Reshape to (1, 3)
+                sensor_translation,
+                sensor_rotation
+            )[0]  # Extract scalar from 1D array
+            
+            # Residual
+            r = v_doppler_meas - v_doppler_pred
+            
+            # Huber weight
+            w = huber_weight(r, delta=huber_delta)
+            
+            residuals.append(r * np.sqrt(w))  # Apply sqrt for IRLS
+            weights.append(w)
+            times_list.append(t)
+    
+    return np.array(residuals), np.array(weights), np.array(times_list)
+
+
+def compute_accelerometer_residuals_nonlinear(
+    state: TrajectoryState,
+    imu_data,
+    g_world: np.ndarray = np.array([0, 0, -9.81])
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Compute accelerometer residuals using raw IMU data.
+    
+    Raw IMU model: z_imu = R_bw @ (a_world - g) + b_a + noise
+    Residual: r = z_imu - R_bw @ (a_world - g) - b_a
+    
+    Args:
+        state: Current trajectory state
+        imu_data: Raw IMU measurements (body frame, includes gravity)
+        g_world: Gravity vector in world frame [0, 0, -9.81]
+    
+    Returns:
+        residuals: (N*3,) flattened residuals
+        times: (N,) measurement times
+    """
+    residuals = []
+    times_list = []
+    
+    for imu_msg in imu_data:
+        t = imu_msg.timestamp
+        
+        # Raw IMU accelerometer reading (body frame, includes gravity)
+        z_acc = imu_msg.linear_acceleration
+        
+        # Predicted specific force
+        acc_world = state.get_position(t, derivative=2)
+        R_world_from_body = state.get_rotation(t)
+        
+        # Transform to body frame: R_bw @ (a_world - g)
+        acc_body_pred = R_world_from_body.T @ (acc_world - g_world)
+        
+        # Residual (3D vector)
+        r = z_acc - acc_body_pred - state.acc_bias
+        
+        residuals.append(r)
+        times_list.append(t)
+    
+    residuals_array = np.array(residuals).flatten()  # (N*3,)
+    times_array = np.array(times_list)
+    
+    return residuals_array, times_array
+
+
+def compute_gyroscope_residuals_nonlinear(
+    state: TrajectoryState,
+    imu_data,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Compute gyroscope residuals using raw IMU data.
+    
+    Raw gyro model: z_gyro = omega_body + b_g + noise
+    Residual: r = z_gyro - omega(t) - b_g
+    
+    Args:
+        state: Current trajectory state
+        imu_data: Raw IMU measurements
+    
+    Returns:
+        residuals: (N*3,) flattened residuals
+        times: (N,) measurement times
+    """
+    residuals = []
+    times_list = []
+    
+    for imu_msg in imu_data:
+        t = imu_msg.timestamp
+        
+        # Raw gyroscope reading (body frame)
+        z_gyro = imu_msg.angular_velocity
+        
+        # Predicted angular velocity from spline
+        omega_pred = state.get_angular_velocity(t)
+        
+        # Residual (3D vector)
+        r = z_gyro - omega_pred - state.gyr_bias
+        
+        residuals.append(r)
+        times_list.append(t)
+    
+    residuals_array = np.array(residuals).flatten()  # (N*3,)
+    times_array = np.array(times_list)
+    
+    return residuals_array, times_array
+
+
+# ==================== Analytical Jacobian ====================
+
+def compute_jacobian_analytical(
+    state: TrajectoryState,
+    radar_frames,
+    imu_data,
+    sensor_translation: np.ndarray,
+    sensor_rotation: np.ndarray,
+    lambda_accel: float,
+    lambda_gyro: float,
+    huber_delta: float,
+    min_range: float = 0.2,
+) -> Tuple[sparse.csr_matrix, np.ndarray]:
+    """
+    Compute Jacobian and residual vector analytically using SymForce-generated functions.
+    
+    Chain rule:
+    - Position CPs affect v_world via N_i'(t) and a_world via N_i''(t)
+    - Orientation CPs affect delta via M_j(t) and omega via M_j'(t)
+    - Biases affect residuals directly
+    
+    Returns:
+        J: Sparse Jacobian matrix (N_residuals, N_variables)
+        r: Residual vector (N_residuals,)
+    """
+    n_pos = state.pos_bspline.n_points * 3
+    n_ori = state.ori_bspline.n_points * 3
+    n_total = state.get_state_size()
+    
+    # Pre-compute sensor rotation quaternion
+    R_bs_quat = Rot3.from_rotation_matrix(sensor_rotation)
+    
+    # Collect Jacobian entries
+    rows = []
+    cols = []
+    vals = []
+    all_residuals = []
+    row_idx = 0
+    
+    # ==================== Radar residuals ====================
+    for frame in radar_frames:
+        t = frame.timestamp
+        t_rel_pos = t - state.pos_bspline.t_ref
+        t_rel_ori = t - state.ori_bspline.t_ref
+        
+        # Get basis functions for position spline (velocity = 1st derivative)
+        pos_vel_coeffs, pos_vel_indices = state.pos_bspline.get_basis_coefficients(t_rel_pos, derivative=1)
+        
+        # Get basis functions for orientation spline (value and 1st derivative)
+        ori_val_coeffs, ori_val_indices = state.ori_bspline.get_basis_coefficients(t_rel_ori, derivative=0)
+        ori_vel_coeffs, ori_vel_indices = state.ori_bspline.get_basis_coefficients(t_rel_ori, derivative=1)
+        
+        # Get current state values
+        v_world = state.get_position(t, derivative=1)
+        delta = state.ori_bspline(t_rel_ori, derivative=0)
+        omega = state.get_angular_velocity(t)
+        
+        # Get nominal rotation at this time
+        ori_ctrl_times = np.linspace(state.ori_bspline.t_start, state.ori_bspline.t_end,
+                                     len(state.nominal_rotations))
+        idx = np.argmin(np.abs(ori_ctrl_times - t_rel_ori))
+        idx = max(0, min(idx, len(state.nominal_rotations) - 1))
+        R_nominal = state.nominal_rotations[idx]
+        R_nom_quat = Rot3.from_rotation_matrix(R_nominal)
+        
+        n_points = frame.num_points()
+        for i in range(n_points):
+            p_s = frame.positions[i]
+            range_val = frame.ranges[i] if frame.ranges is not None else np.linalg.norm(p_s)
+            if range_val < min_range:
+                continue
+            
+            u_sensor = p_s / np.linalg.norm(p_s)
+            v_meas = frame.velocities[i]
+            
+            # Call generated function
+            res, J_v, J_delta, J_omega = radar_residual_with_jacobians(
+                v_world, R_nom_quat, delta, omega,
+                u_sensor, sensor_translation, R_bs_quat,
+                v_meas, 1e-10
+            )
+            
+            r = res[0]  # scalar residual
+            w = huber_weight(r, delta=huber_delta)
+            sqrt_w = np.sqrt(w)
+            
+            # Weighted residual
+            all_residuals.append(r * sqrt_w)
+            
+            # Chain rule: ∂r/∂pos_cp_i = J_v * N_i'(t) (scaled by Huber weight)
+            for ci, cp_idx in enumerate(pos_vel_indices):
+                basis_val = pos_vel_coeffs[ci]
+                for dim in range(3):
+                    col = cp_idx * 3 + dim
+                    val = sqrt_w * J_v[dim] * basis_val
+                    if abs(val) > 1e-15:
+                        rows.append(row_idx)
+                        cols.append(col)
+                        vals.append(val)
+            
+            # Chain rule: ∂r/∂ori_cp_j = J_delta * M_j(t) + J_omega * M_j'(t)
+            # Delta contribution
+            for ci, cp_idx in enumerate(ori_val_indices):
+                basis_val = ori_val_coeffs[ci]
+                for dim in range(3):
+                    col = n_pos + cp_idx * 3 + dim
+                    val = sqrt_w * J_delta[dim] * basis_val
+                    if abs(val) > 1e-15:
+                        rows.append(row_idx)
+                        cols.append(col)
+                        vals.append(val)
+            
+            # Omega contribution
+            for ci, cp_idx in enumerate(ori_vel_indices):
+                basis_val = ori_vel_coeffs[ci]
+                for dim in range(3):
+                    col = n_pos + cp_idx * 3 + dim
+                    val = sqrt_w * J_omega[dim] * basis_val
+                    if abs(val) > 1e-15:
+                        rows.append(row_idx)
+                        cols.append(col)
+                        vals.append(val)
+            
+            row_idx += 1
+    
+    n_radar = row_idx
+    
+    # ==================== Accelerometer residuals ====================
+    sqrt_lambda_accel = np.sqrt(lambda_accel)
+    
+    for imu_msg in imu_data:
+        t = imu_msg.timestamp
+        
+        t_rel_pos = t - state.pos_bspline.t_ref
+        t_rel_ori = t - state.ori_bspline.t_ref
+        
+        # Basis functions
+        pos_acc_coeffs, pos_acc_indices = state.pos_bspline.get_basis_coefficients(t_rel_pos, derivative=2)
+        ori_val_coeffs, ori_val_indices = state.ori_bspline.get_basis_coefficients(t_rel_ori, derivative=0)
+        
+        # Current state
+        a_world = state.get_position(t, derivative=2)
+        delta = state.ori_bspline(t_rel_ori, derivative=0)
+        
+        # Nominal rotation
+        ori_ctrl_times = np.linspace(state.ori_bspline.t_start, state.ori_bspline.t_end,
+                                     len(state.nominal_rotations))
+        idx_ori = np.argmin(np.abs(ori_ctrl_times - t_rel_ori))
+        idx_ori = max(0, min(idx_ori, len(state.nominal_rotations) - 1))
+        R_nominal = state.nominal_rotations[idx_ori]
+        R_nom_quat = Rot3.from_rotation_matrix(R_nominal)
+        
+        # Raw IMU accelerometer reading (body frame, includes gravity)
+        z_acc = imu_msg.linear_acceleration
+        g_world = np.array([0, 0, -9.81])
+        
+        # Call generated function
+        res_3, J_a, J_delta_3x3, J_ba = accel_residual_with_jacobians(
+            a_world, R_nom_quat, delta, g_world, z_acc, state.acc_bias, 1e-10
+        )
+        
+        # 3 rows for this measurement
+        for k in range(3):
+            all_residuals.append(sqrt_lambda_accel * res_3[k])
+            
+            # ∂r_accel/∂pos_cp_i = J_a[k,:] * N_i''(t)
+            for ci, cp_idx in enumerate(pos_acc_indices):
+                basis_val = pos_acc_coeffs[ci]
+                for dim in range(3):
+                    col = cp_idx * 3 + dim
+                    val = sqrt_lambda_accel * J_a[k, dim] * basis_val
+                    if abs(val) > 1e-15:
+                        rows.append(row_idx)
+                        cols.append(col)
+                        vals.append(val)
+            
+            # ∂r_accel/∂ori_cp_j = J_delta_3x3[k,:] * M_j(t)
+            for ci, cp_idx in enumerate(ori_val_indices):
+                basis_val = ori_val_coeffs[ci]
+                for dim in range(3):
+                    col = n_pos + cp_idx * 3 + dim
+                    val = sqrt_lambda_accel * J_delta_3x3[k, dim] * basis_val
+                    if abs(val) > 1e-15:
+                        rows.append(row_idx)
+                        cols.append(col)
+                        vals.append(val)
+            
+            # ∂r_accel/∂b_a = J_ba[k,:] = -I[k,:]
+            for dim in range(3):
+                col = n_pos + n_ori + dim  # acc bias index
+                val = sqrt_lambda_accel * J_ba[k, dim]
+                if abs(val) > 1e-15:
+                    rows.append(row_idx)
+                    cols.append(col)
+                    vals.append(val)
+            
+            row_idx += 1
+    
+    n_accel_rows = row_idx - n_radar
+    
+    # ==================== Gyroscope residuals ====================
+    sqrt_lambda_gyro = np.sqrt(lambda_gyro)
+    
+    for imu_msg in imu_data:
+        t = imu_msg.timestamp
+        
+        t_rel_ori = t - state.ori_bspline.t_ref
+        
+        # Basis functions for orientation derivative
+        ori_vel_coeffs, ori_vel_indices = state.ori_bspline.get_basis_coefficients(t_rel_ori, derivative=1)
+        
+        # Raw gyroscope reading (body frame)
+        z_gyro = imu_msg.angular_velocity
+        omega_pred = state.get_angular_velocity(t)
+        
+        # Gyro residual: r = z_gyro - omega - b_g
+        r_gyro = z_gyro - omega_pred - state.gyr_bias
+        
+        for k in range(3):
+            all_residuals.append(sqrt_lambda_gyro * r_gyro[k])
+            
+            # ∂r_gyro/∂ori_cp_j = -M_j'(t) * I[k,:]
+            for ci, cp_idx in enumerate(ori_vel_indices):
+                basis_val = ori_vel_coeffs[ci]
+                col = n_pos + cp_idx * 3 + k  # only k-th dimension affected
+                val = sqrt_lambda_gyro * (-basis_val)
+                if abs(val) > 1e-15:
+                    rows.append(row_idx)
+                    cols.append(col)
+                    vals.append(val)
+            
+            # ∂r_gyro/∂b_g = -I[k,:]
+            col = n_pos + n_ori + 3 + k  # gyro bias index
+            rows.append(row_idx)
+            cols.append(col)
+            vals.append(sqrt_lambda_gyro * (-1.0))
+            
+            row_idx += 1
+    
+    # Build sparse Jacobian
+    n_residuals = row_idx
+    J = sparse.csr_matrix(
+        (vals, (rows, cols)),
+        shape=(n_residuals, n_total)
+    )
+    r = np.array(all_residuals)
+    
+    return J, r
+
+
+# ==================== Levenberg-Marquardt Solver ==
+
+def solve_trajectory_nonlinear(
+    initial_state: TrajectoryState,
+    radar_frames,
+    imu_data,
+    sensor_translation: np.ndarray,
+    sensor_rotation: np.ndarray,
+    lambda_accel: float = 1.0,
+    lambda_gyro: float = 1.0,
+    lambda_snap_pos: float = 0.01,
+    lambda_snap_ori: float = 0.01,
+    huber_delta: float = 0.5,
+    max_iterations: int = 20,
+    verbose: bool = True
+) -> TrajectoryState:
+    """
+    Solve for optimal trajectory using Levenberg-Marquardt.
+    
+    Uses analytical Jacobians derived by SymForce for ~50x speedup.
+    
+    Minimizes:
+    E = sum(huber(r_radar)) + lambda_accel * ||r_accel||^2
+        + lambda_gyro * ||r_gyro||^2
+        + lambda_snap_pos * ||snap_pos||^2 + lambda_snap_ori * ||snap_ori||^2
+    """
+    if verbose:
+        print(f"\n{'Levenberg-Marquardt Optimization':#^80}")
+        print(f"Max iterations: {max_iterations}")
+        print(f"Huber delta: {huber_delta}")
+        print(f"Lambda accel: {lambda_accel}")
+        print(f"Lambda gyro: {lambda_gyro}")
+        print(f"Lambda snap pos: {lambda_snap_pos}")
+        print(f"Lambda snap ori: {lambda_snap_ori}")
+    
+    state = initial_state
+    lambda_lm = 1e-3  # Initial LM damping
+    prev_cost = None
+    
+    # Build regularization matrices once
+    if verbose:
+        print("\nBuilding regularization matrices...")
+    R_snap_pos = build_minimum_snap_regularization(state.pos_bspline, n_samples=100)
+    R_snap_ori = build_minimum_snap_regularization(state.ori_bspline, n_samples=50)
+    
+    # Separate regularization matrices for position and orientation blocks
+    n_pos = state.pos_bspline.n_points * 3
+    n_ori = state.ori_bspline.n_points * 3
+    n_total = state.get_state_size()
+    
+    # Create block-diagonal regularization matrix
+    R_snap = sparse.lil_matrix((n_total, n_total))
+    R_snap[:n_pos, :n_pos] = lambda_snap_pos * (R_snap_pos.T @ R_snap_pos)
+    R_snap[n_pos:n_pos+n_ori, n_pos:n_pos+n_ori] = lambda_snap_ori * (R_snap_ori.T @ R_snap_ori)
+    R_snap = R_snap.tocsr()
+    
+    for iteration in range(max_iterations):
+        if verbose:
+            print(f"\n{'Iteration ' + str(iteration + 1):-^80}")
+        
+        t_start = time.time()
+        
+        # Build Jacobian + residual vector analytically (includes all costs)
+        if verbose:
+            print("Computing analytical Jacobian...")
+        
+        J, r_total = compute_jacobian_analytical(
+            state, radar_frames, imu_data,
+            sensor_translation, sensor_rotation,
+            lambda_accel, lambda_gyro, huber_delta
+        )
+        
+        cost_total = np.sum(r_total**2)
+        
+        if verbose:
+            print(f"Cost: total={cost_total:.2f}")
+            print(f"Jacobian: {J.shape}, nnz={J.nnz}, sparsity={100*(1-J.nnz/(J.shape[0]*J.shape[1])):.2f}%")
+        
+        # Build normal equations with LM damping
+        H = J.T @ J + lambda_lm * sparse.eye(n_total) + R_snap
+        b = J.T @ r_total
+        
+        # Solve
+        try:
+            delta_x = spsolve(H, -b)
+        except Exception:
+            if verbose:
+                print("⚠️ Solver failed, increasing damping...")
+            lambda_lm *= 10
+            continue
+        
+        # Try update
+        x_current = state.to_vector()
+        x_new = x_current + delta_x
+        state.from_vector(x_new)
+        
+        # Evaluate new cost
+        _, r_new = compute_jacobian_analytical(
+            state, radar_frames, imu_data,
+            sensor_translation, sensor_rotation,
+            lambda_accel, lambda_gyro, huber_delta
+        )
+        new_cost = np.sum(r_new**2)
+        
+        # LM acceptance: if cost decreased, accept and reduce damping
+        if prev_cost is None or new_cost < cost_total:
+            lambda_lm *= 0.5
+            prev_cost = new_cost
+        else:
+            # Reject and increase damping
+            state.from_vector(x_current)
+            lambda_lm *= 5.0
+            if verbose:
+                print(f"  ⚠️ Cost increased ({new_cost:.2f} > {cost_total:.2f}), rejecting step")
+        
+        # Convergence check
+        delta_norm = np.linalg.norm(delta_x)
+        if verbose:
+            print(f"Update norm: {delta_norm:.6f}")
+            print(f"LM damping: {lambda_lm:.2e}")
+            print(f"Iteration time: {time.time() - t_start:.3f}s")
+        
+        if delta_norm < 1e-4:
+            if verbose:
+                print("\n✅ Converged!")
+            break
+    
+    if verbose:
+        print(f"\n{'Optimization Complete':#^80}")
+    
+    return state
+
+
+# ==================== Main Validation ====================
+
+def main():
+    import time
+    start_time = time.time()
+    from datetime import datetime
+    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    print("=" * 80)
+    print("PHASE 3: NONLINEAR SOLVER VALIDATION")
+    print("Full Radar-Inertial Odometry Estimation")
+    print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 80)
+    
+    # ==================== Configuration ====================
+    BAG_PATH = "rosbags/2025-12-17-16-02-22.bag"
+    START_TIME_OFFSET = 31.5  # Start time relative to bag start (seconds)
+    DURATION = 7.5  # Duration of trajectory to estimate (seconds)
+    
+    # Sensor extrinsics (from Phase 1 calibration)
+    TRANSLATION = np.array([0.07, 0.0, 0.0])  # meters
+    ROTATION_EULER = np.array([0, -30, 0])  # degrees (roll, pitch, yaw)
+    
+    BSPLINE_DEGREE = 5  # Quintic for continuous snap
+    DT_POS = 0.15   # Fixed knot spacing for position spline (seconds)
+    DT_ORI = 0.45   # Fixed knot spacing for orientation spline (seconds)
+    
+    # Regularization weights
+    LAMBDA_ACCEL = 0.01     # Accelerometer weight (reduced to give radar more influence)
+    LAMBDA_GYRO = 0.1       # Gyroscope weight (constrains orientation, prevents gravity collapse)
+    LAMBDA_SNAP_POS = 0.001  # Position smoothness
+    LAMBDA_SNAP_ORI = 0.01   # Orientation smoothness
+    
+    HUBER_DELTA = 0.5  # meters/second (Huber threshold)
+    MIN_RANGE = 0.2
+    MAX_ITERATIONS = 10  # Converges by iteration 8-9
+    USE_PHASE2_INIT = True  # Initialize position from Phase 2 linear solver
+    
+    print(f"\n{'Configuration':-^80}")
+    print(f"Dataset: {Path(BAG_PATH).name}")
+    print(f"Time window: {START_TIME_OFFSET:.1f}s + {DURATION:.1f}s")
+    print(f"B-spline degree: {BSPLINE_DEGREE}")
+    print(f"Lambda accel: {LAMBDA_ACCEL}")
+    print(f"Lambda gyro: {LAMBDA_GYRO}")
+    print(f"Lambda snap (pos/ori): {LAMBDA_SNAP_POS}/{LAMBDA_SNAP_ORI}")
+    print(f"Huber delta: {HUBER_DELTA} m/s")
+    print(f"Max iterations: {MAX_ITERATIONS}")
+    print(f"Use Phase 2 init: {USE_PHASE2_INIT}")
+    
+    # ==================== Load Data ====================
+    print(f"\n{'Loading Data':-^80}")
+    
+    bag_data = load_bag_topics(BAG_PATH, verbose=True)
+    
+    t_start = bag_data.start_time + START_TIME_OFFSET
+    t_end = t_start + DURATION
+    
+    agiros_states = [s for s in bag_data.agiros_state if t_start <= s.timestamp <= t_end]
+    radar_frames = [f for f in bag_data.radar_velocity if t_start <= f.timestamp <= t_end]
+    imu_data = [d for d in bag_data.imu_data if t_start <= d.timestamp <= t_end]
+    
+    print(f"\nFiltered data:")
+    print(f"  MoCap states: {len(agiros_states)}")
+    print(f"  Radar frames: {len(radar_frames)}")
+    print(f"  IMU samples: {len(imu_data)}")
+    
+    if len(agiros_states) == 0 or len(radar_frames) == 0 or len(imu_data) == 0:
+        print("ERROR: Insufficient data!")
+        return
+    
+    # ==================== Initialize State ====================
+    print(f"\n{'Initializing State':-^80}")
+    
+    # Work with relative times
+    mocap_times_abs = np.array([s.timestamp for s in agiros_states])
+    t_ref = mocap_times_abs[0]
+    mocap_times_rel = mocap_times_abs - t_ref
+    
+    print(f"Reference time: {t_ref:.2f} (absolute)")
+    print(f"Relative time range: [{mocap_times_rel[0]:.2f}, {mocap_times_rel[-1]:.2f}]")
+    
+    # Load orientation data (needed for Phase 2 and Phase 3)
+    mocap_orientations = np.array([s.orientation for s in agiros_states])  # quaternions
+    mocap_rotations = np.array([quat_to_rotation_matrix(q) for q in mocap_orientations])
+    mocap_positions = np.array([s.position for s in agiros_states])
+    
+    # Prepare sensor extrinsics for Phase 2
+    sensor_translation = TRANSLATION
+    sensor_rotation = rotation_matrix_from_euler(
+        np.radians(ROTATION_EULER[0]), 
+        np.radians(ROTATION_EULER[1]), 
+        np.radians(ROTATION_EULER[2])
+    )
+    
+    # Create position B-spline with fixed knot spacing (independent of window duration)
+    BOUNDARY_ORDER = 2
+    n_interior_pos = int(np.ceil((mocap_times_rel[-1] - mocap_times_rel[0]) / DT_POS)) + 1
+    n_pos_points = n_interior_pos + 2 * BOUNDARY_ORDER
+    pos_bspline = UniformBSpline(np.zeros((n_pos_points, 3)), BSPLINE_DEGREE, DT_POS)
+    pos_bspline.t_ref = t_ref
+    
+    if USE_PHASE2_INIT:
+        print("\n" + "="*80)
+        print("RUNNING PHASE 2 FOR INITIALIZATION")
+        print("="*80)
+        
+        # Import Phase 2 solver
+        from validate_linear_solver import (
+            build_radar_jacobian,
+            build_accelerometer_jacobian,
+            solve_trajectory_linear
+        )
+        
+        # Initialize from MoCap interpolation
+        from scipy.interpolate import interp1d
+        pos_interp = interp1d(mocap_times_rel, mocap_positions, axis=0, kind='cubic',
+                              fill_value='extrapolate')
+        init_times = np.linspace(pos_bspline.t_start, pos_bspline.t_end, n_pos_points)
+        pos_bspline.control_points = pos_interp(init_times)
+        
+        # Build Jacobians for Phase 2
+        print("\nBuilding Phase 2 Jacobians...")
+        J_radar, r_radar, n_radar = build_radar_jacobian(
+            pos_bspline, radar_frames, agiros_states, t_ref,
+            sensor_rotation, sensor_translation, time_offset=0.0
+        )
+        
+        J_accel, r_accel, n_accel = build_accelerometer_jacobian(
+            pos_bspline, agiros_states, t_ref, g_world=np.array([0, 0, -9.81])
+        )
+        
+        # Solve Phase 2
+        print("\nSolving Phase 2 (linear)...")
+        x_opt = solve_trajectory_linear(
+            pos_bspline, J_radar, r_radar, J_accel, r_accel,
+            lambda_accel=0.01, lambda_snap=0.0, lambda_position=0.05,
+            verbose=True
+        )
+        
+        # Update control points with Phase 2 result
+        pos_bspline.control_points = x_opt.reshape(-1, 3)
+        print("\n✅ Phase 2 initialization complete!")
+        print("="*80 + "\n")
+    else:
+        # Simple MoCap initialization
+        from scipy.interpolate import interp1d
+        pos_interp = interp1d(mocap_times_rel, mocap_positions, axis=0, kind='cubic',
+                              fill_value='extrapolate')
+        init_times = np.linspace(pos_bspline.t_start, pos_bspline.t_end, n_pos_points)
+        pos_bspline.control_points = pos_interp(init_times)
+    
+    print(f"Position spline: {n_pos_points} control points, dt={pos_bspline.dt:.4f}s")
+    
+    # Create orientation B-spline initialized from MoCap
+    # Use tangent space parameterization around nominal rotations
+    
+    # Create orientation spline with fixed knot spacing (independent of window duration)
+    ori_degree = min(3, BSPLINE_DEGREE)  # Cubic for orientation
+    n_interior_ori = int(np.ceil(DURATION / DT_ORI)) + 1
+    n_ori_points = max(ori_degree + 2, n_interior_ori + 2 * BOUNDARY_ORDER)
+    
+    # Initialize with dummy control points (will be overwritten)
+    ori_bspline = UniformBSpline(np.zeros((n_ori_points, 3)), ori_degree, DT_ORI)
+    ori_bspline.t_ref = t_ref
+    
+    # Initialize with zero perturbations (identity in tangent space)
+    ori_bspline.control_points = np.zeros((n_ori_points, 3))
+    
+    # Sample nominal rotations at control point times
+    rot_interp_func = lambda t: Rotation.from_quat(
+        interp1d(mocap_times_rel, mocap_orientations, axis=0,
+                 kind='linear', fill_value='extrapolate')(t)
+    )
+    nominal_times = np.linspace(ori_bspline.t_start, ori_bspline.t_end, n_ori_points)
+    nominal_rotations = np.array([
+        rot_interp_func(t).as_matrix() for t in nominal_times
+    ])
+    
+    print(f"Orientation spline: {n_ori_points} control points, dt={ori_bspline.dt:.4f}s")
+    
+    # Initialize biases to zero
+    acc_bias = np.zeros(3)
+    gyr_bias = np.zeros(3)
+    
+    # Create initial state
+    initial_state = TrajectoryState(
+        pos_bspline=pos_bspline,
+        ori_bspline=ori_bspline,
+        nominal_rotations=nominal_rotations,
+        acc_bias=acc_bias,
+        gyr_bias=gyr_bias
+    )
+    
+    print(f"Total state variables: {initial_state.get_state_size()}")
+    print(f"  Position: {n_pos_points * 3}")
+    print(f"  Orientation: {n_ori_points * 3}")
+    print(f"  Biases: 6")
+    
+    # ==================== Optimize ====================
+    # sensor_rotation was already correctly computed above with np.radians()
+    
+    optimized_state = solve_trajectory_nonlinear(
+        imu_data=imu_data,
+        radar_frames=radar_frames,
+        imu_data=imu_data,
+        sensor_translation=TRANSLATION,
+        sensor_rotation=sensor_rotation,
+        lambda_accel=LAMBDA_ACCEL,
+        lambda_gyro=LAMBDA_GYRO,
+        lambda_snap_pos=LAMBDA_SNAP_POS,
+        lambda_snap_ori=LAMBDA_SNAP_ORI,
+        huber_delta=HUBER_DELTA,
+        max_iterations=MAX_ITERATIONS,
+        verbose=True
+    )
+    
+    # ==================== Evaluate Results ====================
+    print(f"\n{'Evaluating Results':-^80}")
+    
+    # Sample trajectory at MoCap times (use absolute times since get_position converts internally)
+    eval_times = mocap_times_abs
+    estimated_positions = np.array([optimized_state.get_position(t, 0) for t in eval_times])
+    estimated_velocities = np.array([optimized_state.get_position(t, 1) for t in eval_times])
+    estimated_rotations = np.array([optimized_state.get_rotation(t) for t in eval_times])
+    
+    mocap_velocities = np.array([s.velocity for s in agiros_states])
+    
+    # Compute errors
+    pos_errors = np.linalg.norm(estimated_positions - mocap_positions, axis=1)
+    vel_errors = np.linalg.norm(estimated_velocities - mocap_velocities, axis=1)
+    
+    # Rotation errors (angle between matrices)
+    rot_errors = []
+    for i, mocap_rot in enumerate(mocap_rotations):
+        est_rot = estimated_rotations[i]
+        R_error = mocap_rot.T @ est_rot
+        angle_error = np.arccos(np.clip((np.trace(R_error) - 1) / 2, -1, 1))
+        rot_errors.append(np.degrees(angle_error))
+    rot_errors = np.array(rot_errors)
+    
+    print(f"\nPosition Errors:")
+    print(f"  Mean: {pos_errors.mean():.4f} m")
+    print(f"  Std:  {pos_errors.std():.4f} m")
+    print(f"  RMSE: {np.sqrt(np.mean(pos_errors**2)):.4f} m")
+    
+    print(f"\nVelocity Errors:")
+    print(f"  Mean: {vel_errors.mean():.4f} m/s")
+    print(f"  RMSE: {np.sqrt(np.mean(vel_errors**2)):.4f} m/s")
+    
+    print(f"\nOrientation Errors:")
+    print(f"  Mean: {rot_errors.mean():.4f} deg")
+    print(f"  RMSE: {np.sqrt(np.mean(rot_errors**2)):.4f} deg")
+    
+    print(f"\nEstimated Biases:")
+    print(f"  Accelerometer: [{optimized_state.acc_bias[0]:.4f}, {optimized_state.acc_bias[1]:.4f}, {optimized_state.acc_bias[2]:.4f}] m/s²")
+    print(f"  Gyroscope: [{optimized_state.gyr_bias[0]:.4f}, {optimized_state.gyr_bias[1]:.4f}, {optimized_state.gyr_bias[2]:.4f}] rad/s")
+    
+    # ==================== Plotting ====================
+    print(f"\n{'Generating Plots':-^80}")
+    
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    fig.suptitle('Nonlinear Solver Validation Results', fontsize=14, fontweight='bold')
+    
+    time_rel = eval_times - eval_times[0]
+    
+    # 1. Trajectory (X-Y)
+    ax = axes[0, 0]
+    ax.plot(mocap_positions[:, 0], mocap_positions[:, 1], 'b-', label='MoCap', linewidth=2)
+    ax.plot(estimated_positions[:, 0], estimated_positions[:, 1], 'r--', label='Estimated', linewidth=2)
+    ax.scatter(optimized_state.pos_bspline.control_points[:, 0],
+               optimized_state.pos_bspline.control_points[:, 1],
+               c='orange', marker='x', s=30, label='Control Points')
+    ax.set_xlabel('X (m)')
+    ax.set_ylabel('Y (m)')
+    ax.set_title('Trajectory (X-Y Plane)')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    ax.axis('equal')
+    
+    # 2. Position error
+    ax = axes[0, 1]
+    ax.plot(time_rel, pos_errors, 'r-', linewidth=2)
+    ax.axhline(pos_errors.mean(), color='b', linestyle='--', label=f'Mean: {pos_errors.mean():.4f}m')
+    ax.set_xlabel('Time (s)')
+    ax.set_ylabel('Position Error (m)')
+    ax.set_title('Position Error')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    # 3. Orientation error
+    ax = axes[0, 2]
+    ax.plot(time_rel, rot_errors, 'g-', linewidth=2)
+    ax.axhline(rot_errors.mean(), color='b', linestyle='--', label=f'Mean: {rot_errors.mean():.4f}°')
+    ax.set_xlabel('Time (s)')
+    ax.set_ylabel('Orientation Error (deg)')
+    ax.set_title('Orientation Error')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    # 4. Velocity comparison
+    ax = axes[1, 0]
+    mocap_speeds = np.linalg.norm(mocap_velocities, axis=1)
+    est_speeds = np.linalg.norm(estimated_velocities, axis=1)
+    ax.plot(time_rel, mocap_speeds, 'b-', label='MoCap', linewidth=2)
+    ax.plot(time_rel, est_speeds, 'r--', label='Estimated', linewidth=2)
+    ax.set_xlabel('Time (s)')
+    ax.set_ylabel('Speed (m/s)')
+    ax.set_title('Speed Comparison')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    # 5. Velocity error
+    ax = axes[1, 1]
+    ax.plot(time_rel, vel_errors, 'r-', linewidth=2)
+    ax.axhline(vel_errors.mean(), color='b', linestyle='--', label=f'Mean: {vel_errors.mean():.4f}m/s')
+    ax.set_xlabel('Time (s)')
+    ax.set_ylabel('Velocity Error (m/s)')
+    ax.set_title('Velocity Error')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    # 6. Error summary
+    ax = axes[1, 2]
+    ax.text(0.1, 0.9, f"Position RMSE: {np.sqrt(np.mean(pos_errors**2)):.4f} m", 
+            transform=ax.transAxes, fontsize=12)
+    ax.text(0.1, 0.8, f"Velocity RMSE: {np.sqrt(np.mean(vel_errors**2)):.4f} m/s",
+            transform=ax.transAxes, fontsize=12)
+    ax.text(0.1, 0.7, f"Orientation RMSE: {np.sqrt(np.mean(rot_errors**2)):.4f}°",
+            transform=ax.transAxes, fontsize=12)
+    ax.text(0.1, 0.5, f"Acc bias: [{optimized_state.acc_bias[0]:.3f}, {optimized_state.acc_bias[1]:.3f}, {optimized_state.acc_bias[2]:.3f}]",
+            transform=ax.transAxes, fontsize=10)
+    ax.text(0.1, 0.4, f"Gyr bias: [{optimized_state.gyr_bias[0]:.3f}, {optimized_state.gyr_bias[1]:.3f}, {optimized_state.gyr_bias[2]:.3f}]",
+            transform=ax.transAxes, fontsize=10)
+    ax.axis('off')
+    ax.set_title('Summary')
+    
+    plt.tight_layout()
+    output_filename = f'nonlinear_solver_validation_{timestamp_str}.png'
+    plt.savefig(output_filename, dpi=150, bbox_inches='tight')
+    print(f"Saved: {output_filename}")
+    
+    # ==================== Summary ====================
+    total_time = time.time() - start_time
+    hours = int(total_time // 3600)
+    minutes = int((total_time % 3600) // 60)
+    seconds = int(total_time % 60)
+    
+    print(f"\n{'VALIDATION SUMMARY':#^80}")
+    
+    pos_rmse = np.sqrt(np.mean(pos_errors**2))
+    vel_rmse = np.sqrt(np.mean(vel_errors**2))
+    ori_rmse = np.sqrt(np.mean(rot_errors**2))
+    
+    if pos_errors.mean() < 0.5 and vel_errors.mean() < 0.5 and rot_errors.mean() < 5.0:
+        print("✅ NONLINEAR SOLVER VALIDATION SUCCESSFUL!")
+        print("   - Position, velocity, and orientation errors are low")
+        print("   - Bias estimation is working")
+        print("   - Ready for real-time deployment")
+    else:
+        print("⚠️  NONLINEAR SOLVER RESULTS")
+        print(f"   - Position RMSE: {pos_rmse:.4f} m")
+        print(f"   - Velocity RMSE: {vel_rmse:.4f} m/s")
+        print(f"   - Orientation RMSE: {ori_rmse:.4f} deg")
+    
+    print(f"\n   Runtime: {hours}h {minutes}m {seconds}s")
+    print(f"   Finished: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 80)
+
+
+if __name__ == "__main__":
+    main()

@@ -5,15 +5,18 @@ This module provides functions for:
 - Weighted least squares ego-velocity estimation from radar point clouds
 - Signal filtering (highpass, lowpass)
 - IMU acceleration integration
+- Forward model for radar Doppler prediction
+- Extrinsic calibration and time alignment
 """
 
 import numpy as np
 from scipy import stats
 from scipy.signal import butter, filtfilt, detrend
 from scipy.integrate import cumulative_trapezoid
-from scipy.optimize import least_squares
+from scipy.optimize import least_squares, minimize
 from scipy.interpolate import interp1d
 from scipy.optimize import minimize_scalar
+from typing import Tuple, Optional, Dict, Any
 
 def solve_ego_velocity_weighted(positions, velocities, intensities, 
                                   min_intensity=5.0, min_range=0.2, min_points=5,
@@ -778,3 +781,393 @@ def analyze_noise_vs_intensity(radar_frames, times_imu, v_imu_x, time_shift_dt,
         'all_intensities': all_intensities,
         'all_residual_values': all_residuals
     }
+
+
+# ==================== FORWARD MODEL FUNCTIONS ====================
+
+def quat_to_rotation_matrix(q: np.ndarray) -> np.ndarray:
+    """
+    Convert quaternion [qx, qy, qz, qw] to 3x3 rotation matrix.
+    
+    Args:
+        q: Quaternion as [qx, qy, qz, qw]
+        
+    Returns:
+        3x3 rotation matrix R that rotates vectors from body to world frame
+    """
+    qx, qy, qz, qw = q
+    
+    # Normalize
+    norm = np.sqrt(qx**2 + qy**2 + qz**2 + qw**2)
+    qx, qy, qz, qw = qx/norm, qy/norm, qz/norm, qw/norm
+    
+    # Rotation matrix (body to world)
+    R = np.array([
+        [1 - 2*(qy**2 + qz**2), 2*(qx*qy - qw*qz), 2*(qx*qz + qw*qy)],
+        [2*(qx*qy + qw*qz), 1 - 2*(qx**2 + qz**2), 2*(qy*qz - qw*qx)],
+        [2*(qx*qz - qw*qy), 2*(qy*qz + qw*qx), 1 - 2*(qx**2 + qy**2)]
+    ])
+    
+    return R
+
+
+def rotation_matrix_from_euler(roll: float, pitch: float, yaw: float) -> np.ndarray:
+    """
+    Create rotation matrix from Euler angles (ZYX convention).
+    
+    Args:
+        roll: Roll angle in radians (rotation around X)
+        pitch: Pitch angle in radians (rotation around Y)
+        yaw: Yaw angle in radians (rotation around Z)
+        
+    Returns:
+        3x3 rotation matrix
+    """
+    cr, sr = np.cos(roll), np.sin(roll)
+    cp, sp = np.cos(pitch), np.sin(pitch)
+    cy, sy = np.cos(yaw), np.sin(yaw)
+    
+    # ZYX convention (yaw, then pitch, then roll)
+    R = np.array([
+        [cy*cp, cy*sp*sr - sy*cr, cy*sp*cr + sy*sr],
+        [sy*cp, sy*sp*sr + cy*cr, sy*sp*cr - cy*sr],
+        [-sp, cp*sr, cp*cr]
+    ])
+    
+    return R
+
+
+def predict_doppler_velocity(
+    v_body_world: np.ndarray,
+    omega_body: np.ndarray,
+    R_world_from_body: np.ndarray,
+    radar_positions_sensor: np.ndarray,
+    T_body_from_sensor: np.ndarray,
+    R_body_from_sensor: np.ndarray
+) -> np.ndarray:
+    """
+    Predict Doppler velocities for radar points using the forward model.
+    
+    Based on Forward Model.md Section 4:
+    1. Calculate antenna velocity in body frame: v_ant = v_body + omega × T_b<-s
+    2. Transform ray directions from sensor to body frame: u_b = R_b<-s * u_s
+    3. Compute Doppler: v_D = u_b · v_ant
+    
+    Args:
+        v_body_world: Linear velocity of body center in world frame [3]
+        omega_body: Angular velocity in body frame [3] rad/s
+        R_world_from_body: Rotation matrix from body to world (3x3)
+        radar_positions_sensor: Radar point positions in sensor frame (N x 3)
+        T_body_from_sensor: Translation vector from body to sensor in body frame [3]
+        R_body_from_sensor: Rotation matrix from sensor to body (3x3)
+        
+    Returns:
+        predicted_dopplers: Array of predicted Doppler velocities (N,)
+    """
+    # Convert body velocity to body frame
+    R_body_from_world = R_world_from_body.T
+    v_body_in_body = R_body_from_world @ v_body_world
+    
+    # Calculate lever arm effect: omega × T_b<-s
+    lever_arm_velocity = np.cross(omega_body, T_body_from_sensor)
+    
+    # Total antenna velocity in body frame
+    v_ant_body = v_body_in_body + lever_arm_velocity
+    
+    # Calculate unit direction vectors in sensor frame
+    ranges = np.linalg.norm(radar_positions_sensor, axis=1, keepdims=True)
+    u_sensor = radar_positions_sensor / ranges
+    
+    # Transform ray directions to body frame
+    u_body = (R_body_from_sensor @ u_sensor.T).T
+    
+    # Compute Doppler as dot product
+    predicted_dopplers = np.sum(u_body * v_ant_body, axis=1)
+    
+    return predicted_dopplers
+
+
+def compute_doppler_residuals(
+    agiros_states,
+    radar_frames,
+    T_body_from_sensor: np.ndarray,
+    R_body_from_sensor: np.ndarray,
+    time_offset: float = 0.0,
+    min_range: float = 0.2
+) -> Dict[str, Any]:
+    """
+    Compute residuals between predicted and measured Doppler velocities.
+    
+    Args:
+        agiros_states: List of AgirosState objects (MoCap ground truth)
+        radar_frames: List of RadarVelocity objects
+        T_body_from_sensor: Translation from body to sensor in body frame [3]
+        R_body_from_sensor: Rotation matrix from sensor to body (3x3)
+        time_offset: Time offset to add to radar timestamps (seconds)
+        min_range: Minimum range threshold for filtering radar points
+        
+    Returns:
+        Dictionary with residuals, predictions, measurements, and statistics
+    """
+    # Create interpolators for MoCap data
+    agiros_times = np.array([s.timestamp for s in agiros_states])
+    agiros_positions = np.array([s.position for s in agiros_states])
+    agiros_velocities = np.array([s.velocity for s in agiros_states])
+    agiros_quats = np.array([s.orientation for s in agiros_states])
+    agiros_omegas = np.array([s.angular_velocity for s in agiros_states])
+    
+    # Create interpolators
+    pos_interp = interp1d(agiros_times, agiros_positions, axis=0, kind='cubic', 
+                          bounds_error=False, fill_value='extrapolate')
+    vel_interp = interp1d(agiros_times, agiros_velocities, axis=0, kind='linear',
+                          bounds_error=False, fill_value='extrapolate')
+    omega_interp = interp1d(agiros_times, agiros_omegas, axis=0, kind='linear',
+                            bounds_error=False, fill_value='extrapolate')
+    
+    # Quaternion SLERP would be better, but linear interpolation is simpler
+    quat_interp = interp1d(agiros_times, agiros_quats, axis=0, kind='linear',
+                           bounds_error=False, fill_value='extrapolate')
+    
+    all_residuals = []
+    all_predictions = []
+    all_measurements = []
+    all_intensities = []
+    all_ranges = []
+    frame_indices = []
+    point_indices = []
+    
+    for frame_idx, frame in enumerate(radar_frames):
+        # Apply time offset to radar timestamp
+        t_corrected = frame.timestamp + time_offset
+        
+        # Skip if outside MoCap range
+        if t_corrected < agiros_times[0] or t_corrected > agiros_times[-1]:
+            continue
+        
+        # Interpolate MoCap state
+        try:
+            v_world = vel_interp(t_corrected)
+            omega_body = omega_interp(t_corrected)
+            quat = quat_interp(t_corrected)
+        except (ValueError, RuntimeError):
+            continue
+        
+        # Get rotation matrix
+        R_world_from_body = quat_to_rotation_matrix(quat)
+        
+        # Get radar measurements
+        positions = np.array(frame.positions)
+        measured_dopplers = np.array(frame.velocities)
+        intensities = np.array(frame.intensities) if frame.intensities is not None else np.ones(len(positions))
+        
+        # Filter by range
+        ranges = np.linalg.norm(positions, axis=1)
+        valid_mask = ranges >= min_range
+        
+        if np.sum(valid_mask) == 0:
+            continue
+        
+        valid_positions = positions[valid_mask]
+        valid_measurements = measured_dopplers[valid_mask]
+        valid_intensities = intensities[valid_mask]
+        valid_ranges = ranges[valid_mask]
+        
+        # Predict Doppler velocities
+        predicted_dopplers = predict_doppler_velocity(
+            v_world, omega_body, R_world_from_body,
+            valid_positions, T_body_from_sensor, R_body_from_sensor
+        )
+        
+        # Compute residuals
+        residuals = valid_measurements - predicted_dopplers
+        
+        # Store results
+        all_residuals.extend(residuals)
+        all_predictions.extend(predicted_dopplers)
+        all_measurements.extend(valid_measurements)
+        all_intensities.extend(valid_intensities)
+        all_ranges.extend(valid_ranges)
+        frame_indices.extend([frame_idx] * len(residuals))
+        point_indices.extend(np.where(valid_mask)[0])
+    
+    all_residuals = np.array(all_residuals)
+    all_predictions = np.array(all_predictions)
+    all_measurements = np.array(all_measurements)
+    all_intensities = np.array(all_intensities)
+    all_ranges = np.array(all_ranges)
+    
+    # Compute statistics
+    if len(all_residuals) > 0:
+        # Remove outliers for stats
+        q1, q99 = np.percentile(all_residuals, [1, 99])
+        inlier_mask = (all_residuals >= q1) & (all_residuals <= q99)
+        
+        stats = {
+            'mean': np.mean(all_residuals[inlier_mask]),
+            'std': np.std(all_residuals[inlier_mask]),
+            'rmse': np.sqrt(np.mean(all_residuals[inlier_mask]**2)),
+            'median': np.median(all_residuals),
+            'q1': q1,
+            'q99': q99,
+            'num_points': len(all_residuals),
+            'num_inliers': np.sum(inlier_mask)
+        }
+    else:
+        stats = None
+    
+    return {
+        'residuals': all_residuals,
+        'predictions': all_predictions,
+        'measurements': all_measurements,
+        'intensities': all_intensities,
+        'ranges': all_ranges,
+        'frame_indices': frame_indices,
+        'point_indices': point_indices,
+        'stats': stats
+    }
+
+
+def calibrate_radar_extrinsics_and_timing(
+    agiros_states,
+    radar_frames,
+    initial_translation: np.ndarray = np.array([0.07, 0.0, 0.0]),
+    initial_rotation_euler: np.ndarray = np.array([0.0, -30.0 * np.pi/180, 0.0]),
+    initial_time_offset: float = -0.018879,
+    calibrate_translation: bool = True,
+    calibrate_rotation: bool = True,
+    calibrate_time: bool = True,
+    min_range: float = 0.2
+) -> Dict[str, Any]:
+    """
+    Calibrate radar extrinsics (position and orientation) and time offset.
+    
+    Uses scipy.optimize.minimize to find parameters that minimize RMSE of
+    Doppler residuals.
+    
+    Args:
+        agiros_states: List of AgirosState objects
+        radar_frames: List of RadarVelocity objects
+        initial_translation: Initial guess for T_body_from_sensor [x, y, z] in meters
+        initial_rotation_euler: Initial guess for rotation [roll, pitch, yaw] in radians
+        initial_time_offset: Initial guess for time offset in seconds
+        calibrate_translation: Whether to optimize translation
+        calibrate_rotation: Whether to optimize rotation
+        calibrate_time: Whether to optimize time offset
+        min_range: Minimum range for filtering radar points
+        
+    Returns:
+        Dictionary with optimized parameters and results
+    """
+    # Build parameter vector
+    param_names = []
+    x0 = []
+    
+    if calibrate_translation:
+        param_names.extend(['tx', 'ty', 'tz'])
+        x0.extend(initial_translation)
+    
+    if calibrate_rotation:
+        param_names.extend(['roll', 'pitch', 'yaw'])
+        x0.extend(initial_rotation_euler)
+    
+    if calibrate_time:
+        param_names.append('time_offset')
+        x0.append(initial_time_offset)
+    
+    x0 = np.array(x0)
+    
+    if len(x0) == 0:
+        raise ValueError("At least one parameter must be calibrated")
+    
+    # Define cost function
+    def cost_function(x):
+        # Unpack parameters
+        idx = 0
+        if calibrate_translation:
+            T_body_from_sensor = x[idx:idx+3]
+            idx += 3
+        else:
+            T_body_from_sensor = initial_translation
+        
+        if calibrate_rotation:
+            euler = x[idx:idx+3]
+            R_body_from_sensor = rotation_matrix_from_euler(*euler)
+            idx += 3
+        else:
+            R_body_from_sensor = rotation_matrix_from_euler(*initial_rotation_euler)
+        
+        if calibrate_time:
+            time_offset = x[idx]
+        else:
+            time_offset = initial_time_offset
+        
+        # Compute residuals
+        result = compute_doppler_residuals(
+            agiros_states, radar_frames,
+            T_body_from_sensor, R_body_from_sensor,
+            time_offset, min_range
+        )
+        
+        if result['stats'] is None or result['stats']['num_inliers'] < 100:
+            return 1e6  # Penalize bad parameters
+        
+        # Return RMSE
+        return result['stats']['rmse']
+    
+    # Optimize
+    print(f"Optimizing {len(x0)} parameters: {param_names}")
+    print(f"Initial parameters: {x0}")
+    print(f"Initial cost: {cost_function(x0):.6f}")
+    
+    result = minimize(
+        cost_function,
+        x0,
+        method='Nelder-Mead',
+        options={'maxiter': 1000, 'xatol': 1e-4, 'fatol': 1e-6, 'disp': True}
+    )
+    
+    # Unpack optimized parameters
+    x_opt = result.x
+    idx = 0
+    
+    if calibrate_translation:
+        T_opt = x_opt[idx:idx+3]
+        idx += 3
+    else:
+        T_opt = initial_translation
+    
+    if calibrate_rotation:
+        euler_opt = x_opt[idx:idx+3]
+        R_opt = rotation_matrix_from_euler(*euler_opt)
+        idx += 3
+    else:
+        euler_opt = initial_rotation_euler
+        R_opt = rotation_matrix_from_euler(*initial_rotation_euler)
+    
+    if calibrate_time:
+        time_offset_opt = x_opt[idx]
+    else:
+        time_offset_opt = initial_time_offset
+    
+    # Compute final residuals
+    final_result = compute_doppler_residuals(
+        agiros_states, radar_frames,
+        T_opt, R_opt, time_offset_opt, min_range
+    )
+    
+    return {
+        'success': result.success,
+        'translation': T_opt,
+        'rotation_matrix': R_opt,
+        'rotation_euler': euler_opt,
+        'time_offset': time_offset_opt,
+        'initial_cost': cost_function(x0),
+        'final_cost': result.fun,
+        'iterations': result.nit,
+        'residual_stats': final_result['stats'],
+        'residual_data': final_result,
+        'param_names': param_names,
+        'x0': x0,
+        'x_opt': x_opt
+    }
+

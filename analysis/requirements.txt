@@ -1,3 +1,6 @@
+# Python version requirement for uv
+# requires-python==3.12
+
 # Core scientific Python stack
 numpy>=1.24.0
 pandas>=2.0.0
@@ -7,6 +10,9 @@ seaborn>=0.12.0
 # ROS bag processing
 # Note: rosbag, rospkg, rospy are provided by ROS installation
 # They should be accessed by sourcing ROS: source /opt/ros/noetic/setup.bash
+# The following are included but may need ROS environment setup:
+rospkg
+bagpy
 
 # Jupyter
 jupyter>=1.0.0
@@ -21,5 +27,5 @@ plotly>=5.14.0
 ipykernel
 pycryptodomex
 python-gnupg
-rospkg
-bagpy
+
+# symforce
