@@ -979,7 +979,6 @@ def solve_trajectory_nonlinear(
     huber_delta: float = 0.5,
     huber_delta_accel: float = 0.0,
     max_iterations: int = 20,
-    n_outer: int = 1,
     lock_biases: bool = False,
     use_jacobi_precond: bool = False,
     verbose: bool = True,
@@ -1000,15 +999,9 @@ def solve_trajectory_nonlinear(
     Solve for optimal trajectory using Levenberg-Marquardt.
     
     Uses analytical Jacobians derived by SymForce for ~50x speedup.
-    
-    Outer/inner loop structure:
-    - Inner loop: standard LM in a fixed tangent space (consistent cost landscape)
-    - After inner convergence: SO(3) re-linearization (absorb delta into nominal)
-    - Next outer iteration: LM restarts with updated linearization point
-    
-    This avoids the pitfall of re-linearizing every step, which breaks LM's
-    cost monotonicity because omega = omega_nom + delta_dot is only approximate
-    for large delta (J_r(delta) != I).
+    The gyroscope model uses the exact SO(3) right Jacobian J_r(delta)
+    via SymForce codegen, so re-linearization after every accepted step
+    is safe and keeps delta small for better numerical conditioning.
     
     Minimizes:
     E = sum(huber(r_radar)) + lambda_accel * huber_accel(||r_accel||)
@@ -1018,7 +1011,7 @@ def solve_trajectory_nonlinear(
     """
     if verbose:
         print(f"\n{'Levenberg-Marquardt Optimization':#^80}")
-        print(f"Max iterations: {max_iterations} (inner) x {n_outer} (outer re-linearization)")
+        print(f"Max iterations: {max_iterations} (with re-linearization after each accepted step)")
         print(f"Huber delta (radar): {huber_delta}")
         print(f"Huber delta (accel): {huber_delta_accel if huber_delta_accel > 0 else 'OFF (L2)'}")
         print(f"Lambda accel: {lambda_accel}")
@@ -1078,136 +1071,125 @@ def solve_trajectory_nonlinear(
             lambda_boundary_gyro=lambda_boundary_gyro,
         )
     
-    global_iter = 0
+    lambda_lm = 1e-3
+    prev_cost = None
     
-    for outer in range(n_outer):
-        lambda_lm = 1e-3  # Reset LM damping for each outer iteration
-        prev_cost = None
+    for iteration in range(max_iterations):
+        if verbose:
+            print(f"\n{'Iteration ' + str(iteration + 1):-^80}")
+            # Track orientation RMSE per iteration
+            if mocap_times_abs is not None and mocap_rotations is not None:
+                ori_rmse = compute_orientation_rmse(state, mocap_times_abs, mocap_rotations)
+                delta_norms = np.linalg.norm(state.ori_bspline.control_points, axis=1)
+                print(f"Orientation RMSE: {ori_rmse:.1f} deg | delta max: {np.degrees(delta_norms.max()):.2f}° mean: {np.degrees(delta_norms.mean()):.2f}°")
+                print(f"Acc bias: [{state.acc_bias[0]:.3f}, {state.acc_bias[1]:.3f}, {state.acc_bias[2]:.3f}]"
+                      f"  Gyr bias: [{state.gyr_bias[0]:.3f}, {state.gyr_bias[1]:.3f}, {state.gyr_bias[2]:.3f}]")
         
-        if verbose and n_outer > 1:
-            print(f"\n{'=' * 80}")
-            print(f"  OUTER ITERATION {outer + 1}/{n_outer}")
-            print(f"{'=' * 80}")
+        t_start = time.time()
         
-        for inner in range(max_iterations):
-            global_iter += 1
-            if verbose:
-                print(f"\n{'Iteration ' + str(global_iter):-^80}")
-                # Track orientation RMSE per iteration
-                if mocap_times_abs is not None and mocap_rotations is not None:
-                    ori_rmse = compute_orientation_rmse(state, mocap_times_abs, mocap_rotations)
-                    delta_norms = np.linalg.norm(state.ori_bspline.control_points, axis=1)
-                    print(f"Orientation RMSE: {ori_rmse:.1f} deg | delta max: {np.degrees(delta_norms.max()):.2f}° mean: {np.degrees(delta_norms.mean()):.2f}°")
-                    print(f"Acc bias: [{state.acc_bias[0]:.3f}, {state.acc_bias[1]:.3f}, {state.acc_bias[2]:.3f}]"
-                          f"  Gyr bias: [{state.gyr_bias[0]:.3f}, {state.gyr_bias[1]:.3f}, {state.gyr_bias[2]:.3f}]")
-            
-            t_start = time.time()
-            
-            # Build Jacobian + residual vector analytically (includes all costs)
-            if verbose:
-                print("Computing analytical Jacobian...")
-            
-            J, r_total = _build_jacobian(state)
-            
-            cost_total = np.sum(r_total**2)
-            
-            if verbose:
-                # Cost decomposition: residuals ordered as radar|accel|gyro|bnd_vel|bnd_pos|bnd_ori|bnd_accel|bnd_gyro
-                n_r = getattr(J, 'n_radar', 0)
-                n_a = getattr(J, 'n_accel', 0)
-                n_bv = getattr(J, 'n_boundary_vel', 0)
-                n_bp = getattr(J, 'n_boundary_pos', 0)
-                n_bo = getattr(J, 'n_boundary_ori', 0)
-                n_bac = getattr(J, 'n_boundary_accel', 0)
-                n_bg = getattr(J, 'n_boundary_gyro', 0)
-                n_g = len(r_total) - n_r - n_a - n_bv - n_bp - n_bo - n_bac - n_bg
-                idx = 0
-                cost_radar = np.sum(r_total[idx:idx+n_r]**2); idx += n_r
-                cost_accel = np.sum(r_total[idx:idx+n_a]**2); idx += n_a
-                cost_gyro = np.sum(r_total[idx:idx+n_g]**2); idx += n_g
-                cost_bv = np.sum(r_total[idx:idx+n_bv]**2); idx += n_bv
-                cost_bp = np.sum(r_total[idx:idx+n_bp]**2); idx += n_bp
-                cost_bo = np.sum(r_total[idx:idx+n_bo]**2); idx += n_bo
-                cost_bac = np.sum(r_total[idx:idx+n_bac]**2); idx += n_bac
-                cost_bg = np.sum(r_total[idx:idx+n_bg]**2); idx += n_bg
-                bnd_parts = []
-                if n_bv > 0: bnd_parts.append(f"bnd_vel={cost_bv:.1f}")
-                if n_bp > 0: bnd_parts.append(f"bnd_pos={cost_bp:.1f}")
-                if n_bo > 0: bnd_parts.append(f"bnd_ori={cost_bo:.1f}")
-                if n_bac > 0: bnd_parts.append(f"bnd_acc={cost_bac:.1f}")
-                if n_bg > 0: bnd_parts.append(f"bnd_gyr={cost_bg:.1f}")
-                bnd_str = (" " + " ".join(bnd_parts)) if bnd_parts else ""
-                print(f"Cost: total={cost_total:.2f} | radar={cost_radar:.1f} accel={cost_accel:.1f} gyro={cost_gyro:.1f}{bnd_str}")
-                print(f"Jacobian: {J.shape}, nnz={J.nnz}, sparsity={100*(1-J.nnz/(J.shape[0]*J.shape[1])):.2f}%")
-            
-            # Build normal equations with LM damping
-            H = J.T @ J + lambda_lm * sparse.eye(n_total) + R_snap
-            b = J.T @ r_total
-            
-            # Solve (optionally with Jacobi preconditioning)
-            try:
-                if use_jacobi_precond:
-                    # Jacobi preconditioning: normalize H to remove scale mismatch
-                    diag_H = H.diagonal().copy()
-                    diag_H[diag_H < 1e-10] = 1.0
-                    M_inv_sqrt = sparse.diags(1.0 / np.sqrt(diag_H))
-                    H_scaled = M_inv_sqrt @ H @ M_inv_sqrt
-                    b_scaled = M_inv_sqrt @ b
-                    delta_x_scaled = spsolve(H_scaled, -b_scaled)
-                    delta_x = M_inv_sqrt @ delta_x_scaled  # Unscale
-                else:
-                    delta_x = spsolve(H, -b)
-            except Exception:
-                if verbose:
-                    print("[WARN] Solver failed, increasing damping...")
-                lambda_lm *= 10
-                continue
-            
-            # Try update
-            x_current = state.to_vector()
-            # Zero out bias updates when locked
-            if lock_biases:
-                delta_x[-(6):] = 0.0
-            x_new = x_current + delta_x
-            state.from_vector(x_new)
-            
-            # Evaluate new cost
-            _, r_new = _build_jacobian(state)
-            new_cost = np.sum(r_new**2)
-            
-            # LM acceptance: accept only if cost decreased
-            if new_cost < cost_total:
-                lambda_lm = max(1e-15, lambda_lm * 0.1)  # Aggressive: snap to Gauss-Newton mode
-                prev_cost = new_cost
-                if verbose:
-                    delta_norms = np.linalg.norm(state.ori_bspline.control_points, axis=1)
-                    print(f"  Accepted: cost {cost_total:.1f} -> {new_cost:.1f} (max |delta|={np.degrees(delta_norms.max()):.1f}°)")
+        # Build Jacobian + residual vector analytically (includes all costs)
+        if verbose:
+            print("Computing analytical Jacobian...")
+        
+        J, r_total = _build_jacobian(state)
+        
+        cost_total = np.sum(r_total**2)
+        
+        if verbose:
+            # Cost decomposition: residuals ordered as radar|accel|gyro|bnd_vel|bnd_pos|bnd_ori|bnd_accel|bnd_gyro
+            n_r = getattr(J, 'n_radar', 0)
+            n_a = getattr(J, 'n_accel', 0)
+            n_bv = getattr(J, 'n_boundary_vel', 0)
+            n_bp = getattr(J, 'n_boundary_pos', 0)
+            n_bo = getattr(J, 'n_boundary_ori', 0)
+            n_bac = getattr(J, 'n_boundary_accel', 0)
+            n_bg = getattr(J, 'n_boundary_gyro', 0)
+            n_g = len(r_total) - n_r - n_a - n_bv - n_bp - n_bo - n_bac - n_bg
+            idx = 0
+            cost_radar = np.sum(r_total[idx:idx+n_r]**2); idx += n_r
+            cost_accel = np.sum(r_total[idx:idx+n_a]**2); idx += n_a
+            cost_gyro = np.sum(r_total[idx:idx+n_g]**2); idx += n_g
+            cost_bv = np.sum(r_total[idx:idx+n_bv]**2); idx += n_bv
+            cost_bp = np.sum(r_total[idx:idx+n_bp]**2); idx += n_bp
+            cost_bo = np.sum(r_total[idx:idx+n_bo]**2); idx += n_bo
+            cost_bac = np.sum(r_total[idx:idx+n_bac]**2); idx += n_bac
+            cost_bg = np.sum(r_total[idx:idx+n_bg]**2); idx += n_bg
+            bnd_parts = []
+            if n_bv > 0: bnd_parts.append(f"bnd_vel={cost_bv:.1f}")
+            if n_bp > 0: bnd_parts.append(f"bnd_pos={cost_bp:.1f}")
+            if n_bo > 0: bnd_parts.append(f"bnd_ori={cost_bo:.1f}")
+            if n_bac > 0: bnd_parts.append(f"bnd_acc={cost_bac:.1f}")
+            if n_bg > 0: bnd_parts.append(f"bnd_gyr={cost_bg:.1f}")
+            bnd_str = (" " + " ".join(bnd_parts)) if bnd_parts else ""
+            print(f"Cost: total={cost_total:.2f} | radar={cost_radar:.1f} accel={cost_accel:.1f} gyro={cost_gyro:.1f}{bnd_str}")
+            print(f"Jacobian: {J.shape}, nnz={J.nnz}, sparsity={100*(1-J.nnz/(J.shape[0]*J.shape[1])):.2f}%")
+        
+        # Build normal equations with LM damping
+        H = J.T @ J + lambda_lm * sparse.eye(n_total) + R_snap
+        b = J.T @ r_total
+        
+        # Solve (optionally with Jacobi preconditioning)
+        try:
+            if use_jacobi_precond:
+                # Jacobi preconditioning: normalize H to remove scale mismatch
+                diag_H = H.diagonal().copy()
+                diag_H[diag_H < 1e-10] = 1.0
+                M_inv_sqrt = sparse.diags(1.0 / np.sqrt(diag_H))
+                H_scaled = M_inv_sqrt @ H @ M_inv_sqrt
+                b_scaled = M_inv_sqrt @ b
+                delta_x_scaled = spsolve(H_scaled, -b_scaled)
+                delta_x = M_inv_sqrt @ delta_x_scaled  # Unscale
             else:
-                # Reject and increase damping
-                state.from_vector(x_current)
-                lambda_lm *= 10.0  # Strong punishment for bad step
-                if verbose:
-                    print(f"  [WARN] Cost increased ({new_cost:.2f} > {cost_total:.2f}), rejecting step")
-            
-            # Convergence check
-            delta_norm = np.linalg.norm(delta_x)
+                delta_x = spsolve(H, -b)
+        except Exception:
             if verbose:
-                print(f"Update norm: {delta_norm:.6f}")
-                print(f"LM damping: {lambda_lm:.2e}")
-                print(f"Iteration time: {time.time() - t_start:.3f}s")
-            
-            if delta_norm < 1e-4:
-                if verbose:
-                    print("\n[OK] Converged!")
-                break
+                print("[WARN] Solver failed, increasing damping...")
+            lambda_lm *= 10
+            continue
         
-        # SO(3) re-linearization between outer iterations
-        if outer < n_outer - 1:
+        # Try update
+        x_current = state.to_vector()
+        # Zero out bias updates when locked
+        if lock_biases:
+            delta_x[-(6):] = 0.0
+        x_new = x_current + delta_x
+        state.from_vector(x_new)
+        
+        # Evaluate new cost
+        _, r_new = _build_jacobian(state)
+        new_cost = np.sum(r_new**2)
+        
+        # LM acceptance: accept only if cost decreased
+        if new_cost < cost_total:
+            lambda_lm = max(1e-15, lambda_lm * 0.1)  # Aggressive: snap to Gauss-Newton mode
+            prev_cost = new_cost
+            if verbose:
+                delta_norms = np.linalg.norm(state.ori_bspline.control_points, axis=1)
+                print(f"  Accepted: cost {cost_total:.1f} -> {new_cost:.1f} (max |delta|={np.degrees(delta_norms.max()):.1f}°)")
+            # Re-linearize: absorb delta into nominal orientation
             max_delta_deg = np.degrees(
                 np.linalg.norm(state.ori_bspline.control_points, axis=1).max())
             state.relinearize()
             if verbose:
-                print(f"\n  >>> Re-linearized: absorbed max |delta|={max_delta_deg:.1f}° into nominal <<<")
+                print(f"  Re-linearized: absorbed max |delta|={max_delta_deg:.1f}° into nominal")
+        else:
+            # Reject and increase damping
+            state.from_vector(x_current)
+            lambda_lm *= 10.0  # Strong punishment for bad step
+            if verbose:
+                print(f"  [WARN] Cost increased ({new_cost:.2f} > {cost_total:.2f}), rejecting step")
+        
+        # Convergence check
+        delta_norm = np.linalg.norm(delta_x)
+        if verbose:
+            print(f"Update norm: {delta_norm:.6f}")
+            print(f"LM damping: {lambda_lm:.2e}")
+            print(f"Iteration time: {time.time() - t_start:.3f}s")
+        
+        if delta_norm < 1e-4:
+            if verbose:
+                print("\n[OK] Converged!")
+            break
     
     if verbose:
         print(f"\n{'Optimization Complete':#^80}")
@@ -1289,8 +1271,7 @@ def main():
     HUBER_DELTA = 0.5  # meters/second (Huber threshold for radar)
     HUBER_DELTA_ACCEL = 2.0  # m/s² (Huber threshold for accelerometer — clips spikes linearly)
     MIN_RANGE = 0.2
-    MAX_ITERATIONS = 6  # Inner LM iterations per outer loop
-    N_OUTER = 3          # Outer re-linearization iterations
+    MAX_ITERATIONS = 20  # LM iterations (re-linearization after each accepted step)
     USE_PHASE2_INIT = False  # Initialize position from Phase 2 linear solver
     LOCK_BIASES = True  # Lock biases to zero — force solver to fix orientation instead
     USE_JACOBI_PRECOND = '--precond' in sys.argv  # Toggle Jacobi preconditioning
@@ -1313,7 +1294,7 @@ def main():
     print(f"Lambda snap (pos/ori): {LAMBDA_SNAP_POS}/{LAMBDA_SNAP_ORI}")
     print(f"Huber delta (radar): {HUBER_DELTA} m/s")
     print(f"Huber delta (accel): {HUBER_DELTA_ACCEL} m/s²")
-    print(f"Max iterations: {MAX_ITERATIONS} (inner) x {N_OUTER} (outer re-linearization)")
+    print(f"Max iterations: {MAX_ITERATIONS} (re-linearize after each accepted step)")
     print(f"Use Phase 2 init: {USE_PHASE2_INIT}")
     print(f"Lock biases: {LOCK_BIASES}")
     print(f"Jacobi preconditioning: {USE_JACOBI_PRECOND}")
@@ -1639,7 +1620,6 @@ def main():
         huber_delta=HUBER_DELTA,
         huber_delta_accel=HUBER_DELTA_ACCEL,
         max_iterations=MAX_ITERATIONS,
-        n_outer=N_OUTER,
         lock_biases=LOCK_BIASES,
         use_jacobi_precond=USE_JACOBI_PRECOND,
         verbose=True,
@@ -1881,7 +1861,7 @@ def main():
         f"  λ_bnd_ori={LAMBDA_BOUNDARY_ORI}  λ_bnd_acc={LAMBDA_BOUNDARY_ACCEL}",
         f"  λ_bnd_gyr={LAMBDA_BOUNDARY_GYRO}",
         f"  bnd_window={BOUNDARY_WINDOW}s (start only)",
-        f"  max_iter={MAX_ITERATIONS}x{N_OUTER}outer  precond={USE_JACOBI_PRECOND}",
+        f"  max_iter={MAX_ITERATIONS}  precond={USE_JACOBI_PRECOND}",
     ]
     summary_text = "\n".join(summary_lines)
     ax.text(0.02, 0.98, summary_text, transform=ax.transAxes,
