@@ -1071,8 +1071,8 @@ def main():
     DT_ORI = 0.05   # Fixed knot spacing for orientation spline (seconds)
     
     # Regularization weights
-    LAMBDA_ACCEL = 0.01      # Accelerometer weight: gravity direction constrains orientation
-    LAMBDA_GYRO = 0.05       # Gyroscope weight: omega_nominal now included
+    LAMBDA_ACCEL = 0.1      # Accelerometer weight: gravity direction constrains orientation
+    LAMBDA_GYRO = 5.0       # Gyroscope weight: omega_nominal now included
     LAMBDA_SNAP_POS = 0.001  # Position smoothness
     LAMBDA_SNAP_ORI = 0.01   # Orientation smoothness
     LAMBDA_ORI_PRIOR = 10.0  # Orientation prior: penalizes delta from nominal
@@ -1080,7 +1080,7 @@ def main():
     HUBER_DELTA = 0.5  # meters/second (Huber threshold for radar)
     HUBER_DELTA_ACCEL = 2.0  # m/s² (Huber threshold for accelerometer — clips spikes linearly)
     MIN_RANGE = 0.2
-    MAX_ITERATIONS = 15  # Full run
+    MAX_ITERATIONS = 50  # Full run
     USE_PHASE2_INIT = True  # Initialize position from Phase 2 linear solver
     LOCK_BIASES = True  # Lock biases to zero — force solver to fix orientation instead
     USE_JACOBI_PRECOND = '--precond' in sys.argv  # Toggle Jacobi preconditioning
@@ -1632,23 +1632,33 @@ def main():
     ax.legend(fontsize=7, ncol=2)
     ax.grid(True, alpha=0.3)
     
-    # 9. Error summary
+    # 9. Error summary + hyperparameters (for reproducibility)
     accel_rmse = np.sqrt(np.mean(accel_errors**2))
     ax = axes[2, 2]
-    ax.text(0.1, 0.9, f"Position RMSE: {np.sqrt(np.mean(pos_errors**2)):.4f} m", 
-            transform=ax.transAxes, fontsize=12)
-    ax.text(0.1, 0.8, f"Velocity RMSE: {np.sqrt(np.mean(vel_errors**2)):.4f} m/s",
-            transform=ax.transAxes, fontsize=12)
-    ax.text(0.1, 0.7, f"Accel RMSE: {accel_rmse:.4f} m/s²",
-            transform=ax.transAxes, fontsize=12)
-    ax.text(0.1, 0.6, f"Orientation RMSE: {np.sqrt(np.mean(rot_errors**2)):.4f}°",
-            transform=ax.transAxes, fontsize=12)
-    ax.text(0.1, 0.4, f"Acc bias: [{optimized_state.acc_bias[0]:.3f}, {optimized_state.acc_bias[1]:.3f}, {optimized_state.acc_bias[2]:.3f}]",
-            transform=ax.transAxes, fontsize=10)
-    ax.text(0.1, 0.3, f"Gyr bias: [{optimized_state.gyr_bias[0]:.3f}, {optimized_state.gyr_bias[1]:.3f}, {optimized_state.gyr_bias[2]:.3f}]",
-            transform=ax.transAxes, fontsize=10)
+    summary_lines = [
+        f"RESULTS",
+        f"  Pos  RMSE: {np.sqrt(np.mean(pos_errors**2)):.4f} m",
+        f"  Vel  RMSE: {np.sqrt(np.mean(vel_errors**2)):.4f} m/s",
+        f"  Acc  RMSE: {accel_rmse:.4f} m/s²",
+        f"  Ori  RMSE: {np.sqrt(np.mean(rot_errors**2)):.4f}°",
+        f"",
+        f"HYPERPARAMETERS",
+        f"  bag={bag_key}  t={START_TIME_OFFSET:.0f}s+{DURATION:.0f}s",
+        f"  flip={FLIP_BODY_FRAME}  lock_bias={LOCK_BIASES}",
+        f"  dt_pos={DT_POS}  dt_ori={DT_ORI}  deg={BSPLINE_DEGREE}",
+        f"  λ_accel={LAMBDA_ACCEL}  λ_gyro={LAMBDA_GYRO}",
+        f"  λ_snap_pos={LAMBDA_SNAP_POS}  λ_snap_ori={LAMBDA_SNAP_ORI}",
+        f"  λ_ori_prior={LAMBDA_ORI_PRIOR}",
+        f"  huber_radar={HUBER_DELTA}  huber_accel={HUBER_DELTA_ACCEL}",
+        f"  λ_bnd_vel={LAMBDA_BOUNDARY_VEL}  λ_bnd_pos={LAMBDA_BOUNDARY_POS}",
+        f"  bnd_window={BOUNDARY_WINDOW}s",
+        f"  max_iter={MAX_ITERATIONS}  precond={USE_JACOBI_PRECOND}",
+    ]
+    summary_text = "\n".join(summary_lines)
+    ax.text(0.02, 0.98, summary_text, transform=ax.transAxes,
+            fontsize=8, fontfamily='monospace', verticalalignment='top')
     ax.axis('off')
-    ax.set_title('Summary')
+    ax.set_title('Summary & Config')
     
     plt.tight_layout()
     output_filename = f'nonlinear_solver_validation_{bag_key}_{timestamp_str}.png'
