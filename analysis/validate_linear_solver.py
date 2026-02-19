@@ -24,6 +24,7 @@ import matplotlib.pyplot as plt
 from scipy import sparse
 from scipy.sparse.linalg import spsolve
 from typing import Dict, Any, Tuple
+from scipy.interpolate import interp1d
 import time
 
 # Add parent directory to path
@@ -202,9 +203,11 @@ def build_radar_jacobian(
 
 def build_accelerometer_jacobian(
     bspline: UniformBSpline,
+    imu_data,
     agiros_states,
     t_ref: float,
-    g_world: np.ndarray = np.array([0, 0, -9.81])
+    g_world: np.ndarray = np.array([0, 0, -9.81]),
+    subsample: int = 10
 ) -> Tuple[sparse.csr_matrix, np.ndarray, int]:
     """
     Build sparse Jacobian matrix for accelerometer measurements.
@@ -216,15 +219,25 @@ def build_accelerometer_jacobian(
     dr/dc_i = -R_b<-w * da_w/dc_i
     where a_w(t) = sum(N''_i(t) * c_i)
     
+    Uses real IMU acceleration data and MoCap orientation.
+    
     Args:
         bspline: B-spline object
-        agiros_states: List of AgirosState objects (for orientation and accel measurements)
+        imu_data: List of IMUData objects (for real accelerometer measurements)
+        agiros_states: List of AgirosState objects (for orientation)
         t_ref: Reference time for conversion to relative time
         g_world: Gravity vector in world frame
+        subsample: Use every N-th IMU sample (IMU at ~1kHz is excessive)
         
     Returns:
         (J, residuals, n_measurements)
     """
+    # Build orientation interpolator from MoCap
+    agiros_times = np.array([s.timestamp - t_ref for s in agiros_states])
+    agiros_quats = np.array([s.orientation for s in agiros_states])
+    quat_interp = interp1d(agiros_times, agiros_quats, axis=0, kind='linear',
+                           bounds_error=False, fill_value='extrapolate')
+    
     rows = []
     cols = []
     vals = []
@@ -232,15 +245,20 @@ def build_accelerometer_jacobian(
     
     measurement_idx = 0
     
-    for state in agiros_states:
-        t = state.timestamp - t_ref  # Convert to relative time
-        
-        # Skip if outside spline range
-        if t < bspline.t_start or t > bspline.t_end:
+    for i, imu in enumerate(imu_data):
+        if i % subsample != 0:
             continue
         
-        # Get orientation
-        quat = state.orientation
+        t = imu.timestamp - t_ref  # Convert to relative time
+        
+        # Skip if outside spline range or MoCap range
+        if t < bspline.t_start or t > bspline.t_end:
+            continue
+        if t < agiros_times[0] or t > agiros_times[-1]:
+            continue
+        
+        # Get orientation from MoCap
+        quat = quat_interp(t)
         R_world_from_body = quat_to_rotation_matrix(quat)
         R_body_from_world = R_world_from_body.T
         
@@ -250,40 +268,32 @@ def build_accelerometer_jacobian(
         if len(acc_coeffs) == 0:
             continue
         
-        # The measurement model (assuming we know bias or ignore it for now):
-        # z_acc = R_b<-w * (a_w - g_w) + b_a
-        # Ignoring bias for linear solve: z_acc ~= R_b<-w * (a_w - g_w)
+        # Measurement model: z_acc = R_b<-w * (a_w - g_w) + b_a
+        # Ignoring bias: z_acc ~= R_b<-w * (a_w - g_w)
+        # Residual: r = z_acc - R_b<-w * (a_w - g_w)
+        # Jacobian: dr/dc_i = -R_b<-w * N''_i(t) * I_3x3
         
-        # Residual (3D vector):
-        # r = z_acc - R_b<-w * (a_w - g_w)
-        
-        # Jacobian:
-        # dr/dc_i = -R_b<-w * da_w/dc_i = -R_b<-w * N''_i(t) * I_3x3
-        
-        # For each dimension of the residual (x, y, z in body frame)
         for residual_dim in range(3):
             row_idx = measurement_idx * 3 + residual_dim
             
-            # For each control point affecting this time
             for coeff_idx, cp_idx in enumerate(acc_indices):
                 N_double_prime = acc_coeffs[coeff_idx]
                 
-                # For each dimension of the control point (x, y, z in world frame)
                 for cp_dim in range(3):
                     col_idx = cp_idx * 3 + cp_dim
-                    
-                    # Jacobian entry: -R_b<-w[residual_dim, cp_dim] * N''
                     jac_val = -R_body_from_world[residual_dim, cp_dim] * N_double_prime
                     
                     rows.append(row_idx)
                     cols.append(col_idx)
                     vals.append(jac_val)
         
-        # Compute residual (will be updated after solving)
-        # Use MoCap acceleration as initial guess
-        a_w_init = state.acceleration if state.acceleration is not None else np.zeros(3)
-        predicted_specific_force = R_body_from_world @ (a_w_init - g_world)
-        measured_specific_force = state.linear_acceleration if hasattr(state, 'linear_acceleration') else np.zeros(3)
+        # Real IMU accelerometer measurement (specific force in body frame)
+        measured_specific_force = imu.linear_acceleration
+        
+        # Predicted specific force from initial guess: R_b<-w * (a_w - g_w)
+        # For the initial residual, use zero accel as placeholder
+        # (will be corrected by the solver)
+        predicted_specific_force = R_body_from_world @ (np.zeros(3) - g_world)
         
         residual_vec = measured_specific_force - predicted_specific_force
         residuals.extend(residual_vec)
@@ -410,6 +420,20 @@ def solve_trajectory_linear(
     return x
 
 
+# Available bags
+BAGS = {
+    "original":     "rosbags/2025-12-17-16-02-22.bag",
+    "circle":       "rosbags/circle_2025-12-17-17-21-37.bag",
+    "circle_fast":  "rosbags/circle_fast_2025-12-17-17-25-34.bag",
+    "circle_fwd":   "rosbags/circle_forward_2025-12-17-17-37-38.bag",
+    "loopings":     "rosbags/circle_fast_forward_2025-12-17-17-39-49.bag",
+    "backflips":    "rosbags/backflips_2025-12-17-17-41-24.bag",
+}
+
+# Bags where the agiros body frame is rotated 180 deg in yaw
+FLIPPED_BAGS = {"circle_fwd", "backflips", "loopings"}
+
+
 def main():
     print("=" * 80)
     print("PHASE 2: LINEAR SOLVER VALIDATION")
@@ -417,23 +441,48 @@ def main():
     print("=" * 80)
     
     # ==================== Configuration ====================
-    BAG_PATH = r"C:\Users\luchs\MyData\Education\Master_TUM\25WS\Guided Research\radar-iwr6843-driver\rosbags\2025-12-17-16-02-22.bag"
-    START_TIME_OFFSET = 31.5
-    DURATION = 15.0
+    bag_key = sys.argv[1] if len(sys.argv) > 1 else "original"
+    if bag_key in BAGS:
+        BAG_PATH = BAGS[bag_key]
+    else:
+        BAG_PATH = bag_key
     
-    # Extrinsics (validated in Phase 1)
-    TRANSLATION = np.array([0.07, 0.0, 0.0])
-    ROTATION_EULER = np.array([0.0, -30.0 * np.pi/180, 0.0])
-    TIME_OFFSET = -0.018879
+    START_TIME_OFFSET = 5.0   # Skip initial hover
+    DURATION = 120.0          # Full bag
+    
+    # Extrinsics (validated in physics checks)
+    ROTATION_EULER_DEG = np.array([0.0, 30.0, 0.0])  # roll, pitch, yaw in degrees
+    
+    # Body frame flip for certain trajectory profiles
+    FLIP_BODY_FRAME = bag_key in FLIPPED_BAGS
+    if "--flip" in sys.argv:
+        FLIP_BODY_FRAME = True
+    if "--no-flip" in sys.argv:
+        FLIP_BODY_FRAME = False
+    
+    if FLIP_BODY_FRAME:
+        TRANSLATION = np.array([-0.07, 0.0, 0.0])
+        R_yaw_flip = rotation_matrix_from_euler(0.0, 0.0, np.pi)
+        R_body_from_sensor = R_yaw_flip @ rotation_matrix_from_euler(
+            np.radians(ROTATION_EULER_DEG[0]),
+            np.radians(ROTATION_EULER_DEG[1]),
+            np.radians(ROTATION_EULER_DEG[2]),
+        )
+        print(f"  Body frame FLIPPED (R_z(180 deg) applied) for bag '{bag_key}'")
+    else:
+        TRANSLATION = np.array([0.07, 0.0, 0.0])
+        R_body_from_sensor = rotation_matrix_from_euler(
+            np.radians(ROTATION_EULER_DEG[0]),
+            np.radians(ROTATION_EULER_DEG[1]),
+            np.radians(ROTATION_EULER_DEG[2]),
+        )
+    
+    TIME_OFFSET = -0.020  # IMU-MoCap offset: -20ms
     
     # B-spline parameters
     BSPLINE_DEGREE = 5  # Quintic for continuous snap
     
-    # Regularization weights - Phase 2 best configuration
-    # Note: Velocity amplitude is ~60-70% of MoCap due to accelerometer damping
-    # and radar only constraining radial velocity. Position has ~2m offset
-    # because neither radar nor accel constrain absolute position.
-    # These will be addressed in Phase 3 with full orientation estimation.
+    # Regularization weights
     LAMBDA_ACCEL = 0.01     # Balance between noise and damping
     LAMBDA_SNAP = 0.0       # Disable snap regularization  
     LAMBDA_POSITION = 0.05  # Position anchor to limit drift
@@ -441,9 +490,10 @@ def main():
     MIN_RANGE = 0.2
     
     print(f"\n{'Configuration':-^80}")
-    print(f"Dataset: {Path(BAG_PATH).name}")
+    print(f"Bag: {bag_key} -> {BAG_PATH}")
     print(f"Time window: {START_TIME_OFFSET:.1f}s + {DURATION:.1f}s")
     print(f"B-spline degree: {BSPLINE_DEGREE}")
+    print(f"Flip body frame: {FLIP_BODY_FRAME}")
     print(f"Lambda accel: {LAMBDA_ACCEL}")
     print(f"Lambda snap: {LAMBDA_SNAP}")
     print(f"Lambda position: {LAMBDA_POSITION}")
@@ -458,10 +508,12 @@ def main():
     
     agiros_states = [s for s in bag_data.agiros_state if t_start <= s.timestamp <= t_end]
     radar_frames = [f for f in bag_data.radar_velocity if t_start <= f.timestamp <= t_end]
+    imu_data = [d for d in bag_data.imu_data if t_start <= d.timestamp <= t_end]
     
     print(f"\nFiltered data:")
     print(f"  MoCap states: {len(agiros_states)}")
     print(f"  Radar frames: {len(radar_frames)}")
+    print(f"  IMU samples:  {len(imu_data)}")
     
     if len(agiros_states) == 0 or len(radar_frames) == 0:
         print("ERROR: Insufficient data!")
@@ -507,8 +559,6 @@ def main():
     # ==================== Build Measurement Jacobians ====================
     print(f"\n{'Building Measurement Jacobians':-^80}")
     
-    R_body_from_sensor = rotation_matrix_from_euler(*ROTATION_EULER)
-    
     J_radar, r_radar, n_radar = build_radar_jacobian(
         bspline, radar_frames, agiros_states, t_ref,
         R_body_from_sensor, TRANSLATION, TIME_OFFSET, MIN_RANGE
@@ -518,7 +568,7 @@ def main():
     print(f"Radar measurements: {n_radar}")
     
     J_accel, r_accel, n_accel = build_accelerometer_jacobian(
-        bspline, agiros_states, t_ref
+        bspline, imu_data, agiros_states, t_ref, subsample=10
     )
     
     print(f"Accel Jacobian: {J_accel.shape}, nnz={J_accel.nnz}")
@@ -661,8 +711,9 @@ def main():
     ax.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig('linear_solver_validation.png', dpi=150, bbox_inches='tight')
-    print(f"Saved: linear_solver_validation.png")
+    out_name = f'linear_solver_{bag_key}.png'
+    plt.savefig(out_name, dpi=150, bbox_inches='tight')
+    print(f"Saved: {out_name}")
     
     # ==================== Summary ====================
     print(f"\n{'VALIDATION SUMMARY':#^80}")
