@@ -318,6 +318,8 @@ def solve_trajectory_linear(
     lambda_accel: float = 1.0,
     lambda_snap: float = 0.1,
     lambda_position: float = 0.0,
+    velocity_priors: list = None,
+    lambda_velocity: float = 0.0,
     verbose: bool = True
 ) -> np.ndarray:
     """
@@ -326,6 +328,7 @@ def solve_trajectory_linear(
     Minimizes:
     ||J_radar * x - r_radar||^2 + lambda_accel * ||J_accel * x - r_accel||^2 
     + lambda_snap * ||R_snap * x||^2 + lambda_position * ||x - x_init||^2
+    + lambda_velocity * ||J_vel * x - v_target||^2
     
     Using normal equations: H * x = b where H = J^T*J + regularization
     
@@ -338,6 +341,8 @@ def solve_trajectory_linear(
         lambda_accel: Weight for accelerometer term
         lambda_snap: Weight for minimum snap regularization
         lambda_position: Weight for position anchoring (keeps near initial guess)
+        velocity_priors: List of (t_rel, v_target) tuples for velocity constraints
+        lambda_velocity: Weight for velocity boundary priors
         verbose: Print solver info
         
     Returns:
@@ -349,6 +354,8 @@ def solve_trajectory_linear(
         print(f"Accel measurements: {J_accel.shape[0] // 3}")
         print(f"Control points: {bspline.n_points}")
         print(f"Variables: {bspline.n_points * 3}")
+        if velocity_priors:
+            print(f"Velocity priors: {len(velocity_priors)} points, lambda={lambda_velocity}")
     
     # Build minimum snap regularization
     if verbose:
@@ -384,12 +391,39 @@ def solve_trajectory_linear(
     
     H = H_radar + H_accel + H_snap + H_position + H_tikhonov
     
+    # Velocity boundary priors: ||J_vel * x - v_target||^2
+    H_vel = sparse.csr_matrix((n_vars, n_vars))
+    b_vel = np.zeros(n_vars)
+    if velocity_priors and lambda_velocity > 0:
+        vel_rows, vel_cols, vel_vals = [], [], []
+        vel_rhs = []
+        row_idx = 0
+        for t_rel, v_target in velocity_priors:
+            vel_coeffs, vel_indices = bspline.get_basis_coefficients(t_rel, derivative=1)
+            if len(vel_coeffs) == 0:
+                continue
+            for k in range(3):  # x, y, z components
+                for ci, cp_idx in enumerate(vel_indices):
+                    vel_rows.append(row_idx)
+                    vel_cols.append(cp_idx * 3 + k)
+                    vel_vals.append(vel_coeffs[ci])
+                vel_rhs.append(v_target[k])
+                row_idx += 1
+        if row_idx > 0:
+            J_vel = sparse.csr_matrix(
+                (vel_vals, (vel_rows, vel_cols)), shape=(row_idx, n_vars))
+            r_vel = np.array(vel_rhs)
+            H_vel = lambda_velocity * (J_vel.T @ J_vel)
+            b_vel = lambda_velocity * (J_vel.T @ r_vel)
+    
+    H = H + H_vel
+    
     # Compute J^T * r terms
     b_radar = J_radar.T @ residuals_radar
     b_accel = lambda_accel * (J_accel.T @ residuals_accel)
     b_position = lambda_position * x_init
     
-    b = b_radar + b_accel + b_position
+    b = b_radar + b_accel + b_position + b_vel
     
     t_assembly = time.time() - t_start
     
@@ -480,12 +514,12 @@ def main():
     TIME_OFFSET = -0.020  # IMU-MoCap offset: -20ms
     
     # B-spline parameters
-    BSPLINE_DEGREE = 5  # Quintic for continuous snap
+    BSPLINE_DEGREE = 7  # Quintic for continuous snap
     
     # Regularization weights
-    LAMBDA_ACCEL = 0.01     # Balance between noise and damping
+    LAMBDA_ACCEL = 0.001     # Balance between noise and damping
     LAMBDA_SNAP = 0.0       # Disable snap regularization  
-    LAMBDA_POSITION = 0.05  # Position anchor to limit drift
+    LAMBDA_POSITION = 0.0  # Position anchor to limit drift
     
     MIN_RANGE = 0.2
     

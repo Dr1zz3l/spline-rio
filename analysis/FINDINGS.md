@@ -204,10 +204,72 @@ For "Flipped" bags, apply one of:
 
 ---
 
+## 12. Nonlinear Solver — Preconditioning & Damping Experiments (2026-02-19)
+
+### Context
+Phase 3 nonlinear solver on **backflips** bag (30s offset, 5s window, DT_ORI=0.1s).
+Biases locked to zero. Orientation initialized from MoCap SLERP, position from Phase 2 linear solver.
+288 state variables: 117 position + 165 orientation + 6 biases (locked).
+
+### Experiment 1: Jacobi Preconditioning (conservative damping: ×0.5 / ×5.0)
+
+Colleague hypothesis: scale mismatch between position (meters) and orientation (radians) variables causes ill-conditioned Hessian, leading to zigzagging convergence.
+
+**Implementation:** `M = diag(1/√diag(H))`, solve `(M·H·M)·δx' = M·b`, unscale `δx = M·δx'`.
+
+| Metric | Without Precond | With Precond |
+|--------|----------------|--------------|
+| Pos RMSE | **5.6844 m** | **5.6844 m** |
+| Vel RMSE | **4.1408 m/s** | **4.1408 m/s** |
+| Ori RMSE | **34.7323°** | **34.7323°** |
+| Rejected iters | 9/20 | 9/20 |
+| Final cost | 44,639 | 44,639 |
+| Final LM λ | 0.0954 | 0.0954 |
+| Runtime | 2m 13s | 2m 16s |
+
+**Result:** Identical — every iteration, cost value, update norm, and damping value matches exactly. The preconditioning is a no-op for this problem size (288 variables). The Hessian diagonal values are already at similar scales, so Jacobi scaling doesn't change the search direction.
+
+### Experiment 2: Aggressive LM Damping (×0.1 / ×10.0)
+
+Colleague hypothesis: conservative damping (×0.5 decrease / ×5.0 increase) causes the solver to linger in gradient-descent mode. Aggressive strategy (×0.1 / ×10.0) should snap into Gauss-Newton mode faster.
+
+| Metric | Conservative (×0.5/×5) | Aggressive (×0.1/×10) | Aggressive + Precond |
+|--------|----------------------|----------------------|---------------------|
+| Pos RMSE | 5.6844 m | **5.5955 m** | **5.5955 m** |
+| Vel RMSE | 4.1408 m/s | **4.1054 m/s** | **4.1054 m/s** |
+| Ori RMSE | 34.7323° | **34.3186°** | **34.3186°** |
+| Rejected iters | 9/20 | 10/20 | 10/20 |
+| Final cost | 44,639 | **45,057** | **45,057** |
+| λ trajectory | 5e-4 → 0.095 | 1e-4 → 1e-15 → 1e-7 | same |
+| Runtime | 2m 13s | 2m 14s | 2m 12s |
+
+**Result:** Marginal improvement (<2%) in RMSE metrics. The aggressive strategy drops λ to 1e-15 by iteration 10 (pure Gauss-Newton), but then gets stuck — 10 consecutive rejected steps while λ crawls back up. The solver reaches approximately the same local minimum either way.
+
+### Root Cause Analysis
+
+The real issue is **not** numerical conditioning or damping strategy. The solver converges to a bad local minimum where:
+
+1. **Orientation drifts monotonically** from 0° → 34° over the first 11 iterations, then gets stuck
+2. **Accelerometer cost dominates** (43,000 of 45,000 total cost = 96%) — the IMU accel model is fighting the optimizer
+3. The accel residuals pull orientation away from the MoCap-initialized SLERP, but never find a better solution
+4. Radar cost (841) and gyro cost (789) are small and healthy
+
+The accelerometer forward model `z_pred = R_body_from_world @ (a_world - g)` relies on accurate coordinate acceleration from the position spline's second derivative. During backflips (angular rates ~10 rad/s, centripetal accelerations ~25 m/s²), the spline's acceleration estimate is poor, creating large residuals that dominate the cost and corrupt the orientation estimate.
+
+### Conclusion
+
+- **Jacobi preconditioning**: No effect (problem is not ill-conditioned at this scale)
+- **Aggressive LM damping**: Marginal improvement, same local minimum
+- **Bias locking**: Already implemented (LOCK_BIASES=True), prevents the bias-cheating issue colleague identified
+- **Bottleneck**: Accelerometer model accuracy during extreme dynamics, not solver numerics
+
+---
+
 ## Next Steps
 
 1. **Confirm with supervisor** which trajectory profiles have a rotated body frame
 2. **Implement per-bag body frame detection** (auto-detect from corr(v_body_x, mean_Doppler) sign, or from trajectory profile metadata)
 3. **Use all 6 bags** for solver development with correct per-bag extrinsics
 4. **Use pitch=+30°** (physically correct mounting, confirmed by user)
-5. **Resume Phase 3 nonlinear solver** with validated physics model
+5. **Investigate accelerometer model** — consider downweighting accel during high-dynamics phases, or using Huber loss on accel residuals
+6. **Test on gentler bags first** (original, circle) where the accel model is more accurate

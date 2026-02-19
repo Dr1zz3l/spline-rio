@@ -484,6 +484,11 @@ def compute_jacobian_analytical(
     lambda_gyro: float,
     huber_delta: float,
     min_range: float = 0.2,
+    boundary_vel_priors: list = None,
+    boundary_pos_priors: list = None,
+    lambda_boundary_vel: float = 0.0,
+    lambda_boundary_pos: float = 0.0,
+    huber_delta_accel: float = 0.0,
 ) -> Tuple[sparse.csr_matrix, np.ndarray]:
     """
     Compute Jacobian and residual vector analytically using SymForce-generated functions.
@@ -597,6 +602,7 @@ def compute_jacobian_analytical(
     
     # ==================== Accelerometer residuals ====================
     sqrt_lambda_accel = np.sqrt(lambda_accel)
+    use_huber_accel = huber_delta_accel > 0
     
     for imu_msg in imu_data:
         t = imu_msg.timestamp
@@ -625,16 +631,26 @@ def compute_jacobian_analytical(
             a_world, R_nom_quat, delta, g_world, z_acc, state.acc_bias, 1e-10
         )
         
+        # Huber weight based on norm of the 3D residual (before lambda scaling)
+        if use_huber_accel:
+            accel_res_norm = np.linalg.norm(res_3)
+            w_accel = huber_weight(accel_res_norm, delta=huber_delta_accel)
+            sqrt_w_accel = np.sqrt(w_accel)
+        else:
+            sqrt_w_accel = 1.0
+        
+        scale = sqrt_lambda_accel * sqrt_w_accel
+        
         # 3 rows for this measurement
         for k in range(3):
-            all_residuals.append(sqrt_lambda_accel * res_3[k])
+            all_residuals.append(scale * res_3[k])
             
             # ∂r_accel/∂pos_cp_i = J_a[k,:] * N_i''(t)
             for ci, cp_idx in enumerate(pos_acc_indices):
                 basis_val = pos_acc_coeffs[ci]
                 for dim in range(3):
                     col = cp_idx * 3 + dim
-                    val = sqrt_lambda_accel * J_a[k, dim] * basis_val
+                    val = scale * J_a[k, dim] * basis_val
                     if abs(val) > 1e-15:
                         rows.append(row_idx)
                         cols.append(col)
@@ -645,7 +661,7 @@ def compute_jacobian_analytical(
                 basis_val = ori_val_coeffs[ci]
                 for dim in range(3):
                     col = n_pos + cp_idx * 3 + dim
-                    val = sqrt_lambda_accel * J_delta_3x3[k, dim] * basis_val
+                    val = scale * J_delta_3x3[k, dim] * basis_val
                     if abs(val) > 1e-15:
                         rows.append(row_idx)
                         cols.append(col)
@@ -654,7 +670,7 @@ def compute_jacobian_analytical(
             # ∂r_accel/∂b_a = J_ba[k,:] = -I[k,:]
             for dim in range(3):
                 col = n_pos + n_ori + dim  # acc bias index
-                val = sqrt_lambda_accel * J_ba[k, dim]
+                val = scale * J_ba[k, dim]
                 if abs(val) > 1e-15:
                     rows.append(row_idx)
                     cols.append(col)
@@ -703,6 +719,60 @@ def compute_jacobian_analytical(
             
             row_idx += 1
     
+    # ==================== Boundary velocity priors ====================
+    n_boundary_vel_rows = 0
+    if boundary_vel_priors and lambda_boundary_vel > 0:
+        sqrt_lbv = np.sqrt(lambda_boundary_vel)
+        for t_abs, v_target in boundary_vel_priors:
+            t_rel_pos = t_abs - state.pos_bspline.t_ref
+            # Get basis functions for velocity (1st derivative)
+            pos_vel_coeffs, pos_vel_indices = state.pos_bspline.get_basis_coefficients(
+                t_rel_pos, derivative=1)
+            # Current velocity
+            v_est = state.get_position(t_abs, derivative=1)
+            r_bv = v_est - v_target
+            
+            for k in range(3):
+                all_residuals.append(sqrt_lbv * r_bv[k])
+                # Jacobian: ∂v_k/∂cp_i = N_i'(t) for dimension k
+                for ci, cp_idx in enumerate(pos_vel_indices):
+                    basis_val = pos_vel_coeffs[ci]
+                    col = cp_idx * 3 + k
+                    val = sqrt_lbv * basis_val
+                    if abs(val) > 1e-15:
+                        rows.append(row_idx)
+                        cols.append(col)
+                        vals.append(val)
+                row_idx += 1
+                n_boundary_vel_rows += 1
+    
+    # ==================== Boundary position priors ====================
+    n_boundary_pos_rows = 0
+    if boundary_pos_priors and lambda_boundary_pos > 0:
+        sqrt_lbp = np.sqrt(lambda_boundary_pos)
+        for t_abs, p_target in boundary_pos_priors:
+            t_rel_pos = t_abs - state.pos_bspline.t_ref
+            # Get basis functions for position (0th derivative)
+            pos_val_coeffs, pos_val_indices = state.pos_bspline.get_basis_coefficients(
+                t_rel_pos, derivative=0)
+            # Current position
+            p_est = state.get_position(t_abs, derivative=0)
+            r_bp = p_est - p_target
+            
+            for k in range(3):
+                all_residuals.append(sqrt_lbp * r_bp[k])
+                # Jacobian: ∂p_k/∂cp_i = N_i(t) for dimension k
+                for ci, cp_idx in enumerate(pos_val_indices):
+                    basis_val = pos_val_coeffs[ci]
+                    col = cp_idx * 3 + k
+                    val = sqrt_lbp * basis_val
+                    if abs(val) > 1e-15:
+                        rows.append(row_idx)
+                        cols.append(col)
+                        vals.append(val)
+                row_idx += 1
+                n_boundary_pos_rows += 1
+    
     # Build sparse Jacobian
     n_residuals = row_idx
     J = sparse.csr_matrix(
@@ -714,6 +784,8 @@ def compute_jacobian_analytical(
     # Cost decomposition: (n_radar, n_accel_rows) stored as attributes
     J.n_radar = n_radar
     J.n_accel = n_accel_rows
+    J.n_boundary_vel = n_boundary_vel_rows
+    J.n_boundary_pos = n_boundary_pos_rows
     
     return J, r
 
@@ -747,11 +819,17 @@ def solve_trajectory_nonlinear(
     lambda_snap_ori: float = 0.01,
     lambda_ori_prior: float = 0.0,
     huber_delta: float = 0.5,
+    huber_delta_accel: float = 0.0,
     max_iterations: int = 20,
     lock_biases: bool = False,
+    use_jacobi_precond: bool = False,
     verbose: bool = True,
     mocap_times_abs: np.ndarray = None,
     mocap_rotations: np.ndarray = None,
+    boundary_vel_priors: list = None,
+    boundary_pos_priors: list = None,
+    lambda_boundary_vel: float = 0.0,
+    lambda_boundary_pos: float = 0.0,
 ) -> TrajectoryState:
     """
     Solve for optimal trajectory using Levenberg-Marquardt.
@@ -759,14 +837,15 @@ def solve_trajectory_nonlinear(
     Uses analytical Jacobians derived by SymForce for ~50x speedup.
     
     Minimizes:
-    E = sum(huber(r_radar)) + lambda_accel * ||r_accel||^2
+    E = sum(huber(r_radar)) + lambda_accel * huber_accel(||r_accel||)
         + lambda_gyro * ||r_gyro||^2
         + lambda_snap_pos * ||snap_pos||^2 + lambda_snap_ori * ||snap_ori||^2
     """
     if verbose:
         print(f"\n{'Levenberg-Marquardt Optimization':#^80}")
         print(f"Max iterations: {max_iterations}")
-        print(f"Huber delta: {huber_delta}")
+        print(f"Huber delta (radar): {huber_delta}")
+        print(f"Huber delta (accel): {huber_delta_accel if huber_delta_accel > 0 else 'OFF (L2)'}")
         print(f"Lambda accel: {lambda_accel}")
         print(f"Lambda gyro: {lambda_gyro}")
         print(f"Lambda snap pos: {lambda_snap_pos}")
@@ -774,6 +853,12 @@ def solve_trajectory_nonlinear(
         print(f"Lambda ori prior: {lambda_ori_prior}")
         if lock_biases:
             print(f"*** BIASES LOCKED TO ZERO ***")
+        if use_jacobi_precond:
+            print(f"*** JACOBI PRECONDITIONING ENABLED ***")
+        if boundary_vel_priors:
+            print(f"Boundary velocity priors: {len(boundary_vel_priors)} points, lambda={lambda_boundary_vel}")
+        if boundary_pos_priors:
+            print(f"Boundary position priors: {len(boundary_pos_priors)} points, lambda={lambda_boundary_pos}")
     
     state = initial_state
     lambda_lm = 1e-3  # Initial LM damping
@@ -819,28 +904,49 @@ def solve_trajectory_nonlinear(
         J, r_total = compute_jacobian_analytical(
             state, radar_frames, imu_data,
             sensor_translation, sensor_rotation,
-            lambda_accel, lambda_gyro, huber_delta
+            lambda_accel, lambda_gyro, huber_delta,
+            boundary_vel_priors=boundary_vel_priors,
+            boundary_pos_priors=boundary_pos_priors,
+            lambda_boundary_vel=lambda_boundary_vel,
+            lambda_boundary_pos=lambda_boundary_pos,
+            huber_delta_accel=huber_delta_accel,
         )
         
         cost_total = np.sum(r_total**2)
         
         if verbose:
-            # Cost decomposition
+            # Cost decomposition: residuals ordered as radar|accel|gyro|bnd_vel|bnd_pos
             n_r = getattr(J, 'n_radar', 0)
             n_a = getattr(J, 'n_accel', 0)
-            cost_radar = np.sum(r_total[:n_r]**2) if n_r > 0 else 0
-            cost_accel = np.sum(r_total[n_r:n_r+n_a]**2) if n_a > 0 else 0
-            cost_gyro = np.sum(r_total[n_r+n_a:]**2) if (n_r+n_a) < len(r_total) else 0
-            print(f"Cost: total={cost_total:.2f} | radar={cost_radar:.2f} accel={cost_accel:.2f} gyro={cost_gyro:.2f}")
+            n_bv = getattr(J, 'n_boundary_vel', 0)
+            n_bp = getattr(J, 'n_boundary_pos', 0)
+            n_g = len(r_total) - n_r - n_a - n_bv - n_bp
+            cost_radar = np.sum(r_total[:n_r]**2)
+            cost_accel = np.sum(r_total[n_r:n_r+n_a]**2)
+            cost_gyro = np.sum(r_total[n_r+n_a:n_r+n_a+n_g]**2)
+            cost_bv = np.sum(r_total[n_r+n_a+n_g:n_r+n_a+n_g+n_bv]**2)
+            cost_bp = np.sum(r_total[n_r+n_a+n_g+n_bv:]**2)
+            bnd_str = f" bnd_vel={cost_bv:.2f} bnd_pos={cost_bp:.2f}" if (n_bv + n_bp) > 0 else ""
+            print(f"Cost: total={cost_total:.2f} | radar={cost_radar:.2f} accel={cost_accel:.2f} gyro={cost_gyro:.2f}{bnd_str}")
             print(f"Jacobian: {J.shape}, nnz={J.nnz}, sparsity={100*(1-J.nnz/(J.shape[0]*J.shape[1])):.2f}%")
         
         # Build normal equations with LM damping
         H = J.T @ J + lambda_lm * sparse.eye(n_total) + R_snap
         b = J.T @ r_total
         
-        # Solve
+        # Solve (optionally with Jacobi preconditioning)
         try:
-            delta_x = spsolve(H, -b)
+            if use_jacobi_precond:
+                # Jacobi preconditioning: normalize H to remove scale mismatch
+                diag_H = H.diagonal().copy()
+                diag_H[diag_H < 1e-10] = 1.0
+                M_inv_sqrt = sparse.diags(1.0 / np.sqrt(diag_H))
+                H_scaled = M_inv_sqrt @ H @ M_inv_sqrt
+                b_scaled = M_inv_sqrt @ b
+                delta_x_scaled = spsolve(H_scaled, -b_scaled)
+                delta_x = M_inv_sqrt @ delta_x_scaled  # Unscale
+            else:
+                delta_x = spsolve(H, -b)
         except Exception:
             if verbose:
                 print("[WARN] Solver failed, increasing damping...")
@@ -859,20 +965,25 @@ def solve_trajectory_nonlinear(
         _, r_new = compute_jacobian_analytical(
             state, radar_frames, imu_data,
             sensor_translation, sensor_rotation,
-            lambda_accel, lambda_gyro, huber_delta
+            lambda_accel, lambda_gyro, huber_delta,
+            boundary_vel_priors=boundary_vel_priors,
+            boundary_pos_priors=boundary_pos_priors,
+            lambda_boundary_vel=lambda_boundary_vel,
+            lambda_boundary_pos=lambda_boundary_pos,
+            huber_delta_accel=huber_delta_accel,
         )
         new_cost = np.sum(r_new**2)
         
         # LM acceptance: if cost decreased, accept and reduce damping
         if prev_cost is None or new_cost < cost_total:
-            lambda_lm *= 0.5
+            lambda_lm = max(1e-15, lambda_lm * 0.1)  # Aggressive: snap to Gauss-Newton mode
             prev_cost = new_cost
             # No re-linearization: orientation prior keeps delta bounded
             # Re-linearization introduces B-spline/SLERP interpolation mismatch
         else:
             # Reject and increase damping
             state.from_vector(x_current)
-            lambda_lm *= 5.0
+            lambda_lm *= 10.0  # Strong punishment for bad step
             if verbose:
                 print(f"  [WARN] Cost increased ({new_cost:.2f} > {cost_total:.2f}), rejecting step")
         
@@ -928,9 +1039,9 @@ def main():
     else:
         BAG_PATH = bag_key
 
-    START_TIME_OFFSET = 5.0   # Skip initial hover
-    DURATION = 120.0          # Full bag
-    
+    START_TIME_OFFSET = 30.0   # Skip initial hover
+    DURATION = 5.0          # only timeframe of the loopings
+        
     # Sensor extrinsics (from Phase 1 calibration)
     ROTATION_EULER_DEG = np.array([0.0, 30.0, 0.0])  # roll, pitch, yaw — +30° pitch = downlooking
 
@@ -956,21 +1067,28 @@ def main():
         SENSOR_ROTATION = R_base
     
     BSPLINE_DEGREE = 5  # Quintic for continuous snap
-    DT_POS = 0.15   # Fixed knot spacing for position spline (seconds)
-    DT_ORI = 0.1   # Fixed knot spacing for orientation spline (seconds)
+    DT_POS = 0.05   # Fixed knot spacing for position spline (seconds)
+    DT_ORI = 0.05   # Fixed knot spacing for orientation spline (seconds)
     
     # Regularization weights
-    LAMBDA_ACCEL = 0.1      # Accelerometer weight: gravity direction constrains orientation
-    LAMBDA_GYRO = 0.5       # Gyroscope weight: omega_nominal now included
+    LAMBDA_ACCEL = 0.01      # Accelerometer weight: gravity direction constrains orientation
+    LAMBDA_GYRO = 0.05       # Gyroscope weight: omega_nominal now included
     LAMBDA_SNAP_POS = 0.001  # Position smoothness
     LAMBDA_SNAP_ORI = 0.01   # Orientation smoothness
     LAMBDA_ORI_PRIOR = 10.0  # Orientation prior: penalizes delta from nominal
     
-    HUBER_DELTA = 0.5  # meters/second (Huber threshold)
+    HUBER_DELTA = 0.5  # meters/second (Huber threshold for radar)
+    HUBER_DELTA_ACCEL = 2.0  # m/s² (Huber threshold for accelerometer — clips spikes linearly)
     MIN_RANGE = 0.2
-    MAX_ITERATIONS = 20  # Full run
+    MAX_ITERATIONS = 15  # Full run
     USE_PHASE2_INIT = True  # Initialize position from Phase 2 linear solver
     LOCK_BIASES = True  # Lock biases to zero — force solver to fix orientation instead
+    USE_JACOBI_PRECOND = '--precond' in sys.argv  # Toggle Jacobi preconditioning
+    
+    # Boundary priors: pin spline velocity/position at window edges to MoCap ground truth
+    LAMBDA_BOUNDARY_VEL = 100.0   # Weight for boundary velocity priors
+    LAMBDA_BOUNDARY_POS = 100.0   # Weight for boundary position priors
+    BOUNDARY_WINDOW = 0.3         # Seconds near each boundary to apply priors
     
     print(f"\n{'Configuration':-^80}")
     print(f"Bag: {bag_key} -> {BAG_PATH}")
@@ -981,10 +1099,14 @@ def main():
     print(f"Lambda gyro: {LAMBDA_GYRO}")
     print(f"Lambda snap (pos/ori): {LAMBDA_SNAP_POS}/{LAMBDA_SNAP_ORI}")
     print(f"Lambda ori prior: {LAMBDA_ORI_PRIOR}")
-    print(f"Huber delta: {HUBER_DELTA} m/s")
+    print(f"Huber delta (radar): {HUBER_DELTA} m/s")
+    print(f"Huber delta (accel): {HUBER_DELTA_ACCEL} m/s²")
     print(f"Max iterations: {MAX_ITERATIONS}")
     print(f"Use Phase 2 init: {USE_PHASE2_INIT}")
     print(f"Lock biases: {LOCK_BIASES}")
+    print(f"Jacobi preconditioning: {USE_JACOBI_PRECOND}")
+    print(f"Boundary vel prior: lambda={LAMBDA_BOUNDARY_VEL}, window={BOUNDARY_WINDOW}s")
+    print(f"Boundary pos prior: lambda={LAMBDA_BOUNDARY_POS}, window={BOUNDARY_WINDOW}s")
     
     # ==================== Load Data ====================
     print(f"\n{'Loading Data':-^80}")
@@ -1108,16 +1230,42 @@ def main():
             pos_bspline, imu_data, agiros_states, t_ref, g_world=np.array([0, 0, -9.81])
         )
         
+        # Build velocity boundary priors for Phase 2 (use B-spline domain, not MoCap)
+        mocap_vel_interp_p2 = interp1d(mocap_times_rel,
+                                        np.array([s.velocity for s in agiros_states]),
+                                        axis=0, kind='linear', fill_value='extrapolate')
+        phase2_vel_priors = []
+        t_ws = max(pos_bspline.t_start, mocap_times_rel[0])   # Clip to data range
+        t_we = min(pos_bspline.t_end, mocap_times_rel[-1])
+        n_bnd = max(1, int(BOUNDARY_WINDOW * 50))
+        for edge_s, edge_e in [(t_ws, t_ws + BOUNDARY_WINDOW),
+                                (t_we - BOUNDARY_WINDOW, t_we)]:
+            for t_r in np.linspace(edge_s, edge_e, n_bnd):
+                phase2_vel_priors.append((t_r, mocap_vel_interp_p2(t_r)))
+        
         # Solve Phase 2
         print("\nSolving Phase 2 (linear)...")
         x_opt = solve_trajectory_linear(
             pos_bspline, J_radar, r_radar, J_accel, r_accel,
             lambda_accel=0.01, lambda_snap=0.1, lambda_position=0.05,
+            velocity_priors=phase2_vel_priors,
+            lambda_velocity=LAMBDA_BOUNDARY_VEL,
             verbose=True
         )
         
         # Update control points with Phase 2 result
         pos_bspline.control_points = x_opt.reshape(-1, 3)
+        
+        # Diagnostic: check velocity at boundaries after Phase 2
+        v_start = pos_bspline(pos_bspline.t_start, derivative=1)
+        v_end = pos_bspline(pos_bspline.t_end, derivative=1)
+        v_gt_start = mocap_vel_interp_p2(mocap_times_rel[0])
+        v_gt_end = mocap_vel_interp_p2(mocap_times_rel[-1])
+        print(f"\n  Phase 2 velocity at t_start: [{v_start[0]:.2f}, {v_start[1]:.2f}, {v_start[2]:.2f}] (|v|={np.linalg.norm(v_start):.2f})")
+        print(f"  MoCap velocity at t_start:   [{v_gt_start[0]:.2f}, {v_gt_start[1]:.2f}, {v_gt_start[2]:.2f}] (|v|={np.linalg.norm(v_gt_start):.2f})")
+        print(f"  Phase 2 velocity at t_end:   [{v_end[0]:.2f}, {v_end[1]:.2f}, {v_end[2]:.2f}] (|v|={np.linalg.norm(v_end):.2f})")
+        print(f"  MoCap velocity at t_end:     [{v_gt_end[0]:.2f}, {v_gt_end[1]:.2f}, {v_gt_end[2]:.2f}] (|v|={np.linalg.norm(v_gt_end):.2f})")
+        
         print("\n[OK] Phase 2 initialization complete!")
         print("="*80 + "\n")
     else:
@@ -1219,6 +1367,43 @@ def main():
     # ==================== Optimize ====================
     # sensor_rotation was already correctly computed above with np.radians()
     
+    # Build boundary priors from MoCap ground truth
+    # IMPORTANT: Use B-spline domain boundaries, NOT MoCap time boundaries.
+    # The B-spline valid domain is [t_start, t_end] which is a subset of the
+    # MoCap time range due to boundary padding for degree-5 B-splines.
+    mocap_vel_interp = interp1d(mocap_times_rel,
+                                 np.array([s.velocity for s in agiros_states]),
+                                 axis=0, kind='linear', fill_value='extrapolate')
+    
+    boundary_vel_priors = []
+    boundary_pos_priors = []
+    # Clip to intersection of B-spline domain and MoCap data range
+    t_spline_start = max(pos_bspline.t_start, mocap_times_rel[0])
+    t_spline_end = min(pos_bspline.t_end, mocap_times_rel[-1])
+    
+    print(f"\n  B-spline valid domain: [{t_spline_start:.4f}, {t_spline_end:.4f}]")
+    print(f"  MoCap time range:     [{mocap_times_rel[0]:.4f}, {mocap_times_rel[-1]:.4f}]")
+    
+    # Sample boundary points at ~50 Hz within BOUNDARY_WINDOW of each spline edge
+    n_boundary_samples = max(1, int(BOUNDARY_WINDOW * 50))
+    for edge_start, edge_end in [(t_spline_start, t_spline_start + BOUNDARY_WINDOW),
+                                  (t_spline_end - BOUNDARY_WINDOW, t_spline_end)]:
+        for t_rel in np.linspace(edge_start, edge_end, n_boundary_samples):
+            t_abs = t_rel + t_ref
+            # Velocity prior (from MoCap interpolation)
+            v_gt = mocap_vel_interp(t_rel)
+            boundary_vel_priors.append((t_abs, v_gt))
+            # Position prior (from MoCap interpolation)
+            p_gt = pos_interp(t_rel)
+            boundary_pos_priors.append((t_abs, p_gt))
+    
+    print(f"\n  Boundary priors: {len(boundary_vel_priors)} vel + {len(boundary_pos_priors)} pos points")
+    if len(boundary_vel_priors) > 0:
+        v0 = boundary_vel_priors[0][1]
+        v1 = boundary_vel_priors[-1][1]
+        print(f"    Start vel GT: [{v0[0]:.2f}, {v0[1]:.2f}, {v0[2]:.2f}] m/s (|v|={np.linalg.norm(v0):.2f})")
+        print(f"    End vel GT:   [{v1[0]:.2f}, {v1[1]:.2f}, {v1[2]:.2f}] m/s (|v|={np.linalg.norm(v1):.2f})")
+    
     optimized_state = solve_trajectory_nonlinear(
         initial_state=initial_state,
         radar_frames=radar_frames,
@@ -1231,39 +1416,93 @@ def main():
         lambda_snap_ori=LAMBDA_SNAP_ORI,
         lambda_ori_prior=LAMBDA_ORI_PRIOR,
         huber_delta=HUBER_DELTA,
+        huber_delta_accel=HUBER_DELTA_ACCEL,
         max_iterations=MAX_ITERATIONS,
         lock_biases=LOCK_BIASES,
+        use_jacobi_precond=USE_JACOBI_PRECOND,
         verbose=True,
         mocap_times_abs=mocap_times_abs,
         mocap_rotations=mocap_rotations,
+        boundary_vel_priors=boundary_vel_priors,
+        boundary_pos_priors=boundary_pos_priors,
+        lambda_boundary_vel=LAMBDA_BOUNDARY_VEL,
+        lambda_boundary_pos=LAMBDA_BOUNDARY_POS,
     )
     
     # ==================== Evaluate Results ====================
     print(f"\n{'Evaluating Results':-^80}")
     
-    # Sample trajectory at MoCap times (use absolute times since get_position converts internally)
-    eval_times = mocap_times_abs
+    # Check boundary velocities after optimization
+    t_eval_start_abs = max(pos_bspline.t_start + t_ref, mocap_times_abs[0])
+    t_eval_end_abs = min(pos_bspline.t_end + t_ref, mocap_times_abs[-1])
+    v_opt_start = optimized_state.get_position(t_eval_start_abs, derivative=1)
+    v_opt_end = optimized_state.get_position(t_eval_end_abs, derivative=1)
+    # Find closest MoCap states to eval boundaries
+    i_start = np.argmin(np.abs(mocap_times_abs - t_eval_start_abs))
+    i_end = np.argmin(np.abs(mocap_times_abs - t_eval_end_abs))
+    v_gt_s = agiros_states[i_start].velocity
+    v_gt_e = agiros_states[i_end].velocity
+    print(f"  Optimized vel at spline_start: [{v_opt_start[0]:.2f}, {v_opt_start[1]:.2f}, {v_opt_start[2]:.2f}] (|v|={np.linalg.norm(v_opt_start):.2f})")
+    print(f"  MoCap vel at spline_start:     [{v_gt_s[0]:.2f}, {v_gt_s[1]:.2f}, {v_gt_s[2]:.2f}] (|v|={np.linalg.norm(v_gt_s):.2f})")
+    print(f"  Optimized vel at spline_end:   [{v_opt_end[0]:.2f}, {v_opt_end[1]:.2f}, {v_opt_end[2]:.2f}] (|v|={np.linalg.norm(v_opt_end):.2f})")
+    print(f"  MoCap vel at spline_end:       [{v_gt_e[0]:.2f}, {v_gt_e[1]:.2f}, {v_gt_e[2]:.2f}] (|v|={np.linalg.norm(v_gt_e):.2f})")
+    
+    # Sample trajectory at MoCap times WITHIN the valid B-spline domain
+    # (outside the domain, spline returns zeros which distorts RMSE and plots)
+    t_eval_start = max(pos_bspline.t_start + t_ref, mocap_times_abs[0])
+    t_eval_end = min(pos_bspline.t_end + t_ref, mocap_times_abs[-1])
+    spline_valid_mask = (mocap_times_abs >= t_eval_start) & (mocap_times_abs <= t_eval_end)
+    eval_times = mocap_times_abs[spline_valid_mask]
+    agiros_eval = [agiros_states[i] for i in range(len(agiros_states)) if spline_valid_mask[i]]
+    mocap_positions_eval = mocap_positions[spline_valid_mask]
+    mocap_rotations_eval = mocap_rotations[spline_valid_mask]
+    
+    print(f"  Evaluation range: [{eval_times[0]-t_ref:.3f}, {eval_times[-1]-t_ref:.3f}] s ({len(eval_times)}/{len(mocap_times_abs)} MoCap points)")
+    
     estimated_positions = np.array([optimized_state.get_position(t, 0) for t in eval_times])
     estimated_velocities = np.array([optimized_state.get_position(t, 1) for t in eval_times])
     estimated_accelerations = np.array([optimized_state.get_position(t, 2) for t in eval_times])
     estimated_rotations = np.array([optimized_state.get_rotation(t) for t in eval_times])
     
-    mocap_velocities = np.array([s.velocity for s in agiros_states])
+    mocap_velocities = np.array([s.velocity for s in agiros_eval])
     
     # Compute MoCap acceleration via numerical differentiation of velocity
+    # Use FULL MoCap data for differentiation, then interpolate to eval times
+    all_mocap_velocities = np.array([s.velocity for s in agiros_states])
     dt_mocap = np.diff(mocap_times_abs)
+    valid_mask = np.ones(len(mocap_times_abs), dtype=bool)
+    for i in range(1, len(dt_mocap)):
+        if dt_mocap[i-1] < 1e-3:  # dt < 1ms = near-duplicate
+            valid_mask[i] = False
+    
+    # Differentiate on clean samples, then interpolate back to eval times
+    clean_times = mocap_times_abs[valid_mask]
+    clean_vel = all_mocap_velocities[valid_mask]
+    dt_clean = np.diff(clean_times)
+    clean_accel = np.zeros_like(clean_vel)
+    clean_accel[1:-1] = (clean_vel[2:] - clean_vel[:-2]) / (dt_clean[1:] + dt_clean[:-1])[:, None]
+    clean_accel[0] = (clean_vel[1] - clean_vel[0]) / dt_clean[0]
+    clean_accel[-1] = (clean_vel[-1] - clean_vel[-2]) / dt_clean[-1]
+    
+    # Apply SavGol smoothing (window=15, order=3) to suppress differentiation noise
+    from scipy.signal import savgol_filter
+    win = min(15, len(clean_accel) - (1 if len(clean_accel) % 2 == 0 else 0))
+    if win >= 5:
+        for dim in range(3):
+            clean_accel[:, dim] = savgol_filter(clean_accel[:, dim], win, 3)
+    
+    # Interpolate back to evaluation timestamps
     mocap_accelerations = np.zeros_like(mocap_velocities)
-    mocap_accelerations[1:-1] = (mocap_velocities[2:] - mocap_velocities[:-2]) / (dt_mocap[1:] + dt_mocap[:-1])[:, None]
-    mocap_accelerations[0] = (mocap_velocities[1] - mocap_velocities[0]) / dt_mocap[0]
-    mocap_accelerations[-1] = (mocap_velocities[-1] - mocap_velocities[-2]) / dt_mocap[-1]
+    for dim in range(3):
+        mocap_accelerations[:, dim] = np.interp(eval_times, clean_times, clean_accel[:, dim])
     
     # Compute errors
-    pos_errors = np.linalg.norm(estimated_positions - mocap_positions, axis=1)
+    pos_errors = np.linalg.norm(estimated_positions - mocap_positions_eval, axis=1)
     vel_errors = np.linalg.norm(estimated_velocities - mocap_velocities, axis=1)
     
     # Rotation errors (angle between matrices)
     rot_errors = []
-    for i, mocap_rot in enumerate(mocap_rotations):
+    for i, mocap_rot in enumerate(mocap_rotations_eval):
         est_rot = estimated_rotations[i]
         R_error = mocap_rot.T @ est_rot
         angle_error = np.arccos(np.clip((np.trace(R_error) - 1) / 2, -1, 1))
@@ -1304,7 +1543,7 @@ def main():
     
     # 1. Trajectory (X-Y)
     ax = axes[0, 0]
-    ax.plot(mocap_positions[:, 0], mocap_positions[:, 1], 'b-', label='MoCap', linewidth=2)
+    ax.plot(mocap_positions_eval[:, 0], mocap_positions_eval[:, 1], 'b-', label='MoCap', linewidth=2)
     ax.plot(estimated_positions[:, 0], estimated_positions[:, 1], 'r--', label='Estimated', linewidth=2)
     ax.scatter(optimized_state.pos_bspline.control_points[:, 0],
                optimized_state.pos_bspline.control_points[:, 1],
@@ -1418,13 +1657,13 @@ def main():
 
     # ==================== Zoomed X-Y Trajectory Plot ====================
     fig2, ax2 = plt.subplots(1, 1, figsize=(10, 10))
-    ax2.plot(mocap_positions[:, 0], mocap_positions[:, 1], 'b-', label='MoCap', linewidth=2)
+    ax2.plot(mocap_positions_eval[:, 0], mocap_positions_eval[:, 1], 'b-', label='MoCap', linewidth=2)
     ax2.plot(estimated_positions[:, 0], estimated_positions[:, 1], 'r--', label='Estimated', linewidth=2)
     ax2.scatter(optimized_state.pos_bspline.control_points[:, 0],
                 optimized_state.pos_bspline.control_points[:, 1],
                 c='orange', marker='x', s=30, alpha=0.5, label='Control Points')
     # Start markers
-    ax2.plot(mocap_positions[0, 0], mocap_positions[0, 1], 'bs', markersize=10, label='Start (MoCap)')
+    ax2.plot(mocap_positions_eval[0, 0], mocap_positions_eval[0, 1], 'bs', markersize=10, label='Start (MoCap)')
     ax2.plot(estimated_positions[0, 0], estimated_positions[0, 1], 'rs', markersize=10, label='Start (Est.)')
     ax2.set_xlabel('X (m)', fontsize=12)
     ax2.set_ylabel('Y (m)', fontsize=12)
@@ -1433,7 +1672,7 @@ def main():
     ax2.grid(True, alpha=0.3)
     ax2.axis('equal')
     # Compute axis limits from the larger of ground truth / estimated trajectory
-    all_traj = np.vstack([mocap_positions[:, :2], estimated_positions[:, :2]])
+    all_traj = np.vstack([mocap_positions_eval[:, :2], estimated_positions[:, :2]])
     x_min, x_max = all_traj[:, 0].min(), all_traj[:, 0].max()
     y_min, y_max = all_traj[:, 1].min(), all_traj[:, 1].max()
     x_pad = max(0.1, (x_max - x_min) * 0.08)
