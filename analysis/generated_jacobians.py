@@ -7,10 +7,16 @@ This file has NO dependency on SymForce — it uses only numpy and math.
 Contains:
 - radar_residual_with_jacobians(): Doppler residual + Jacobians w.r.t. v_world, delta, omega
 - accel_residual_with_jacobians(): Accel residual + Jacobians w.r.t. a_world, delta, b_a
+- gyro_residual_with_jacobians():  Gyro residual  + Jacobians w.r.t. delta, delta_dot, b_g
 - Rot3: Lightweight quaternion wrapper matching SymForce convention [x, y, z, w]
 
 Usage:
-    from generated_jacobians import radar_residual_with_jacobians, accel_residual_with_jacobians, Rot3
+    from generated_jacobians import (
+        radar_residual_with_jacobians,
+        accel_residual_with_jacobians,
+        gyro_residual_with_jacobians,
+        Rot3,
+    )
 
     R_nom = Rot3(quat_xyzw)
     R_bs = Rot3(quat_xyzw)
@@ -849,3 +855,398 @@ def accel_residual_with_jacobians(a_world, R_nominal, delta, g_world, z_acc, b_a
     _res_D_b_a[1, 2] = 0
     _res_D_b_a[2, 2] = -1
     return _res, _res_D_a_world, _res_D_delta, _res_D_b_a
+
+
+# ======================================================================
+# GYROSCOPE RESIDUAL + JACOBIANS
+# ======================================================================
+
+
+# --- From: gyro_residual_with_jacobians124.py ---
+
+def gyro_residual_with_jacobians(omega_nominal, delta, delta_dot, z_gyro, b_g, epsilon):
+    # type: (numpy.ndarray, numpy.ndarray, numpy.ndarray, numpy.ndarray, numpy.ndarray, float) -> T.Tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray, numpy.ndarray]
+    """
+    Gyroscope residual with proper SO(3) right Jacobian.
+
+    Full angular velocity model:
+        R(t) = R_nominal * exp(delta)
+        omega_body = exp(-[delta]_x) * omega_nominal + J_r(delta) * delta_dot
+
+    where J_r(delta) is the right Jacobian of SO(3):
+        J_r(phi) = I - (1-cos||phi||)/||phi||^2 [phi]_x
+                     + (||phi||-sin||phi||)/||phi||^3 [phi]_x^2
+
+    For small delta: omega ≈ omega_nominal + delta_dot (recovers linear model).
+
+    Residual: r = z_gyro - omega_body - b_g
+        res_D_delta: (3x3) jacobian of res (3) wrt arg delta (3)
+        res_D_delta_dot: (3x3) jacobian of res (3) wrt arg delta_dot (3)
+        res_D_b_g: (3x3) jacobian of res (3) wrt arg b_g (3)
+    """
+
+    # Total ops: 517
+
+    # Input arrays
+    if omega_nominal.shape == (3,):
+        omega_nominal = omega_nominal.reshape((3, 1))
+    elif omega_nominal.shape != (3, 1):
+        raise IndexError(
+            "omega_nominal is expected to have shape (3, 1) or (3,); instead had shape {}".format(
+                omega_nominal.shape
+            )
+        )
+
+    if delta.shape == (3,):
+        delta = delta.reshape((3, 1))
+    elif delta.shape != (3, 1):
+        raise IndexError(
+            "delta is expected to have shape (3, 1) or (3,); instead had shape {}".format(
+                delta.shape
+            )
+        )
+
+    if delta_dot.shape == (3,):
+        delta_dot = delta_dot.reshape((3, 1))
+    elif delta_dot.shape != (3, 1):
+        raise IndexError(
+            "delta_dot is expected to have shape (3, 1) or (3,); instead had shape {}".format(
+                delta_dot.shape
+            )
+        )
+
+    if z_gyro.shape == (3,):
+        z_gyro = z_gyro.reshape((3, 1))
+    elif z_gyro.shape != (3, 1):
+        raise IndexError(
+            "z_gyro is expected to have shape (3, 1) or (3,); instead had shape {}".format(
+                z_gyro.shape
+            )
+        )
+
+    if b_g.shape == (3,):
+        b_g = b_g.reshape((3, 1))
+    elif b_g.shape != (3, 1):
+        raise IndexError(
+            "b_g is expected to have shape (3, 1) or (3,); instead had shape {}".format(b_g.shape)
+        )
+
+    # Intermediate terms (191)
+    _tmp0 = delta[2, 0] ** 2
+    _tmp1 = delta[1, 0] ** 2
+    _tmp2 = delta[0, 0] ** 2
+    _tmp3 = _tmp0 + _tmp1 + _tmp2 + epsilon**2
+    _tmp4 = math.sqrt(_tmp3)
+    _tmp5 = math.sin(_tmp4)
+    _tmp6 = _tmp4 - _tmp5
+    _tmp7 = _tmp3 ** (-3.0 / 2.0)
+    _tmp8 = _tmp6 * _tmp7
+    _tmp9 = _tmp8 * delta[0, 0]
+    _tmp10 = _tmp9 * delta[1, 0]
+    _tmp11 = 1 / _tmp3
+    _tmp12 = math.cos(_tmp4)
+    _tmp13 = 1 - _tmp12
+    _tmp14 = _tmp11 * _tmp13
+    _tmp15 = _tmp14 * delta[2, 0]
+    _tmp16 = _tmp9 * delta[2, 0]
+    _tmp17 = _tmp14 * delta[1, 0]
+    _tmp18 = -_tmp17
+    _tmp19 = (1.0 / 2.0) * _tmp4
+    _tmp20 = math.sin(_tmp19)
+    _tmp21 = _tmp20**2
+    _tmp22 = _tmp1 * _tmp11
+    _tmp23 = _tmp21 * _tmp22
+    _tmp24 = -2 * _tmp23
+    _tmp25 = _tmp11 * _tmp21
+    _tmp26 = _tmp0 * _tmp25
+    _tmp27 = -2 * _tmp26
+    _tmp28 = _tmp1 * _tmp8
+    _tmp29 = -_tmp28
+    _tmp30 = _tmp0 * _tmp8
+    _tmp31 = 1 - _tmp30
+    _tmp32 = delta[0, 0] * delta[2, 0]
+    _tmp33 = _tmp25 * _tmp32
+    _tmp34 = 2 * _tmp33
+    _tmp35 = 1 / _tmp4
+    _tmp36 = _tmp35 * delta[1, 0]
+    _tmp37 = math.cos(_tmp19)
+    _tmp38 = 2 * _tmp20 * _tmp37
+    _tmp39 = _tmp36 * _tmp38
+    _tmp40 = delta[0, 0] * delta[1, 0]
+    _tmp41 = _tmp25 * _tmp40
+    _tmp42 = 2 * _tmp41
+    _tmp43 = _tmp35 * delta[2, 0]
+    _tmp44 = _tmp38 * _tmp43
+    _tmp45 = -_tmp15
+    _tmp46 = _tmp8 * delta[1, 0]
+    _tmp47 = _tmp46 * delta[2, 0]
+    _tmp48 = _tmp14 * delta[0, 0]
+    _tmp49 = _tmp2 * _tmp25
+    _tmp50 = 1 - 2 * _tmp49
+    _tmp51 = _tmp2 * _tmp8
+    _tmp52 = -_tmp51
+    _tmp53 = delta[1, 0] * delta[2, 0]
+    _tmp54 = _tmp25 * _tmp53
+    _tmp55 = 2 * _tmp54
+    _tmp56 = _tmp35 * delta[0, 0]
+    _tmp57 = _tmp38 * _tmp56
+    _tmp58 = -_tmp48
+    _tmp59 = _tmp25 * delta[2, 0]
+    _tmp60 = 2 * _tmp59
+    _tmp61 = _tmp3 ** (-2)
+    _tmp62 = _tmp2 * _tmp61
+    _tmp63 = 4 * _tmp21
+    _tmp64 = _tmp62 * _tmp63
+    _tmp65 = _tmp64 * delta[2, 0]
+    _tmp66 = _tmp2 * _tmp7
+    _tmp67 = _tmp38 * _tmp66
+    _tmp68 = _tmp67 * delta[2, 0]
+    _tmp69 = _tmp60 - _tmp65 + _tmp68
+    _tmp70 = _tmp37**2
+    _tmp71 = _tmp11 * _tmp70
+    _tmp72 = _tmp40 * _tmp71
+    _tmp73 = _tmp38 * _tmp7
+    _tmp74 = _tmp40 * _tmp73
+    _tmp75 = _tmp41 - _tmp72 + _tmp74
+    _tmp76 = _tmp25 * delta[1, 0]
+    _tmp77 = 2 * _tmp76
+    _tmp78 = _tmp64 * delta[1, 0]
+    _tmp79 = _tmp67 * delta[1, 0]
+    _tmp80 = _tmp77 - _tmp78 + _tmp79
+    _tmp81 = _tmp32 * _tmp71
+    _tmp82 = _tmp32 * _tmp73
+    _tmp83 = -_tmp33 + _tmp81 - _tmp82
+    _tmp84 = 3 * _tmp6 / _tmp3 ** (5.0 / 2.0)
+    _tmp85 = _tmp84 * delta[1, 0]
+    _tmp86 = _tmp2 * _tmp85
+    _tmp87 = -_tmp12 * _tmp56 + _tmp56
+    _tmp88 = _tmp7 * _tmp87
+    _tmp89 = _tmp40 * _tmp88 + _tmp46 - _tmp86
+    _tmp90 = 2 * _tmp13
+    _tmp91 = _tmp61 * _tmp90
+    _tmp92 = _tmp32 * _tmp91
+    _tmp93 = _tmp5 * _tmp7
+    _tmp94 = _tmp32 * _tmp93
+    _tmp95 = -_tmp92 + _tmp94
+    _tmp96 = _tmp84 * delta[2, 0]
+    _tmp97 = _tmp2 * _tmp96
+    _tmp98 = _tmp8 * delta[2, 0]
+    _tmp99 = _tmp32 * _tmp88 - _tmp97 + _tmp98
+    _tmp100 = _tmp40 * _tmp91
+    _tmp101 = _tmp40 * _tmp93
+    _tmp102 = _tmp100 - _tmp101
+    _tmp103 = _tmp0 * _tmp84
+    _tmp104 = _tmp103 * delta[0, 0]
+    _tmp105 = -_tmp0 * _tmp88 + _tmp104
+    _tmp106 = _tmp1 * _tmp84 * delta[0, 0]
+    _tmp107 = -_tmp1 * _tmp88 + _tmp106
+    _tmp108 = _tmp61 * _tmp63
+    _tmp109 = _tmp0 * _tmp108
+    _tmp110 = _tmp109 * delta[0, 0]
+    _tmp111 = _tmp0 * _tmp73
+    _tmp112 = _tmp111 * delta[0, 0]
+    _tmp113 = _tmp110 - _tmp112
+    _tmp114 = _tmp1 * _tmp108
+    _tmp115 = _tmp114 * delta[0, 0]
+    _tmp116 = _tmp1 * _tmp73
+    _tmp117 = _tmp116 * delta[0, 0]
+    _tmp118 = _tmp115 - _tmp117
+    _tmp119 = delta[0, 0] ** 3
+    _tmp120 = _tmp119 * _tmp84 - _tmp66 * _tmp87 - 2 * _tmp9
+    _tmp121 = _tmp2 * _tmp71
+    _tmp122 = _tmp35 * _tmp38
+    _tmp123 = -_tmp108 * _tmp32 * delta[1, 0] + _tmp82 * delta[1, 0]
+    _tmp124 = _tmp122 + _tmp123
+    _tmp125 = _tmp33 - _tmp81 + _tmp82
+    _tmp126 = _tmp53 * _tmp88
+    _tmp127 = _tmp2 * _tmp93
+    _tmp128 = _tmp62 * _tmp90
+    _tmp129 = -_tmp32 * _tmp85
+    _tmp130 = _tmp129 + _tmp14
+    _tmp131 = _tmp92 - _tmp94
+    _tmp132 = _tmp25 * delta[0, 0]
+    _tmp133 = _tmp108 * _tmp119 - _tmp119 * _tmp73 - 4 * _tmp132
+    _tmp134 = -_tmp122 + _tmp123
+    _tmp135 = -_tmp41 + _tmp72 - _tmp74
+    _tmp136 = _tmp129 - _tmp14
+    _tmp137 = -_tmp100 + _tmp101
+    _tmp138 = _tmp103 * delta[1, 0]
+    _tmp139 = -_tmp12 * _tmp36 + _tmp36
+    _tmp140 = _tmp139 * _tmp7
+    _tmp141 = -_tmp0 * _tmp140 + _tmp138
+    _tmp142 = delta[1, 0] ** 3
+    _tmp143 = -_tmp1 * _tmp140 + _tmp142 * _tmp84 - 2 * _tmp46
+    _tmp144 = _tmp1 * _tmp93
+    _tmp145 = _tmp1 * _tmp91
+    _tmp146 = _tmp140 * _tmp32
+    _tmp147 = _tmp22 * _tmp70
+    _tmp148 = _tmp53 * _tmp91
+    _tmp149 = _tmp53 * _tmp93
+    _tmp150 = -_tmp148 + _tmp149
+    _tmp151 = -_tmp106 + _tmp140 * _tmp40 + _tmp9
+    _tmp152 = 2 * _tmp132
+    _tmp153 = -_tmp115 + _tmp117 + _tmp152
+    _tmp154 = _tmp53 * _tmp71
+    _tmp155 = _tmp53 * _tmp73
+    _tmp156 = _tmp154 - _tmp155 - _tmp54
+    _tmp157 = _tmp109 * delta[1, 0]
+    _tmp158 = _tmp111 * delta[1, 0]
+    _tmp159 = _tmp157 - _tmp158
+    _tmp160 = _tmp108 * _tmp142 - _tmp142 * _tmp73 - 4 * _tmp76
+    _tmp161 = _tmp148 - _tmp149
+    _tmp162 = _tmp1 * _tmp96
+    _tmp163 = _tmp140 * _tmp53 - _tmp162 + _tmp98
+    _tmp164 = _tmp114 * delta[2, 0]
+    _tmp165 = _tmp116 * delta[2, 0]
+    _tmp166 = -_tmp164 + _tmp165 + _tmp60
+    _tmp167 = -_tmp154 + _tmp155 + _tmp54
+    _tmp168 = -_tmp139 * _tmp66 + _tmp86
+    _tmp169 = _tmp78 - _tmp79
+    _tmp170 = -_tmp12 * _tmp43 + _tmp43
+    _tmp171 = _tmp170 * _tmp7
+    _tmp172 = -_tmp1 * _tmp171 + _tmp162
+    _tmp173 = delta[2, 0] ** 3
+    _tmp174 = -_tmp0 * _tmp171 + _tmp173 * _tmp84 - 2 * _tmp98
+    _tmp175 = _tmp0 * _tmp71
+    _tmp176 = _tmp0 * _tmp93
+    _tmp177 = _tmp0 * _tmp91
+    _tmp178 = _tmp171 * _tmp40
+    _tmp179 = -_tmp110 + _tmp112 + _tmp152
+    _tmp180 = -_tmp104 + _tmp171 * _tmp32 + _tmp9
+    _tmp181 = _tmp164 - _tmp165
+    _tmp182 = _tmp108 * _tmp173 - _tmp173 * _tmp73 - 4 * _tmp59
+    _tmp183 = -_tmp170 * _tmp66 + _tmp97
+    _tmp184 = -_tmp157 + _tmp158 + _tmp77
+    _tmp185 = -_tmp138 + _tmp171 * _tmp53 + _tmp46
+    _tmp186 = _tmp65 - _tmp68
+    _tmp187 = _tmp30 - 1
+    _tmp188 = -_tmp10
+    _tmp189 = -_tmp16
+    _tmp190 = -_tmp47
+
+    # Output terms
+    _res = numpy.zeros(3)
+    _res[0] = (
+        -b_g[0, 0]
+        - delta_dot[0, 0] * (_tmp29 + _tmp31)
+        - delta_dot[1, 0] * (_tmp10 + _tmp15)
+        - delta_dot[2, 0] * (_tmp16 + _tmp18)
+        - omega_nominal[0, 0] * (_tmp24 + _tmp27 + 1)
+        - omega_nominal[1, 0] * (_tmp42 + _tmp44)
+        - omega_nominal[2, 0] * (_tmp34 - _tmp39)
+        + z_gyro[0, 0]
+    )
+    _res[1] = (
+        -b_g[1, 0]
+        - delta_dot[0, 0] * (_tmp10 + _tmp45)
+        - delta_dot[1, 0] * (_tmp31 + _tmp52)
+        - delta_dot[2, 0] * (_tmp47 + _tmp48)
+        - omega_nominal[0, 0] * (_tmp42 - _tmp44)
+        - omega_nominal[1, 0] * (_tmp27 + _tmp50)
+        - omega_nominal[2, 0] * (_tmp55 + _tmp57)
+        + z_gyro[1, 0]
+    )
+    _res[2] = (
+        -b_g[2, 0]
+        - delta_dot[0, 0] * (_tmp16 + _tmp17)
+        - delta_dot[1, 0] * (_tmp47 + _tmp58)
+        - delta_dot[2, 0] * (_tmp29 + _tmp52 + 1)
+        - omega_nominal[0, 0] * (_tmp34 + _tmp39)
+        - omega_nominal[1, 0] * (_tmp55 - _tmp57)
+        - omega_nominal[2, 0] * (_tmp24 + _tmp50)
+        + z_gyro[2, 0]
+    )
+    _res_D_delta = numpy.zeros((3, 3))
+    _res_D_delta[0, 0] = (
+        -delta_dot[0, 0] * (_tmp105 + _tmp107)
+        - delta_dot[1, 0] * (_tmp89 + _tmp95)
+        - delta_dot[2, 0] * (_tmp102 + _tmp99)
+        - omega_nominal[0, 0] * (_tmp113 + _tmp118)
+        - omega_nominal[1, 0] * (_tmp80 + _tmp83)
+        - omega_nominal[2, 0] * (_tmp69 + _tmp75)
+    )
+    _res_D_delta[1, 0] = (
+        -delta_dot[0, 0] * (_tmp131 + _tmp89)
+        - delta_dot[1, 0] * (_tmp105 + _tmp120)
+        - delta_dot[2, 0] * (_tmp126 + _tmp127 - _tmp128 + _tmp130)
+        - omega_nominal[0, 0] * (_tmp125 + _tmp80)
+        - omega_nominal[1, 0] * (_tmp113 + _tmp133)
+        - omega_nominal[2, 0] * (_tmp121 + _tmp124 - _tmp49 - _tmp67)
+    )
+    _res_D_delta[2, 0] = (
+        -delta_dot[0, 0] * (_tmp137 + _tmp99)
+        - delta_dot[1, 0] * (_tmp126 - _tmp127 + _tmp128 + _tmp136)
+        - delta_dot[2, 0] * (_tmp107 + _tmp120)
+        - omega_nominal[0, 0] * (_tmp135 + _tmp69)
+        - omega_nominal[1, 0] * (-_tmp121 + _tmp134 + _tmp49 + _tmp67)
+        - omega_nominal[2, 0] * (_tmp118 + _tmp133)
+    )
+    _res_D_delta[0, 1] = (
+        -delta_dot[0, 0] * (_tmp141 + _tmp143)
+        - delta_dot[1, 0] * (_tmp150 + _tmp151)
+        - delta_dot[2, 0] * (_tmp136 - _tmp144 + _tmp145 + _tmp146)
+        - omega_nominal[0, 0] * (_tmp159 + _tmp160)
+        - omega_nominal[1, 0] * (_tmp153 + _tmp156)
+        - omega_nominal[2, 0] * (_tmp116 + _tmp134 - _tmp147 + _tmp23)
+    )
+    _res_D_delta[1, 1] = (
+        -delta_dot[0, 0] * (_tmp151 + _tmp161)
+        - delta_dot[1, 0] * (_tmp141 + _tmp168)
+        - delta_dot[2, 0] * (_tmp137 + _tmp163)
+        - omega_nominal[0, 0] * (_tmp153 + _tmp167)
+        - omega_nominal[1, 0] * (_tmp159 + _tmp169)
+        - omega_nominal[2, 0] * (_tmp135 + _tmp166)
+    )
+    _res_D_delta[2, 1] = (
+        -delta_dot[0, 0] * (_tmp130 + _tmp144 - _tmp145 + _tmp146)
+        - delta_dot[1, 0] * (_tmp102 + _tmp163)
+        - delta_dot[2, 0] * (_tmp143 + _tmp168)
+        - omega_nominal[0, 0] * (-_tmp116 + _tmp124 + _tmp147 - _tmp23)
+        - omega_nominal[1, 0] * (_tmp166 + _tmp75)
+        - omega_nominal[2, 0] * (_tmp160 + _tmp169)
+    )
+    _res_D_delta[0, 2] = (
+        -delta_dot[0, 0] * (_tmp172 + _tmp174)
+        - delta_dot[1, 0] * (_tmp130 + _tmp176 - _tmp177 + _tmp178)
+        - delta_dot[2, 0] * (_tmp161 + _tmp180)
+        - omega_nominal[0, 0] * (_tmp181 + _tmp182)
+        - omega_nominal[1, 0] * (-_tmp111 + _tmp124 + _tmp175 - _tmp26)
+        - omega_nominal[2, 0] * (_tmp167 + _tmp179)
+    )
+    _res_D_delta[1, 2] = (
+        -delta_dot[0, 0] * (_tmp136 - _tmp176 + _tmp177 + _tmp178)
+        - delta_dot[1, 0] * (_tmp174 + _tmp183)
+        - delta_dot[2, 0] * (_tmp185 + _tmp95)
+        - omega_nominal[0, 0] * (_tmp111 + _tmp134 - _tmp175 + _tmp26)
+        - omega_nominal[1, 0] * (_tmp182 + _tmp186)
+        - omega_nominal[2, 0] * (_tmp184 + _tmp83)
+    )
+    _res_D_delta[2, 2] = (
+        -delta_dot[0, 0] * (_tmp150 + _tmp180)
+        - delta_dot[1, 0] * (_tmp131 + _tmp185)
+        - delta_dot[2, 0] * (_tmp172 + _tmp183)
+        - omega_nominal[0, 0] * (_tmp156 + _tmp179)
+        - omega_nominal[1, 0] * (_tmp125 + _tmp184)
+        - omega_nominal[2, 0] * (_tmp181 + _tmp186)
+    )
+    _res_D_delta_dot = numpy.zeros((3, 3))
+    _res_D_delta_dot[0, 0] = _tmp187 + _tmp28
+    _res_D_delta_dot[1, 0] = _tmp15 + _tmp188
+    _res_D_delta_dot[2, 0] = _tmp18 + _tmp189
+    _res_D_delta_dot[0, 1] = _tmp188 + _tmp45
+    _res_D_delta_dot[1, 1] = _tmp187 + _tmp51
+    _res_D_delta_dot[2, 1] = _tmp190 + _tmp48
+    _res_D_delta_dot[0, 2] = _tmp17 + _tmp189
+    _res_D_delta_dot[1, 2] = _tmp190 + _tmp58
+    _res_D_delta_dot[2, 2] = _tmp28 + _tmp51 - 1
+    _res_D_b_g = numpy.zeros((3, 3))
+    _res_D_b_g[0, 0] = -1
+    _res_D_b_g[1, 0] = 0
+    _res_D_b_g[2, 0] = 0
+    _res_D_b_g[0, 1] = 0
+    _res_D_b_g[1, 1] = -1
+    _res_D_b_g[2, 1] = 0
+    _res_D_b_g[0, 2] = 0
+    _res_D_b_g[1, 2] = 0
+    _res_D_b_g[2, 2] = -1
+    return _res, _res_D_delta, _res_D_delta_dot, _res_D_b_g

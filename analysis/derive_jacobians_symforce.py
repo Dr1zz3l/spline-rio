@@ -11,6 +11,7 @@ Generates: analysis/generated_jacobians.py (pure NumPy, no SymForce dependency)
 The generated file contains:
 - radar_residual_with_jacobians():  Doppler residual + ∂r/∂v_world, ∂r/∂delta, ∂r/∂omega
 - accel_residual_with_jacobians():  Accel residual  + ∂r/∂a_world, ∂r/∂delta, ∂r/∂b_a
+- gyro_residual_with_jacobians():   Gyro residual   + ∂r/∂delta, ∂r/∂delta_dot, ∂r/∂b_g
 """
 
 import symforce
@@ -91,6 +92,57 @@ def accel_residual(
     return z_acc - a_body_pred - b_a
 
 
+def gyro_residual(
+    omega_nominal: sf.V3,
+    delta: sf.V3,
+    delta_dot: sf.V3,
+    z_gyro: sf.V3,
+    b_g: sf.V3,
+    epsilon: sf.Scalar,
+) -> sf.V3:
+    """
+    Gyroscope residual with proper SO(3) right Jacobian.
+
+    Full angular velocity model:
+        R(t) = R_nominal * exp(delta)
+        omega_body = exp(-[delta]_x) * omega_nominal + J_r(delta) * delta_dot
+
+    where J_r(delta) is the right Jacobian of SO(3):
+        J_r(phi) = I - (1-cos||phi||)/||phi||^2 [phi]_x
+                     + (||phi||-sin||phi||)/||phi||^3 [phi]_x^2
+
+    For small delta: omega ≈ omega_nominal + delta_dot (recovers linear model).
+
+    Residual: r = z_gyro - omega_body - b_g
+    """
+    # Rotation perturbation exp(delta)
+    R_delta = sf.Rot3.from_tangent(delta, epsilon=epsilon)
+
+    # Rotated nominal angular velocity: exp(-[delta]_x) * omega_nominal
+    omega_rot = R_delta.inverse() * omega_nominal
+
+    # Right Jacobian J_r(delta) via Rodrigues-like formula
+    dx = delta[0]
+    dy = delta[1]
+    dz = delta[2]
+    skew = sf.Matrix33([[0, -dz, dy], [dz, 0, -dx], [-dy, dx, 0]])
+
+    theta_sq = delta.dot(delta)
+    # Use epsilon to avoid division by zero at theta=0
+    safe_theta_sq = theta_sq + epsilon ** 2
+    theta = sf.sqrt(safe_theta_sq)
+
+    c1 = (1 - sf.cos(theta)) / safe_theta_sq
+    c2 = (theta - sf.sin(theta)) / (theta * safe_theta_sq)
+
+    J_r = sf.Matrix33.eye() - c1 * skew + c2 * skew * skew
+
+    # Full angular velocity in body frame
+    omega_pred = omega_rot + J_r * delta_dot
+
+    return z_gyro - omega_pred - b_g
+
+
 # ============================================================
 # Code generation
 # ============================================================
@@ -165,7 +217,7 @@ def main():
     print("=" * 60)
 
     # Generate radar residual with Jacobians w.r.t. v_world, delta, omega
-    print("\n[1/2] Radar residual:")
+    print("\n[1/3] Radar residual:")
     radar_code = generate_and_read(
         radar_residual,
         "radar",
@@ -173,11 +225,19 @@ def main():
     )
 
     # Generate accel residual with Jacobians w.r.t. a_world, delta, b_a
-    print("\n[2/2] Accelerometer residual:")
+    print("\n[2/3] Accelerometer residual:")
     accel_code = generate_and_read(
         accel_residual,
         "accel",
         which_args=["a_world", "delta", "b_a"],
+    )
+
+    # Generate gyro residual with Jacobians w.r.t. delta, delta_dot, b_g
+    print("\n[3/3] Gyroscope residual:")
+    gyro_code = generate_and_read(
+        gyro_residual,
+        "gyro",
+        which_args=["delta", "delta_dot", "b_g"],
     )
 
     # Post-process all generated code
@@ -189,6 +249,10 @@ def main():
     processed_accel = {}
     for name, code in accel_code.items():
         processed_accel[name] = post_process(code)
+
+    processed_gyro = {}
+    for name, code in gyro_code.items():
+        processed_gyro[name] = post_process(code)
 
     # Assemble the output file
     print("Assembling generated_jacobians.py...")
@@ -202,10 +266,16 @@ This file has NO dependency on SymForce — it uses only numpy and math.
 Contains:
 - radar_residual_with_jacobians(): Doppler residual + Jacobians w.r.t. v_world, delta, omega
 - accel_residual_with_jacobians(): Accel residual + Jacobians w.r.t. a_world, delta, b_a
+- gyro_residual_with_jacobians():  Gyro residual  + Jacobians w.r.t. delta, delta_dot, b_g
 - Rot3: Lightweight quaternion wrapper matching SymForce convention [x, y, z, w]
 
 Usage:
-    from generated_jacobians import radar_residual_with_jacobians, accel_residual_with_jacobians, Rot3
+    from generated_jacobians import (
+        radar_residual_with_jacobians,
+        accel_residual_with_jacobians,
+        gyro_residual_with_jacobians,
+        Rot3,
+    )
 
     R_nom = Rot3(quat_xyzw)
     R_bs = Rot3(quat_xyzw)
@@ -311,6 +381,21 @@ class Rot3:
                        'def accel_residual_with_jacobians(', code)
         output_parts.append(code.strip())
 
+    # Add separator and gyro functions
+    output_parts.append("\n\n# " + "=" * 70)
+    output_parts.append("# GYROSCOPE RESIDUAL + JACOBIANS")
+    output_parts.append("# " + "=" * 70 + "\n")
+
+    for name, code in processed_gyro.items():
+        output_parts.append(f"\n# --- From: {name} ---\n")
+        code = re.sub(r'^import math\s*$', '', code, flags=re.MULTILINE)
+        code = re.sub(r'^import typing as T\s*$', '', code, flags=re.MULTILINE)
+        code = re.sub(r'^import numpy\s*$', '', code, flags=re.MULTILINE)
+        # Normalize function name
+        code = re.sub(r'def gyro_residual_with_jacobians\d+\(',
+                       'def gyro_residual_with_jacobians(', code)
+        output_parts.append(code.strip())
+
     # Write output file
     output_path = "/workspace/analysis/generated_jacobians.py"
     output_content = "\n".join(output_parts) + "\n"
@@ -332,7 +417,9 @@ class Rot3:
     assert hasattr(mod, 'Rot3'), "Missing Rot3 class"
     assert hasattr(mod, 'radar_residual_with_jacobians'), "Missing radar_residual_with_jacobians"
     assert hasattr(mod, 'accel_residual_with_jacobians'), "Missing accel_residual_with_jacobians"
-    print("   Found: radar_residual_with_jacobians, accel_residual_with_jacobians, Rot3")
+    assert hasattr(mod, 'gyro_residual_with_jacobians'), "Missing gyro_residual_with_jacobians"
+    print("   Found: radar_residual_with_jacobians, accel_residual_with_jacobians, "
+          "gyro_residual_with_jacobians, Rot3")
 
     # Quick numerical test
     import numpy as np
@@ -380,6 +467,54 @@ class Rot3:
     # Verify J_b_a = -I (bias Jacobian)
     assert np.allclose(result_accel[3], -np.eye(3), atol=1e-6), \
         f"J_b_a should be -I: {result_accel[3]}"
+
+    # Test gyro (identity rotation, zero delta)
+    result_gyro = mod.gyro_residual_with_jacobians(
+        np.array([0.0, 0.0, 1.0]),      # omega_nominal
+        np.array([0.0, 0.0, 0.0]),      # delta (zero)
+        np.array([0.1, 0.2, 0.3]),      # delta_dot
+        np.array([0.1, 0.2, 1.3]),      # z_gyro = omega_nom + delta_dot = [0.1, 0.2, 1.3]
+        np.array([0.0, 0.0, 0.0]),      # b_g (zero)
+        1e-10,                            # epsilon
+    )
+    print(f"   gyro: residual={result_gyro[0].flatten()}, "
+          f"J_delta={result_gyro[1].shape}, J_delta_dot={result_gyro[2].shape}, J_bg={result_gyro[3].shape}")
+
+    # At delta=0: J_r=I, exp(-[0]_x)=I, so omega = omega_nom + delta_dot = [0.1, 0.2, 1.3]
+    # z_gyro = [0.1, 0.2, 1.3], b_g=0 => residual should be [0, 0, 0]
+    assert np.allclose(result_gyro[0].flatten(), [0, 0, 0], atol=1e-6), \
+        f"Gyro residual sanity check failed: {result_gyro[0]}"
+
+    # At delta=0: J_delta_dot should be -J_r(0) = -I
+    assert np.allclose(result_gyro[2], -np.eye(3), atol=1e-6), \
+        f"J_delta_dot at delta=0 should be -I: {result_gyro[2]}"
+
+    # J_b_g should be -I
+    assert np.allclose(result_gyro[3], -np.eye(3), atol=1e-6), \
+        f"J_b_g should be -I: {result_gyro[3]}"
+
+    # Test gyro with large delta (pi/2 rotation around z)
+    delta_large = np.array([0.0, 0.0, np.pi / 2])
+    omega_nom = np.array([1.0, 0.0, 0.0])
+    delta_dot_large = np.array([0.0, 0.0, 0.0])
+    # exp(-[delta]_x) * omega_nom rotates omega_nom by -pi/2 around z: [1,0,0] -> [0,-1,0]... 
+    # Actually exp(-delta_hat)*omega = R(-pi/2 around z)*[1,0,0] = [0,1,0]
+    # R_z(-pi/2) = [[0,1,0],[-1,0,0],[0,0,1]] when applied as R@v
+    # Wait: R_delta = exp([0,0,pi/2]_x) = Rz(pi/2). R_delta^T = Rz(-pi/2).
+    # Rz(-pi/2) @ [1,0,0] = [0,-1,0]... let me compute:
+    # Rz(theta) = [[cos,-sin,0],[sin,cos,0],[0,0,1]]
+    # Rz(pi/2) = [[0,-1,0],[1,0,0],[0,0,1]]
+    # Rz(-pi/2) = [[0,1,0],[-1,0,0],[0,0,1]]
+    # Rz(-pi/2) @ [1,0,0] = [0,-1,0]
+    expected_omega = np.array([0.0, -1.0, 0.0])
+    result_gyro_large = mod.gyro_residual_with_jacobians(
+        omega_nom, delta_large, delta_dot_large,
+        expected_omega,  # z_gyro = expected omega
+        np.array([0.0, 0.0, 0.0]), 1e-10,
+    )
+    assert np.allclose(result_gyro_large[0].flatten(), [0, 0, 0], atol=1e-4), \
+        f"Gyro residual at large delta failed: {result_gyro_large[0].flatten()}"
+    print(f"   gyro (large delta pi/2): residual={result_gyro_large[0].flatten()} ✓")
 
     print("\n✅ Code generation complete!")
     print("=" * 60)
