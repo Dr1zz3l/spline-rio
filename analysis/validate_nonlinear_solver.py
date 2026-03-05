@@ -1258,15 +1258,15 @@ def main():
         TRANSLATION = np.array([0.07, 0.0, 0.0])
         SENSOR_ROTATION = R_base
     
-    BSPLINE_DEGREE = 7  # Quintic for continuous snap
-    DT_POS = 0.02   # Fixed knot spacing for position spline (seconds)
-    DT_ORI = 0.02   # Fixed knot spacing for orientation spline (seconds)
+    BSPLINE_DEGREE = 5  # Quintic for continuous snap
+    DT_POS = 0.05   # Fixed knot spacing for position spline (seconds)
+    DT_ORI = 0.05   # Fixed knot spacing for orientation spline (seconds)
     
     # Regularization weights
     LAMBDA_ACCEL = 0.01      # Accelerometer weight: gravity direction constrains orientation
-    LAMBDA_GYRO = 5.0       # Gyroscope weight: omega_nominal now included
-    LAMBDA_SNAP_POS = 0.0 # Position smoothness
-    LAMBDA_SNAP_ORI = 0.0   # Orientation smoothness
+    LAMBDA_GYRO = 50.0       # Gyroscope weight: omega_nominal now included
+    LAMBDA_SNAP_POS = 0.0001 # Position smoothness
+    LAMBDA_SNAP_ORI = 0.0001   # Orientation smoothness
     
     HUBER_DELTA = 0.5  # meters/second (Huber threshold for radar)
     HUBER_DELTA_ACCEL = 2.0  # m/s² (Huber threshold for accelerometer — clips spikes linearly)
