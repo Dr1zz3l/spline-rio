@@ -16,7 +16,8 @@ We define three Cartesian coordinate frames. All frames are Right-Handed.
 
 2. **Body Frame ($\mathcal{B}$):** The moving frame attached to the drone.
    * **Origin:** The center of the IMU (specifically the Accelerometer).
-   * **Orientation:** Aligned with the flight controller's axes (usually X-Forward, Y-Left, Z-Up).
+   * **Orientation:** Aligned with the flight controller's axes — **FLU** (X-Forward, Y-Left, Z-Up).
+   * **Note:** Some bags use a 180° yaw-flipped body frame (handled by `FLIP_BODY_FRAME` toggle).
 
 3. **Sensor/Radar Frame ($\mathcal{S}$):** The moving frame attached to the Radar.
    * **Origin:** The phase center of the radar antenna array.
@@ -40,6 +41,27 @@ At any continuous time $t$, the physical state of the drone is defined by:
 | $\mathbf{R}_{w\gets b}(t)$ | Orientation (Rotation from Body to World) | $\mathcal{B} \to \mathcal{W}$ |
 | $\boldsymbol{\omega}_b(t)$ | Angular Velocity of the Body | Body ($\mathcal{B}$) |
 
+### 2.1 Orientation Parameterization
+
+The orientation is parameterized using a tangent-space perturbation around a nominal trajectory:
+
+$$\mathbf{R}_{w\gets b}(t) = \mathbf{R}_{nom}(t) \cdot \exp(\boldsymbol{\delta}(t))$$
+
+Where $\mathbf{R}_{nom}(t)$ is the nominal (reference) rotation from MoCap and $\boldsymbol{\delta}(t) \in \mathbb{R}^3$ is a correction in the Lie algebra so(3). See the Backward Model for details.
+
+### 2.2 Angular Velocity Model
+
+The angular velocity in the body frame is derived from the orientation parameterization:
+
+$$\boldsymbol{\omega}_b(t) = \exp(-[\boldsymbol{\delta}]_\times) \, \boldsymbol{\omega}_{nom}(t) + \mathbf{J}_r(\boldsymbol{\delta}) \, \dot{\boldsymbol{\delta}}(t)$$
+
+Where:
+* $\boldsymbol{\omega}_{nom}(t)$: Nominal angular velocity (from MoCap, interpolated)
+* $\mathbf{J}_r(\boldsymbol{\delta})$: The **right Jacobian of SO(3)**, computed exactly via SymForce
+* $\dot{\boldsymbol{\delta}}(t)$: Time derivative of the perturbation spline
+
+This is the **exact** formula (not a small-angle approximation). For $\boldsymbol{\delta} \to 0$, it simplifies to $\boldsymbol{\omega}_b \approx \boldsymbol{\omega}_{nom} + \dot{\boldsymbol{\delta}}$.
+
 ## 3. The Inertial Forward Model (Accelerometer)
 
 The accelerometer is the reference for the Body Frame. It measures **Specific Force**, not coordinate acceleration.
@@ -49,36 +71,58 @@ The accelerometer measures the difference between the body's kinematic accelerat
 
 ### The Equation
 $$
-\mathbf{z}_{acc}(t) = \mathbf{R}_{b\gets w}(t) \left( \mathbf{a}_w(t) - \mathbf{g}_w \right) + \mathbf{b}_a(t) + \mathbf{n}_a(t)
+\mathbf{z}_{acc}(t) = \mathbf{R}_{b\gets w}(t) \left( \mathbf{a}_w(t) - \mathbf{g}_w \right) + \mathbf{b}_a + \mathbf{n}_a(t)
 $$
 
 ### Parameter Breakdown
 * $\mathbf{z}_{acc}(t)$: The measured 3D acceleration vector from the IMU [m/s²].
-* $\mathbf{R}_{b\gets w}(t)$: Rotates the World Frame force into the Body Frame.
-* $\mathbf{a}_w(t)$: The true 2nd derivative of the Spline trajectory.
+* $\mathbf{R}_{b\gets w}(t) = \mathbf{R}_{w\gets b}(t)^T$: Rotates the World Frame force into the Body Frame.
+* $\mathbf{a}_w(t)$: The true 2nd derivative of the position trajectory.
 * $\mathbf{g}_w$: The gravity vector in World Frame.
-  * Convention: $\mathbf{g}_w \approx [0, 0, -9.81]^T$.
-  * *Note:* The term becomes $(\mathbf{a}_w - (-9.81)) = \mathbf{a}_w + 9.81$.
-* $\mathbf{b}_a(t)$: Accelerometer Bias. A slowly varying offset (modeled as a Random Walk).
+  * Convention: $\mathbf{g}_w = [0, 0, -9.81]^T$.
+* $\mathbf{b}_a$: Accelerometer Bias (modeled as constant in the current solver).
 * $\mathbf{n}_a(t)$: Additive White Gaussian Noise (AWGN).
 
-## 4. The Radar Forward Model (Doppler) Corrected
+## 4. The Gyroscope Forward Model
+
+The gyroscope measures angular velocity in the body frame.
+
+### The Equation
+$$
+\mathbf{z}_{gyr}(t) = \boldsymbol{\omega}_b(t) + \mathbf{b}_g + \mathbf{n}_g(t)
+$$
+
+Expanding using the orientation parameterization:
+
+$$
+\mathbf{z}_{gyr}(t) = \exp(-[\boldsymbol{\delta}]_\times) \, \boldsymbol{\omega}_{nom}(t) + \mathbf{J}_r(\boldsymbol{\delta}) \, \dot{\boldsymbol{\delta}}(t) + \mathbf{b}_g + \mathbf{n}_g(t)
+$$
+
+### Parameter Breakdown
+* $\mathbf{z}_{gyr}(t)$: The measured 3D angular velocity from the IMU [rad/s].
+* $\boldsymbol{\omega}_{nom}(t)$: Nominal angular velocity from the reference trajectory.
+* $\boldsymbol{\delta}(t)$: Orientation perturbation (B-spline, optimization variable).
+* $\mathbf{J}_r(\boldsymbol{\delta})$: SO(3) right Jacobian (exact, via SymForce codegen).
+* $\mathbf{b}_g$: Gyroscope Bias (modeled as constant in the current solver).
+* $\mathbf{n}_g(t)$: Additive White Gaussian Noise.
+
+## 5. The Radar Forward Model (Doppler)
 
 The radar measures the **Relative Radial Velocity** along the line-of-sight.
 
-### 4.1. Kinematics: Antenna Velocity
+### 5.1. Kinematics: Antenna Velocity
 First, we calculate the velocity of the radar antenna itself in the **Body Frame**. This includes the drone's linear velocity plus the "Lever Arm" effect caused by the drone's rotation.
 
 $$
 \mathbf{v}_{ant, b} = \mathbf{v}_b(t) + \boldsymbol{\omega}_b(t) \times \mathbf{T}_{b\gets s}
 $$
 
-* $\mathbf{v}_b(t)$: Body linear velocity ($\mathbf{R}_{w\gets b}^T \mathbf{v}_w$).
-* $\boldsymbol{\omega}_b(t)$: Body angular velocity.
-* $\mathbf{T}_{b\gets s}$: The fixed offset of the radar from the center of mass.
+* $\mathbf{v}_b(t) = \mathbf{R}_{w\gets b}^T \mathbf{v}_w$: Body linear velocity.
+* $\boldsymbol{\omega}_b(t)$: Body angular velocity (from §2.2).
+* $\mathbf{T}_{b\gets s}$: The fixed offset of the radar from the body origin.
 * $\times$: Cross product.
 
-### 4.2. Geometry: The Ray Direction
+### 5.2. Geometry: The Ray Direction
 The radar detects a point at $\mathbf{p}_s$ (in Sensor Frame). The unit direction vector of this ray in the **Sensor Frame** is:
 $$
 \hat{\mathbf{u}}_s = \frac{\mathbf{p}_s}{||\mathbf{p}_s||}
@@ -89,7 +133,7 @@ $$
 \hat{\mathbf{u}}_b = \mathbf{R}_{b\gets s} \hat{\mathbf{u}}_s
 $$
 
-### 4.3. The Projection (Doppler Constraint)
+### 5.3. The Projection (Doppler Constraint)
 The Doppler measurement $v_D$ is the dot product of the antenna velocity and the ray direction (both now in Body Frame):
 
 $$
@@ -99,29 +143,34 @@ $$
 Substituting the full terms:
 
 $$
-v_{D} = (\mathbf{R}_{b\gets s} \hat{\mathbf{u}}_s) \cdot \left( \mathbf{v}_b(t) + \boldsymbol{\omega}_b(t) \times \mathbf{T}_{b\gets s} \right) + \epsilon
+v_{D} = (\mathbf{R}_{b\gets s} \hat{\mathbf{u}}_s) \cdot \left( \mathbf{R}_{w\gets b}^T \mathbf{v}_w(t) + \boldsymbol{\omega}_b(t) \times \mathbf{T}_{b\gets s} \right) + \epsilon
 $$
-
 
 ### Important Note on Sign Convention
 The formula above produces a **positive** value when the sensor moves **towards** the target (closing speed).
 * **Check your Radar:** Many radars (including TI default) report closing speed as **negative** (range rate $\dot{r} < 0$).
 * **Implementation:** If your radar reports negative for closing, you must use $v_D = - (\dots)$ or flip the sign of your measurements during pre-processing.
 
-## 5. Summary Table: What We Estimate vs. What We Measure
+## 6. Summary Table: What We Estimate vs. What We Measure
 
 | Quantity | Type | Source | Role in Pipeline |
 | :--- | :--- | :--- | :--- |
-| $\mathbf{p}_w(t)$ | **State** | Spline Control Points | **Unknown** (To be solved) |
-| $\mathbf{v}_w(t)$ | **State** | Spline Derivative | **Unknown** (To be solved) |
-| $\mathbf{a}_w(t)$ | **State** | Spline 2nd Derivative | **Unknown** (To be solved) |
-| $\mathbf{b}_a(t)$ | **State** | Estimator Variable | **Unknown** (To be solved) |
-| $\mathbf{z}_{acc}$ | **Measure** | IMU Topic | Constraint (Target for $\mathbf{a}_w$) |
-| $\boldsymbol{\omega}_b$ | **Measure** | IMU Topic | Input (Drives Rotation $R_{w\gets b}$) |
-| $v_{D,k}$ | **Measure** | Radar Topic | Constraint (Target for $\mathbf{v}_w$) |
+| $\mathbf{p}_w(t)$ | **State** | Position B-spline control points | **Unknown** (To be solved) |
+| $\mathbf{v}_w(t)$ | **State** | Position B-spline 1st derivative | **Unknown** (derived from position CPs) |
+| $\mathbf{a}_w(t)$ | **State** | Position B-spline 2nd derivative | **Unknown** (derived from position CPs) |
+| $\boldsymbol{\delta}(t)$ | **State** | Orientation B-spline control points | **Unknown** (To be solved) |
+| $\boldsymbol{\omega}_b(t)$ | **State** | Orientation B-spline value + derivative | **Unknown** (derived from ori CPs via §2.2) |
+| $\mathbf{b}_a$ | **State** | Estimator variable | **Unknown** (To be solved, or locked to zero) |
+| $\mathbf{b}_g$ | **State** | Estimator variable | **Unknown** (To be solved, or locked to zero) |
+| $\mathbf{R}_{nom}(t)$ | **Prior** | MoCap SLERP | Nominal orientation (re-linearization point) |
+| $\boldsymbol{\omega}_{nom}(t)$ | **Prior** | MoCap angular velocity | Nominal angular velocity |
+| $\mathbf{z}_{acc}$ | **Measurement** | IMU Topic | Constrains $\mathbf{a}_w$ and $\boldsymbol{\delta}$ |
+| $\mathbf{z}_{gyr}$ | **Measurement** | IMU Topic | Constrains $\boldsymbol{\delta}$ and $\dot{\boldsymbol{\delta}}$ |
+| $v_{D,k}$ | **Measurement** | Radar Topic | Constrains $\mathbf{v}_w$, $\boldsymbol{\delta}$, and $\dot{\boldsymbol{\delta}}$ |
 
-## 6. Rosbag Topics: 
-| Title | Description |
-| `/angrybird2/agiros_pilot/state` | kalman-smoothed mocap data. Pose is accurate, derivative may be slightly jagged (if it is, fit spline to pose and derive analytically) |
-|`/angrybird2/imu` | Raw IMU data from Pixhawk | 
-| `/mmWaveDataHdl/RScanVelocity` | Raw Radar Data. Analysis shows a 0.018879s delay relative to integrated IMU curve. The radar is mounted tilting downwards 30deg from horizontat, about 7cm forward in x-axis. |
+## 7. Rosbag Topics
+| Topic | Description |
+| :--- | :--- |
+| `/angrybird2/agiros_pilot/state` | Kalman-smoothed MoCap data. Pose is accurate; used for nominal orientation $\mathbf{R}_{nom}$. |
+| `/angrybird2/imu` | Raw IMU data from Pixhawk (accelerometer + gyroscope). |
+| `/mmWaveDataHdl/RScanVelocity` | Raw Radar Data. The radar is mounted tilting downwards 30° from horizontal, ~7cm forward in the x-axis. |

@@ -16,34 +16,44 @@ $$\mathcal{X}_{pos} = \{ \mathbf{c}_0^p, \mathbf{c}_1^p, \dots, \mathbf{c}_{N_p}
 
 ### 1.2 Orientation B-Spline (Lie Algebra so(3) Parameterization)
 
-Instead of directly parameterizing rotations (which are constrained to the SO(3) manifold), we use a **Lie algebra parameterization**:
+Instead of directly parameterizing rotations (which are constrained to the SO(3) manifold), we use a **tangent-space perturbation** around a nominal trajectory:
 
-$$\mathbf{R}_{w \gets b}(t) = \mathbf{R}_{nom}(t) \cdot \exp(\boldsymbol{\delta\omega}(t))$$
+$$\mathbf{R}_{w \gets b}(t) = \mathbf{R}_{nom}(t) \cdot \exp(\boldsymbol{\delta}(t))$$
 
 Where:
-- $\mathbf{R}_{nom}(t)$: Nominal rotation trajectory (e.g., from gyroscope integration)
-- $\boldsymbol{\delta\omega}(t) \in \mathbb{R}^3$: Small correction in the Lie algebra **so(3)** (tangent space at identity)
+- $\mathbf{R}_{nom}(t)$: Nominal rotation trajectory from **MoCap SLERP interpolation** (updated by re-linearization)
+- $\boldsymbol{\delta}(t) \in \mathbb{R}^3$: Correction vector in the Lie algebra **so(3)** (tangent space at identity)
 - $\exp(\cdot): so(3) \to SO(3)$: Exponential map (Rodrigues' formula)
 
-**Why Lie algebra?** SO(3) is a curved manifold - we cannot add rotations or perform unconstrained optimization. The Lie algebra so(3) is a flat vector space where standard optimization applies. Each 3-vector $\boldsymbol{\omega} \in \mathbb{R}^3$ corresponds to a skew-symmetric matrix $[\boldsymbol{\omega}]_\times \in so(3)$:
+**Why Lie algebra?** SO(3) is a curved manifold — we cannot add rotations or perform unconstrained optimization. The Lie algebra so(3) is a flat vector space where standard optimization applies.
 
-$$[\boldsymbol{\omega}]_\times = \begin{bmatrix} 0 & -\omega_z & \omega_y \\ \omega_z & 0 & -\omega_x \\ -\omega_y & \omega_x & 0 \end{bmatrix}$$
-
-The correction vector $\boldsymbol{\delta\omega}(t)$ is represented by a B-spline:
+The correction vector $\boldsymbol{\delta}(t)$ is represented by a B-spline:
 
 $$\mathcal{X}_{ori} = \{ \mathbf{c}_0^o, \mathbf{c}_1^o, \dots, \mathbf{c}_{N_o}^o \} \in \mathbb{R}^{N_o \times 3}$$
 
 Control points are **elements of the Lie algebra** so(3), making them suitable for unconstrained optimization.
 
-Typically $N_o < N_p$ (fewer orientation control points, e.g., 3× sparser) since orientation changes more slowly.
+### 1.3 Angular Velocity from Orientation State
 
-### 1.3 Sensor Biases
+The body-frame angular velocity is derived from the orientation parameterization using the **exact** formula:
+
+$$\boldsymbol{\omega}_b(t) = \exp(-[\boldsymbol{\delta}]_\times) \, \boldsymbol{\omega}_{nom}(t) + \mathbf{J}_r(\boldsymbol{\delta}) \, \dot{\boldsymbol{\delta}}(t)$$
+
+Where:
+- $\boldsymbol{\omega}_{nom}(t)$: Nominal angular velocity (from MoCap, linearly interpolated)
+- $\mathbf{J}_r(\boldsymbol{\delta})$: The **right Jacobian of SO(3)**, defined as:
+
+$$\mathbf{J}_r(\boldsymbol{\phi}) = \mathbf{I} - \frac{1 - \cos||\boldsymbol{\phi}||}{||\boldsymbol{\phi}||^2} [\boldsymbol{\phi}]_\times + \frac{||\boldsymbol{\phi}|| - \sin||\boldsymbol{\phi}||}{||\boldsymbol{\phi}||^3} [\boldsymbol{\phi}]_\times^2$$
+
+This formula and all its Jacobians are computed **exactly via SymForce codegen** (no manual derivation, no small-angle approximation). For $\boldsymbol{\delta} \to 0$: $\boldsymbol{\omega}_b \approx \boldsymbol{\omega}_{nom} + \dot{\boldsymbol{\delta}}$ (recovers the linear model).
+
+### 1.4 Sensor Biases
 
 $$\mathbf{b}_a \in \mathbb{R}^3, \quad \mathbf{b}_g \in \mathbb{R}^3$$
 
-Constant accelerometer and gyroscope biases.
+Constant accelerometer and gyroscope biases (currently locked to zero via `LOCK_BIASES=True`).
 
-### 1.4 Full State Vector
+### 1.5 Full State Vector
 
 $$\mathcal{X} = \{ \mathcal{X}_{pos}, \mathcal{X}_{ori}, \mathbf{b}_a, \mathbf{b}_g \} \in \mathbb{R}^{3N_p + 3N_o + 6}$$
 
@@ -53,9 +63,12 @@ $$\mathcal{X} = \{ \mathcal{X}_{pos}, \mathcal{X}_{ori}, \mathbf{b}_a, \mathbf{b
 
 To define the basis functions for degree $p$, we use a Uniform Knot Vector (constant time spacing $\Delta t$).
 
-* **Position spline**: Degree $p = 5$ (Quintic) for continuous snap, $\Delta t \approx 0.15$s
-* **Orientation spline**: Degree $p = 3$ (Cubic) for smoothness, $\Delta t \approx 0.45$s (3× sparser)
+Current configuration:
+* **Position spline**: Degree $p = 5$ (Quintic) for continuous snap, $\Delta t = 0.05$s
+* **Orientation spline**: Degree $p = 3$ (Cubic) for smoothness, $\Delta t = 0.05$s
 * **Local influence**: At any time $t$, the spline value depends on $p+1$ local control points
+
+For a 5-second trajectory this yields ~106 position CPs and ~106 orientation CPs, totaling ~642 optimization variables (including 6 bias parameters).
 
 ### 2.2 Cox-de Boor Evaluation
 
@@ -87,25 +100,26 @@ $$\mathbf{a}_w(t) = \frac{d^2}{dt^2}\mathbf{p}(t) = \sum_{i=k-p+2}^{k} N_{i, p-2
 Where acceleration control points are:
 $$\mathbf{c}''_i = \frac{p-1}{t_{i+p} - t_{i+1}} (\mathbf{c}'_{i+1} - \mathbf{c}'_i)$$
 
-**Angular velocity** from orientation spline:
-$$\boldsymbol{\omega}_b(t) \approx \frac{d}{dt}\boldsymbol{\delta\omega}(t) = \sum_{i} N_{i, p-1}^{ori}(t) \cdot \mathbf{c}_i^o$$
+**Orientation perturbation and its derivative**: The orientation delta and its time derivative are evaluated the same way from the orientation B-spline:
+$$\boldsymbol{\delta}(t) = \sum_j N_j^{ori}(t) \mathbf{c}_j^o, \quad \dot{\boldsymbol{\delta}}(t) = \sum_j {N'}_j^{ori}(t) \mathbf{c}_j^o$$
 
-(First-order approximation valid for small perturbations in the Lie algebra. For larger perturbations, the exact relationship involves the Jacobian of the exponential map.)
+These are then combined via the exact angular velocity formula (§1.3) to produce $\boldsymbol{\omega}_b(t)$.
 
 ## 3. The Optimization Problem
 
 We seek to find the optimal state $\mathcal{X}^*$ that minimizes the weighted sum of residuals:
 
-$$\mathcal{X}^* = \arg\min_{\mathcal{X}} \left( E_{radar} + \lambda_{acc} E_{accel} + \lambda_{gyr} E_{gyro} + E_{reg} \right)$$
+$$\mathcal{X}^* = \arg\min_{\mathcal{X}} \left( E_{radar} + \lambda_{acc} E_{accel} + \lambda_{gyr} E_{gyro} + E_{reg} + E_{boundary} \right)$$
 
 Where:
-- $E_{radar}$: Doppler velocity residuals
-- $E_{accel}$: Accelerometer residuals
-- $E_{gyro}$: Gyroscope residuals
-- $E_{reg}$: Regularization (smoothness constraints)
+- $E_{radar}$: Doppler velocity residuals (Huber loss)
+- $E_{accel}$: Accelerometer residuals (optional Huber loss)
+- $E_{gyro}$: Gyroscope residuals (L2 loss)
+- $E_{reg}$: Regularization (minimum snap smoothness)
+- $E_{boundary}$: Boundary priors at trajectory start
 - $\lambda_{acc}, \lambda_{gyr}$: Weights balancing sensor modalities
 
-This is solved using **Levenberg-Marquardt** (damped Gauss-Newton) optimization.
+This is solved using **Levenberg-Marquardt** (damped Gauss-Newton) with **re-linearization after every accepted step**.
 
 ## 4. The Radar Residual ($r_{rad}$)
 
@@ -117,306 +131,261 @@ $$r_{rad, k} = v_{D, meas} - h_{rad}(\mathcal{X}, t, \hat{\mathbf{u}}_s)$$
 
 Expanding $h_{rad}$ using the Lie algebra parameterization:
 
-$$h_{rad} = \underbrace{(\mathbf{R}_{b \gets s} \hat{\mathbf{u}}_s)^T}_{=\hat{\mathbf{u}}_b^T} \left[ \underbrace{\mathbf{R}_{w \gets b}(t)^T \mathbf{v}_w(t)}_{\mathbf{v}_b} + \underbrace{\boldsymbol{\omega}_b(t) \times \mathbf{T}_{b \gets s}}_{\text{Lever arm vel}} \right]$$
+$$h_{rad} = \hat{\mathbf{u}}_b^T \left[ \mathbf{R}_{w \gets b}(t)^T \mathbf{v}_w(t) + \boldsymbol{\omega}_b(t) \times \mathbf{T}_{b \gets s} \right]$$
 
 Where:
-- $\mathbf{v}_w(t) = \sum_i N_i^{p-1}(t) \mathbf{c}_i^{p'}$: Velocity from position spline
-- $\mathbf{R}_{w \gets b}(t) = \mathbf{R}_{nom}(t) \exp\left(\sum_j N_j(t) \mathbf{c}_j^o\right)$: Rotation via Lie algebra exponential map
-- $\boldsymbol{\omega}_b(t) = \sum_j N_j^{p-1}(t) \mathbf{c}_j^o$: Angular velocity from orientation spline derivative
+- $\hat{\mathbf{u}}_b = \mathbf{R}_{b\gets s} \hat{\mathbf{u}}_s$: Ray direction in body frame
+- $\mathbf{v}_w(t)$: Velocity from position B-spline derivative
+- $\mathbf{R}_{w \gets b}(t) = \mathbf{R}_{nom}(t) \exp(\boldsymbol{\delta}(t))$: Rotation via Lie algebra
+- $\boldsymbol{\omega}_b(t) = \exp(-[\boldsymbol{\delta}]_\times) \boldsymbol{\omega}_{nom} + \mathbf{J}_r(\boldsymbol{\delta}) \dot{\boldsymbol{\delta}}$: Angular velocity (exact, §1.3)
+
+**Note:** Since $\boldsymbol{\omega}_b$ depends on both $\boldsymbol{\delta}(t)$ and $\dot{\boldsymbol{\delta}}(t)$, the radar residual depends on orientation control points through **both** the B-spline value and its derivative.
 
 ### 4.2 Loss Function (Robust Estimation)
 
 Radar data contains outliers. We apply a **Huber loss** $\rho(\cdot)$ to down-weight large errors:
 
-$$E_{radar} = \sum_{k \in \mathcal{P}} \rho_{Huber} \left( \frac{r_{rad, k}}{\sigma_{rad}} \right)$$
+$$E_{radar} = \sum_{k \in \mathcal{P}} \rho_{Huber} \left( r_{rad, k}; \delta_{hub} \right)$$
 
 Where:
-$$\rho_{Huber}(x) = \begin{cases} \frac{1}{2}x^2 & |x| \le \delta \\ \delta |x| - \frac{1}{2}\delta^2 & |x| > \delta \end{cases}$$
+$$\rho_{Huber}(x; \delta) = \begin{cases} \frac{1}{2}x^2 & |x| \le \delta \\ \delta |x| - \frac{1}{2}\delta^2 & |x| > \delta \end{cases}$$
 
-Typical: $\delta = 0.5$ m/s, $\sigma_{rad} = 0.1$ m/s
+Current setting: $\delta_{hub} = 0.5$ m/s.
 
 ## 5. The Accelerometer Residual ($r_{acc}$)
 
 ### 5.1 The Error Term
 
-The residual is the vector difference between measured specific force and predicted specific force:
-
-$$\mathbf{r}_{acc} = \mathbf{z}_{acc} - h_{acc}(\mathcal{X}, t)$$
-
-Expanding $h_{acc}$:
-
-$$h_{acc} = \mathbf{R}_{w \gets b}(t)^T \left( \mathbf{a}_w(t) - \mathbf{g}_w \right) + \mathbf{b}_a$$
+$$\mathbf{r}_{acc} = \mathbf{z}_{acc} - \mathbf{R}_{w \gets b}(t)^T \left( \mathbf{a}_w(t) - \mathbf{g}_w \right) - \mathbf{b}_a$$
 
 Where:
-- $\mathbf{a}_w(t) = \sum_i N_i^{p-2}(t) \mathbf{c}_i^{p''}$: Acceleration from position spline (2nd derivative)
-- $\mathbf{R}_{w \gets b}(t) = \mathbf{R}_{nom}(t) \exp\left(\sum_j N_j(t) \mathbf{c}_j^o\right)$: From orientation spline
+- $\mathbf{a}_w(t)$: Acceleration from position B-spline 2nd derivative
+- $\mathbf{R}_{w \gets b}(t) = \mathbf{R}_{nom}(t) \exp(\boldsymbol{\delta}(t))$: From orientation state
 - $\mathbf{g}_w = [0, 0, -9.81]^T$ m/s²: Gravity in world frame
 - $\mathbf{b}_a$: Accelerometer bias (optimization variable)
 
 ### 5.2 Loss Function
 
-Accelerometer noise is modeled as Gaussian:
+Operates with optional Huber loss on the 3D residual norm, weighted by $\lambda_{acc}$:
 
-$$E_{accel} = \sum_{m \in \mathcal{M}} || \mathbf{r}_{acc, m} ||^2_{\Sigma_{acc}^{-1}}$$
+$$E_{accel} = \lambda_{acc} \sum_{m} \rho_{Huber}(||\mathbf{r}_{acc,m}||; \delta_{acc})$$
+
+Current settings: $\lambda_{acc} = 0.01$, $\delta_{acc} = 2.0$ m/s².
 
 ## 6. The Gyroscope Residual ($r_{gyr}$)
 
 ### 6.1 The Error Term
 
-The residual is the difference between measured and predicted angular velocity:
+$$\mathbf{r}_{gyr} = \mathbf{z}_{gyr} - \boldsymbol{\omega}_b(t) - \mathbf{b}_g$$
 
-$$\mathbf{r}_{gyr} = \mathbf{z}_{gyr} - h_{gyr}(\mathcal{X}, t)$$
+Expanding the angular velocity model:
 
-Expanding $h_{gyr}$:
-
-$$h_{gyr} = \boldsymbol{\omega}_b(t) + \mathbf{b}_g$$
+$$\mathbf{r}_{gyr} = \mathbf{z}_{gyr} - \left[ \exp(-[\boldsymbol{\delta}]_\times) \boldsymbol{\omega}_{nom}(t) + \mathbf{J}_r(\boldsymbol{\delta}) \dot{\boldsymbol{\delta}}(t) \right] - \mathbf{b}_g$$
 
 Where:
-- $\boldsymbol{\omega}_b(t) = \sum_j N_j^{p-1}(t) \mathbf{c}_j^o$: Angular velocity from orientation spline derivative
-- $\mathbf{b}_g$: Gyroscope bias (optimization variable)
+- $\boldsymbol{\omega}_{nom}(t)$: Nominal angular velocity from MoCap (linearly interpolated)
+- $\boldsymbol{\delta}(t), \dot{\boldsymbol{\delta}}(t)$: Orientation B-spline value and derivative
+- $\mathbf{J}_r(\boldsymbol{\delta})$: SO(3) right Jacobian (exact, SymForce-generated)
+- $\mathbf{b}_g$: Gyroscope bias
+
+**Key insight:** The gyro residual depends on orientation control points through **both** the value (via $\boldsymbol{\delta}$) and the derivative (via $\dot{\boldsymbol{\delta}}$). This is different from the old linear model where only the derivative appeared.
 
 ### 6.2 Loss Function
 
-Gyroscope noise is also Gaussian:
+Gyroscope noise is modeled as Gaussian (L2 loss):
 
-$$E_{gyro} = \sum_{m \in \mathcal{M}} || \mathbf{r}_{gyr, m} ||^2_{\Sigma_{gyr}^{-1}}$$
+$$E_{gyro} = \lambda_{gyr} \sum_{m} || \mathbf{r}_{gyr, m} ||^2$$
 
-## 7. Regularization Terms
+Current setting: $\lambda_{gyr} = 5.0$.
 
-### 7.1 Acceleration Regularization
+## 7. Boundary Priors
 
-Penalizes large accelerations to prefer smooth motion:
+To anchor the trajectory at the start (where MoCap ground truth is available), we add soft priors on multiple state quantities within a window of $W = 0.3$s from the trajectory start.
 
-$$E_{reg,acc} = \lambda_{acc} \int_{t_0}^{t_f} || \mathbf{a}_w(t) ||^2 dt$$
+$$E_{boundary} = E_{bnd,pos} + E_{bnd,vel} + E_{bnd,ori} + E_{bnd,acc} + E_{bnd,gyr}$$
 
-For B-splines, this can be computed in closed form using the control points.
+Each term takes the form $\lambda \cdot || x_{est}(t) - x_{target}(t) ||^2$ at sample points within the boundary window:
 
-### 7.2 Snap Regularization
+| Prior | Target | Weight |
+| :--- | :--- | :--- |
+| Position | $\mathbf{p}_{MoCap}(t)$ | $\lambda_{bnd,pos} = 100$ |
+| Velocity | $\mathbf{v}_{MoCap}(t)$ | $\lambda_{bnd,vel} = 100$ |
+| Orientation | $\boldsymbol{\delta}(t) = 0$ (trust nominal) | $\lambda_{bnd,ori} = 100$ |
+| Acceleration | $\mathbf{a}_{MoCap}(t)$ | $\lambda_{bnd,acc} = 0.001$ |
+| Ang. velocity | $\dot{\boldsymbol{\delta}}(t) = 0$ (trust nominal $\omega$) | $\lambda_{bnd,gyr} = 10$ |
 
-For position spline (degree 5), penalizes the 4th derivative (snap):
+These are applied at the **start edge only** (no end priors), using multiple sample points within the boundary window.
 
-$$E_{reg,snap,pos} = \lambda_{snap,pos} \int_{t_0}^{t_f} || \mathbf{p}^{(4)}(t) ||^2 dt$$
+## 8. Regularization Terms
 
-For orientation spline (degree 3), penalizes angular snap:
+### 8.1 Minimum Snap Regularization
 
-$$E_{reg,snap,ori} = \lambda_{snap,ori} \int_{t_0}^{t_f} || \boldsymbol{\delta\omega}^{(3)}(t) ||^2 dt$$
+For both position and orientation splines, we penalize the highest useful derivative (snap = 4th derivative for quintic, jerk = 3rd derivative for cubic):
 
-These ensure smooth trajectories between sparse measurements.
+$$E_{reg} = \lambda_{snap,pos} \int_{t_0}^{t_f} || \mathbf{p}^{(4)}(t) ||^2 dt + \lambda_{snap,ori} \int_{t_0}^{t_f} || \boldsymbol{\delta}^{(3)}(t) ||^2 dt$$
 
-## 8. Analytical Jacobians (for Real-Time Performance)
+These integrals are computed in closed form using the B-spline control points and added to the normal equations as a fixed quadratic penalty matrix $\mathbf{R}_{snap}$.
 
-The computational bottleneck is Jacobian computation. **Analytical Jacobians** provide 20-50× speedup over numerical finite differences.
+Current settings: $\lambda_{snap,pos} = 0$, $\lambda_{snap,ori} = 0$ (disabled — sensor data provides sufficient constraints).
 
-### 8.1 Jacobian Structure
+## 9. Analytical Jacobians (SymForce Codegen)
 
-For Levenberg-Marquardt, we need:
+All Jacobians are computed **analytically via SymForce code generation**. The codegen pipeline (`derive_jacobians_symforce.py`) produces three functions in `generated_jacobians.py` (pure NumPy, no SymForce runtime dependency):
 
-$$\mathbf{J} = \frac{\partial \mathbf{r}}{\partial \mathcal{X}} \in \mathbb{R}^{M \times (3N_p + 3N_o + 6)}$$
+1. **`radar_residual_with_jacobians`**: $r_{rad}$ and $\frac{\partial r}{\partial \mathbf{v}_w}, \frac{\partial r}{\partial \boldsymbol{\delta}}, \frac{\partial r}{\partial \boldsymbol{\omega}}$
+2. **`accel_residual_with_jacobians`**: $\mathbf{r}_{acc}$ and $\frac{\partial \mathbf{r}}{\partial \mathbf{a}_w}, \frac{\partial \mathbf{r}}{\partial \boldsymbol{\delta}}, \frac{\partial \mathbf{r}}{\partial \mathbf{b}_a}$
+3. **`gyro_residual_with_jacobians`**: $\mathbf{r}_{gyr}$ and $\frac{\partial \mathbf{r}}{\partial \boldsymbol{\delta}}, \frac{\partial \mathbf{r}}{\partial \dot{\boldsymbol{\delta}}}, \frac{\partial \mathbf{r}}{\partial \mathbf{b}_g}$
 
-Where $M$ is the total number of residuals (radar + accel + gyro).
+### 9.1 Chain Rule: from SymForce Jacobians to Control Point Jacobians
 
-**Key property**: Due to B-spline local support, each residual only depends on $p+1$ control points → **sparse Jacobian** (>90% zeros).
+The SymForce functions compute Jacobians w.r.t. **evaluated** quantities ($\mathbf{v}_w$, $\boldsymbol{\delta}$, etc.). To get Jacobians w.r.t. **control points** $\mathbf{c}_i$, we apply the chain rule via basis functions:
 
-### 8.2 Radar Jacobian w.r.t. Position Control Points
+**Position control points** (velocity enters via 1st derivative):
+$$\frac{\partial r}{\partial \mathbf{c}_i^p} = \frac{\partial r}{\partial \mathbf{v}_w} \cdot M_i'(t)$$
 
-Given radar residual:
-$$r_{rad} = v_{D,meas} - \hat{\mathbf{u}}_b^T \left( \mathbf{R}_{w \gets b}^T \mathbf{v}_w + \boldsymbol{\omega}_b \times \mathbf{T}_{b \gets s} \right)$$
+where $M_i'(t)$ is the derivative basis function coefficient for control point $i$.
 
-Take derivative w.r.t. position control point $\mathbf{c}_i^p$:
+**Orientation control points** (enter via both value and derivative):
+$$\frac{\partial r}{\partial \mathbf{c}_j^o} = \frac{\partial r}{\partial \boldsymbol{\delta}} \cdot M_j(t) + \frac{\partial r}{\partial \dot{\boldsymbol{\delta}}} \cdot M_j'(t)$$
 
-$$\frac{\partial r_{rad}}{\partial \mathbf{c}_i^p} = -\hat{\mathbf{u}}_b^T \mathbf{R}_{w \gets b}^T \frac{\partial \mathbf{v}_w}{\partial \mathbf{c}_i^p}$$
+**Radar orientation chain rule** (full, including omega dependency):
 
-Since $\mathbf{v}_w(t) = \sum_j N_j^{p-1}(t) \mathbf{c}_j^{p'}$ where $\mathbf{c}_j^{p'} = \frac{p}{\Delta t}(\mathbf{c}_{j+1}^p - \mathbf{c}_j^p)$:
+Since the radar residual depends on $\boldsymbol{\omega}_b$ which itself depends on $\boldsymbol{\delta}$ and $\dot{\boldsymbol{\delta}}$:
 
-$$\frac{\partial \mathbf{v}_w}{\partial \mathbf{c}_i^p} = N_{i-1}^{p-1}(t) \cdot \frac{p}{\Delta t} \mathbf{I} - N_i^{p-1}(t) \cdot \frac{p}{\Delta t} \mathbf{I}$$
+$$\frac{\partial r_{rad}}{\partial \mathbf{c}_j^o} = \underbrace{\left(\frac{\partial r}{\partial \boldsymbol{\delta}} + \frac{\partial r}{\partial \boldsymbol{\omega}} \frac{\partial \boldsymbol{\omega}}{\partial \boldsymbol{\delta}}\right)}_{\text{effective value Jacobian}} M_j(t) + \underbrace{\left(\frac{\partial r}{\partial \boldsymbol{\omega}} \frac{\partial \boldsymbol{\omega}}{\partial \dot{\boldsymbol{\delta}}}\right)}_{\text{effective derivative Jacobian}} M_j'(t)$$
 
-**Final form**:
-$$\frac{\partial r_{rad}}{\partial \mathbf{c}_i^p} = -\frac{p}{\Delta t} \left( N_{i-1}^{p-1}(t) - N_i^{p-1}(t) \right) (\mathbf{R}_{w \gets b}^T \hat{\mathbf{u}}_b)^T$$
+The inner Jacobians $\frac{\partial \boldsymbol{\omega}}{\partial \boldsymbol{\delta}}$ and $\frac{\partial \boldsymbol{\omega}}{\partial \dot{\boldsymbol{\delta}}}$ are extracted from the SymForce gyro function via the `compute_omega_and_jacobians()` wrapper.
 
-This is a **row vector** $\in \mathbb{R}^{1 \times 3}$.
+### 9.2 Sparsity
 
-### 8.3 Radar Jacobian w.r.t. Orientation Control Points
+Due to B-spline local support, each residual only depends on $p+1$ control points → the Jacobian is **>98% sparse** (stored in CSR format). Typical size: ~9000 residuals × ~1500 variables.
 
-The rotation enters as $\mathbf{R}_{w \gets b} = \mathbf{R}_{nom} \exp(\boldsymbol{\delta\omega})$ where $\boldsymbol{\delta\omega} = \sum_j N_j(t) \mathbf{c}_j^o$.
+## 10. Solver: Levenberg-Marquardt with Re-linearization
 
-Using the chain rule via the Lie algebra so(3):
+### 10.1 Algorithm
 
-$$\frac{\partial r_{rad}}{\partial \mathbf{c}_i^o} = \frac{\partial r_{rad}}{\partial \boldsymbol{\delta\omega}} \frac{\partial \boldsymbol{\delta\omega}}{\partial \mathbf{c}_i^o}$$
+The solver uses a single LM loop with **SO(3) re-linearization after every accepted step**:
 
-Where:
-$$\frac{\partial \boldsymbol{\delta\omega}}{\partial \mathbf{c}_i^o} = N_i(t) \mathbf{I}$$
+```
+lambda = 1e-3
+for iteration in range(max_iterations):
+    J, r = build_jacobian(state)
+    H = J^T J + lambda * I + R_snap
+    delta_x = solve(H, -J^T r)
+    
+    state_new = state + delta_x
+    if cost(state_new) < cost(state):
+        state = state_new
+        lambda *= 0.1
+        state.relinearize()     # absorb delta into nominal
+    else:
+        lambda *= 10            # reject step, increase damping
+    
+    if ||delta_x|| < 1e-4:
+        break                   # converged
+```
 
-For small perturbations in the Lie algebra, the derivative w.r.t. rotation is:
+### 10.2 Re-linearization
 
-$$\frac{\partial r_{rad}}{\partial \boldsymbol{\delta\omega}} = -\hat{\mathbf{u}}_b^T [\mathbf{v}_b]_\times$$
+After every accepted LM step, `relinearize()` absorbs the current delta perturbation into the nominal trajectory:
 
-Where $[\mathbf{v}_b]_\times$ is the skew-symmetric matrix of $\mathbf{v}_b = \mathbf{R}_{w \gets b}^T \mathbf{v}_w$.
+1. **Dense sampling**: Evaluate $\mathbf{R}(t) = \mathbf{R}_{nom}(t) \exp(\boldsymbol{\delta}(t))$ and $\boldsymbol{\omega}_b(t)$ at ~200 time points
+2. **Rebuild SLERP**: Construct new `scipy.spatial.transform.Slerp` from the dense rotation samples
+3. **Rebuild omega interpolation**: Construct new `scipy.interpolate.interp1d` from the dense angular velocity samples
+4. **Reset delta**: Set all orientation control points to zero
 
-**Final form**:
-$$\frac{\partial r_{rad}}{\partial \mathbf{c}_i^o} = -N_i(t) \hat{\mathbf{u}}_b^T [\mathbf{v}_b]_\times$$
+This keeps $\boldsymbol{\delta}$ near zero, which improves numerical conditioning. Because the angular velocity model uses the **exact** SO(3) right Jacobian $\mathbf{J}_r(\boldsymbol{\delta})$ (via SymForce), re-linearization is safe at any delta magnitude — there is no small-angle approximation to violate.
 
-### 8.4 Accelerometer Jacobian w.r.t. Position Control Points
+### 10.3 Current Configuration
 
-Given:
-$$\mathbf{r}_{acc} = \mathbf{z}_{acc} - \mathbf{R}_{w \gets b}^T(\mathbf{a}_w - \mathbf{g}_w) - \mathbf{b}_a$$
+| Parameter | Value | Description |
+| :--- | :--- | :--- |
+| `MAX_ITERATIONS` | 20 | LM iterations (with re-linearization) |
+| `LAMBDA_ACCEL` | 0.01 | Accelerometer weight |
+| `LAMBDA_GYRO` | 5.0 | Gyroscope weight |
+| `LAMBDA_SNAP_POS` | 0.0 | Position smoothness (disabled) |
+| `LAMBDA_SNAP_ORI` | 0.0 | Orientation smoothness (disabled) |
+| `HUBER_DELTA` | 0.5 m/s | Radar Huber threshold |
+| `HUBER_DELTA_ACCEL` | 2.0 m/s² | Accelerometer Huber threshold |
+| `LOCK_BIASES` | True | Biases frozen at zero |
+| `BSPLINE_DEGREE` | 5 (pos) / 3 (ori) | B-spline degrees |
+| `DT_POS` / `DT_ORI` | 0.05s / 0.05s | Knot spacings |
 
-Take derivative w.r.t. $\mathbf{c}_i^p$:
+## 11. Implementation Pipeline
 
-$$\frac{\partial \mathbf{r}_{acc}}{\partial \mathbf{c}_i^p} = -\mathbf{R}_{w \gets b}^T \frac{\partial \mathbf{a}_w}{\partial \mathbf{c}_i^p}$$
-
-Since $\mathbf{a}_w(t) = \sum_j N_j^{p-2}(t) \mathbf{c}_j^{p''}$ where $\mathbf{c}_j^{p''} = \frac{p(p-1)}{\Delta t^2}(\mathbf{c}_{j+2}^p - 2\mathbf{c}_{j+1}^p + \mathbf{c}_j^p)$:
-
-$$\frac{\partial \mathbf{a}_w}{\partial \mathbf{c}_i^p} = \frac{p(p-1)}{\Delta t^2} \left( N_{i-2}^{p-2}(t) - 2N_{i-1}^{p-2}(t) + N_i^{p-2}(t) \right) \mathbf{I}$$
-
-**Final form** (matrix $\in \mathbb{R}^{3 \times 3}$):
-$$\frac{\partial \mathbf{r}_{acc}}{\partial \mathbf{c}_i^p} = -\frac{p(p-1)}{\Delta t^2} \left( N_{i-2}^{p-2}(t) - 2N_{i-1}^{p-2}(t) + N_i^{p-2}(t) \right) \mathbf{R}_{w \gets b}^T$$
-
-### 8.5 Accelerometer Jacobian w.r.t. Orientation Control Points
-
-$$\frac{\partial \mathbf{r}_{acc}}{\partial \mathbf{c}_i^o} = \frac{\partial \mathbf{r}_{acc}}{\partial \boldsymbol{\delta\omega}} \frac{\partial \boldsymbol{\delta\omega}}{\partial \mathbf{c}_i^o}$$
-
-The derivative of $\mathbf{R}^T \mathbf{x}$ w.r.t. rotation perturbation is:
-
-$$\frac{\partial}{\partial \boldsymbol{\delta\omega}} \left( \mathbf{R}_{w \gets b}^T \mathbf{x} \right) = [\mathbf{R}_{w \gets b}^T \mathbf{x}]_\times = -[\mathbf{x}]_\times \mathbf{R}_{w \gets b}^T$$
-
-**Final form** (matrix $\in \mathbb{R}^{3 \times 3}$):
-$$\frac{\partial \mathbf{r}_{acc}}{\partial \mathbf{c}_i^o} = N_i(t) [\mathbf{a}_w - \mathbf{g}_w]_\times \mathbf{R}_{w \gets b}^T$$
-
-### 8.6 Accelerometer Jacobian w.r.t. Bias
-
-$$\frac{\partial \mathbf{r}_{acc}}{\partial \mathbf{b}_a} = -\mathbf{I}$$
-
-### 8.7 Gyroscope Jacobian w.r.t. Orientation Control Points
-
-Given:
-$$\mathbf{r}_{gyr} = \mathbf{z}_{gyr} - \boldsymbol{\omega}_b - \mathbf{b}_g$$
-
-Where $\boldsymbol{\omega}_b(t) = \sum_j N_j^{p-1}(t) \mathbf{c}_j^{o'}$ (derivative of orientation spline):
-
-$$\frac{\partial \mathbf{r}_{gyr}}{\partial \mathbf{c}_i^o} = -\frac{p_{ori}}{\Delta t_{ori}} \left( N_{i-1}^{p-1}(t) - N_i^{p-1}(t) \right) \mathbf{I}$$
-
-### 8.8 Gyroscope Jacobian w.r.t. Bias
-
-$$\frac{\partial \mathbf{r}_{gyr}}{\partial \mathbf{b}_g} = -\mathbf{I}$$
-
-### 8.9 Implementation Notes
-
-1. **Basis function caching**: Compute $N_i^p(t)$ once per measurement, reuse for all derivatives
-2. **Sparse matrix storage**: Use CSR format, only store non-zero Jacobian blocks
-3. **Vectorization**: Process all measurements at same timestamp together
-4. **Expected speedup**: 20-50× faster than numerical finite differences (currently ~20 min/iteration → ~30 sec/iteration)
-
-## 9. Implementation Strategies
-
-### 9.1 Current Approach: Batch Optimization (Offline)
+### 11.1 Current Approach: Batch Optimization (Offline)
 
 **Purpose**: Validation, calibration, ground truth generation
 
 **Method**:
-- Fixed time window (e.g., 15 seconds)
-- Optimize all variables simultaneously
-- Multiple iterations until convergence (10-15 iterations)
-- High accuracy but computationally expensive
+1. Load MoCap + IMU + Radar from rosbag
+2. Initialize position B-spline from MoCap positions (least-squares fit)
+3. Initialize orientation nominal from MoCap rotations (SLERP), delta = 0
+4. Run LM optimization with re-linearization
+5. Evaluate against MoCap ground truth
 
-**State size**: 
-- Position: 105 control points × 3 = 315 variables
-- Orientation: 35 control points × 3 = 105 variables  
-- Biases: 6 variables
-- **Total: 426 variables**
+**Initialization phases**:
+1. **Phase 1 (Forward model)**: Validate prediction equations using known MoCap state
+2. **Phase 2 (Linear solver)**: Solve for position assuming known orientation
+3. **Phase 3 (Full nonlinear)**: Joint position + orientation + bias estimation ← **current**
 
-**Initialization**:
-1. Phase 1 (Forward model): Validate prediction equations
-2. Phase 2 (Linear solver): Solve for position assuming known orientation
-3. Phase 3 (Full nonlinear): Joint position + orientation estimation
+### 11.2 SymForce Codegen Pipeline
 
-**Runtime**: 
-- Numerical Jacobian: ~20 min/iteration × 10 iterations = **3-4 hours** for 15s
-- Analytical Jacobian (future): ~30 sec/iteration × 10 iterations = **5 minutes** for 15s
+The SymForce codegen runs separately in Docker (SymForce requires specific dependencies):
 
-### 9.2 Future Approach: Sliding Window (Real-Time)
-
-**Purpose**: Online state estimation for autonomous flight
-
-**Method**:
-- Rolling window of 1-2 seconds
-- As new measurements arrive:
-  1. Drop oldest control point
-  2. Add new control point at current time
-  3. Quick optimization (1-3 iterations) using warm-start
-  4. Publish trajectory for oldest control point (now "frozen")
-
-**State size** (1s window, dt=0.15s):
-- Position: ~7 control points × 3 = 21 variables
-- Orientation: ~3 control points × 3 = 9 variables
-- Biases: 6 variables
-- **Total: ~36 variables** (12× smaller than batch)
-
-**Target performance**:
-- Process 1 second of data in < 1 second
-- With analytical Jacobian: ~100-500 ms/window
-- Real-time capable on Jetson Orin
-
-**Sliding window algorithm**:
-```python
-window = deque(maxlen=window_size)
-state = initialize_from_imu()
-
-while new_measurement_available():
-    # Add new data to window
-    window.append(new_measurement)
-    
-    # Quick optimization (warm-started from previous)
-    state = optimize(state, window, max_iterations=3)
-    
-    # Output oldest state (now outside optimization window)
-    if len(window) == window_size:
-        publish_pose(state.get_oldest())
+```bash
+docker exec iwr6843-dev /workspace/.venv_docker/bin/python \
+    /workspace/analysis/derive_jacobians_symforce.py
 ```
 
-**Advantages**:
-- Constant memory (fixed window size)
-- Constant compute (fixed number of variables)
-- Graceful degradation (can skip iterations if running slow)
+This generates `analysis/generated_jacobians.py` — a pure NumPy file with no SymForce dependency, containing:
+- `Rot3` class (quaternion representation with `from_rotation_matrix` converter)
+- Three residual-with-Jacobians functions (radar, accel, gyro)
+- Built-in validation against finite differences (run at generation time)
 
-**Disadvantages vs Batch**:
-- Slightly less accurate (shorter optimization horizon)
-- Cannot go back and fix errors (no global refinement)
-- Drift accumulation over long flights
+## 12. Current Results
 
-### 9.3 Hybrid Approach (Recommended)
+On the **backflips** bag (5 seconds of aggressive flight including backflips):
 
-**Online**: Sliding window for real-time odometry during flight
+| Metric | Value |
+| :--- | :--- |
+| Position RMSE | 2.68 m |
+| Velocity RMSE | 3.81 m/s |
+| Orientation RMSE | 11.4° |
+| Runtime | ~4.5 min (20 iterations) |
+| Iteration time | ~8-15s |
 
-**Offline**: Batch optimization for post-processing
-- Use full flight data (takeoff → landing)
-- Generate high-accuracy ground truth
-- Calibrate sensor extrinsics and biases
-- Validate sliding window performance
+## 13. Future: Sliding Window for Real-Time Estimation
 
-This mirrors successful systems like VINS-Mono, Kimera, ORB-SLAM.
+Once the batch (global) optimizer produces reliable results, the next step is a **sliding window** formulation for real-time operation on live sensor data.
 
-## 10. Current Implementation Status
+### 13.1 Concept
 
-### 10.1 Completed (Phase 1-3)
+Instead of optimizing over the entire trajectory at once, we maintain a fixed-duration window (e.g., 1–2 seconds) that slides forward in time as new measurements arrive:
 
-✅ **Forward model validation**: Doppler prediction RMSE = 0.48 m/s  
-✅ **Linear solver (Phase 2)**: Position RMSE = 2.11 m, Velocity = 0.67 m/s  
-✅ **Nonlinear solver (Phase 3)**: Joint position + orientation estimation  
-✅ **Lie algebra parameterization**: Proper SO(3) optimization via so(3)  
-✅ **Numerical Jacobian**: Finite differences (slow but working)  
-✅ **Levenberg-Marquardt**: Damped optimization with convergence detection  
+1. New radar/IMU measurements arrive
+2. Extend the B-spline with a new control point at the leading edge
+3. Marginalize (drop) the oldest control point at the trailing edge
+4. Run a few LM iterations (1–3), warm-started from the previous solution
+5. Publish the state at the trailing edge (now "frozen" and outside the window)
 
-### 10.2 Bug Fixes Applied
+### 13.2 Why Sliding Window?
 
-🐛 **Timestamp conversion**: B-splines expect relative time, not absolute *(CRITICAL)*  
-🐛 **Orientation indexing**: Changed from knot-span to time-based interpolation  
-🐛 **Angular velocity**: Analytical derivative instead of numerical differentiation  
-🐛 **Weight balancing**: Reduced LAMBDA_ACCEL from 0.1 to 0.01  
+| Property | Batch (Current) | Sliding Window |
+| :--- | :--- | :--- |
+| State size | ~640 variables (5s) | ~30–60 variables (1–2s) |
+| Compute | Minutes | Target: 10–100 ms/window |
+| Latency | Offline only | Real-time capable |
+| Accuracy | Best (global context) | Slightly worse (limited horizon) |
+| Drift | None (fixed window) | Accumulates over time |
 
-### 10.3 In Progress
+### 13.3 Open Questions
 
-🔄 **Current validation run**: Testing timestamp fix (expected ~2.5 hours runtime)  
-🔄 **Performance analysis**: Evaluating position/velocity/orientation accuracy  
+- **Marginalization strategy**: How to properly marginalize the trailing control point — Schur complement prior, or simply drop it? The Schur complement preserves information but adds complexity.
+- **Initialization without MoCap**: The current batch solver uses MoCap for $\mathbf{R}_{nom}$ and boundary priors. A real-time system needs bootstrapping from IMU-only integration.
+- **Bias observability**: With a short window, biases may not be observable. May need to carry bias estimates across windows.
+- **Re-linearization frequency**: In the batch solver we re-linearize every accepted step. In a sliding window, the warm-start means delta is already small — re-linearization may only be needed occasionally.
+- **Target platform**: Jetson Orin or similar embedded GPU.
 
 ### 10.4 Next Steps
 
