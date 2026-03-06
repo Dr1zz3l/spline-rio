@@ -1341,19 +1341,19 @@ def main():
     
     # Regularization weights
     LAMBDA_ACCEL = 0.01     # Accelerometer weight (0.1 worsened orientation from 8° to 15°)
-    LAMBDA_GYRO = 0.50       # Gyroscope weight: omega_nominal now included
+    LAMBDA_GYRO = 0.50       # Gyroscope weight: 0.1 caused 10° ori drift, 0.5 keeps it at 3.5°
     LAMBDA_SNAP_POS = 0.0001 # Position smoothness
     LAMBDA_SNAP_ORI = 0.0001   # Orientation smoothness
     LAMBDA_ORI_REG = 0.0       # Orientation regularization: disabled (penalizes delta CPs away from MoCap)
-    LAMBDA_BIAS_PRIOR = 1.0    # Bias prior: ||b||² penalty (σ=1 m/s² for accel, 1 rad/s for gyro)
+    LAMBDA_BIAS_PRIOR = 0.0    # Disabled: biases locked
     
     HUBER_DELTA = 1.0  # meters/second (Huber threshold for radar; ≥ 0.63 m/s quantization bin)
     HUBER_DELTA_ACCEL = 2.0  # m/s² (Huber threshold for accelerometer — clips spikes linearly)
     MIN_RANGE = 0.2
-    MAX_ITERATIONS = 20  # LM iterations (more room to converge)
+    MAX_ITERATIONS = 5  # LM iterations (more room to converge)
     IMU_MOCAP_OFFSET = +0.020  # seconds: IMU/radar timestamps are 20ms behind MoCap, shift forward to align (FINDINGS.md §3)
     USE_PHASE2_INIT = False  # Initialize position from Phase 2 linear solver
-    LOCK_BIASES = False  # Unlock biases: diagnostic shows ~1 m/s² body-x,y accel bias coupling to z-vel
+    LOCK_BIASES = True  # Locked: unlocking causes gyro_z=0.31 rad/s (unphysical), ori RMSE 3.5->10°
     RELINEARIZE_THRESHOLD_DEG = 15.0  # Only absorb delta into nominal when max CP delta exceeds this
     USE_JACOBI_PRECOND = '--precond' in sys.argv  # Toggle Jacobi preconditioning
     
