@@ -1345,15 +1345,15 @@ def main():
     LAMBDA_SNAP_POS = 0.0001 # Position smoothness
     LAMBDA_SNAP_ORI = 0.0001   # Orientation smoothness
     LAMBDA_ORI_REG = 0.0       # Orientation regularization: disabled (penalizes delta CPs away from MoCap)
-    LAMBDA_BIAS_PRIOR = 0.0    # Disabled: biases locked
+    LAMBDA_BIAS_PRIOR = 1.0    # Mild regularization: pulls biases toward zero but allows 0.3 rad/s gyro bias
     
     HUBER_DELTA = 1.0  # meters/second (Huber threshold for radar; ≥ 0.63 m/s quantization bin)
     HUBER_DELTA_ACCEL = 2.0  # m/s² (Huber threshold for accelerometer — clips spikes linearly)
     MIN_RANGE = 0.2
-    MAX_ITERATIONS = 5  # LM iterations (more room to converge)
+    MAX_ITERATIONS = 20  # LM iterations (need more for bias convergence)
     IMU_MOCAP_OFFSET = +0.020  # seconds: IMU/radar timestamps are 20ms behind MoCap, shift forward to align (FINDINGS.md §3)
     USE_PHASE2_INIT = False  # Initialize position from Phase 2 linear solver
-    LOCK_BIASES = True  # Locked: unlocking causes gyro_z=0.31 rad/s (unphysical), ori RMSE 3.5->10°
+    LOCK_BIASES = False  # Unlocked: gyro z-bias of ~0.28 rad/s is REAL (MEMS thermal bias, confirmed by diagnose_gyro.py)
     RELINEARIZE_THRESHOLD_DEG = 15.0  # Only absorb delta into nominal when max CP delta exceeds this
     USE_JACOBI_PRECOND = '--precond' in sys.argv  # Toggle Jacobi preconditioning
     
