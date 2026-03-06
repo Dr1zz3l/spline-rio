@@ -542,6 +542,8 @@ def compute_jacobian_analytical(
     lambda_boundary_ori: float = 0.0,
     lambda_boundary_accel: float = 0.0,
     lambda_boundary_gyro: float = 0.0,
+    lambda_ori_reg: float = 0.0,
+    lambda_bias_prior: float = 0.0,
 ) -> Tuple[sparse.csr_matrix, np.ndarray]:
     """
     Compute Jacobian and residual vector analytically using SymForce-generated functions.
@@ -935,6 +937,47 @@ def compute_jacobian_analytical(
                 row_idx += 1
                 n_boundary_gyro_rows += 1
     
+    # ==================== Orientation regularization (penalize delta CPs ≠ 0) ====================
+    # Prevents systematic orientation drift from MoCap nominal.
+    # Each ori CP has 3 components; residual = sqrt(lambda) * delta_cp_k
+    n_ori_reg_rows = 0
+    if lambda_ori_reg > 0:
+        sqrt_lor = np.sqrt(lambda_ori_reg)
+        n_ori_cp = state.ori_bspline.n_points
+        for cp_idx in range(n_ori_cp):
+            delta_cp = state.ori_bspline.control_points[cp_idx]  # (3,)
+            for k in range(3):
+                all_residuals.append(sqrt_lor * delta_cp[k])
+                col = n_pos + cp_idx * 3 + k
+                rows.append(row_idx)
+                cols.append(col)
+                vals.append(sqrt_lor)  # ∂r/∂cp_k = sqrt(lambda)
+                row_idx += 1
+                n_ori_reg_rows += 1
+    
+    # ==================== Bias prior ====================
+    # Penalize bias magnitude: r = sqrt(lambda) * b_a[k], r = sqrt(lambda) * b_g[k]
+    # Prevents biases from absorbing unphysical values while allowing reasonable estimates.
+    n_bias_prior_rows = 0
+    if lambda_bias_prior > 0:
+        sqrt_lbp = np.sqrt(lambda_bias_prior)
+        for k in range(3):
+            # Accel bias prior
+            all_residuals.append(sqrt_lbp * state.acc_bias[k])
+            rows.append(row_idx)
+            cols.append(n_pos + n_ori + k)
+            vals.append(sqrt_lbp)
+            row_idx += 1
+            n_bias_prior_rows += 1
+        for k in range(3):
+            # Gyro bias prior
+            all_residuals.append(sqrt_lbp * state.gyr_bias[k])
+            rows.append(row_idx)
+            cols.append(n_pos + n_ori + 3 + k)
+            vals.append(sqrt_lbp)
+            row_idx += 1
+            n_bias_prior_rows += 1
+    
     # Build sparse Jacobian
     n_residuals = row_idx
     J = sparse.csr_matrix(
@@ -951,6 +994,8 @@ def compute_jacobian_analytical(
     J.n_boundary_ori = n_boundary_ori_rows
     J.n_boundary_accel = n_boundary_accel_rows
     J.n_boundary_gyro = n_boundary_gyro_rows
+    J.n_ori_reg = n_ori_reg_rows
+    J.n_bias_prior = n_bias_prior_rows
     
     return J, r
 
@@ -1001,6 +1046,8 @@ def solve_trajectory_nonlinear(
     lambda_boundary_accel: float = 0.0,
     lambda_boundary_gyro: float = 0.0,
     relinearize_threshold_deg: float = 15.0,
+    lambda_ori_reg: float = 0.0,
+    lambda_bias_prior: float = 0.0,
 ) -> TrajectoryState:
     """
     Solve for optimal trajectory using Levenberg-Marquardt.
@@ -1076,6 +1123,8 @@ def solve_trajectory_nonlinear(
             lambda_boundary_ori=lambda_boundary_ori,
             lambda_boundary_accel=lambda_boundary_accel,
             lambda_boundary_gyro=lambda_boundary_gyro,
+            lambda_ori_reg=lambda_ori_reg,
+            lambda_bias_prior=lambda_bias_prior,
         )
     
     lambda_lm = 1e-3
@@ -1111,7 +1160,9 @@ def solve_trajectory_nonlinear(
             n_bo = getattr(J, 'n_boundary_ori', 0)
             n_bac = getattr(J, 'n_boundary_accel', 0)
             n_bg = getattr(J, 'n_boundary_gyro', 0)
-            n_g = len(r_total) - n_r - n_a - n_bv - n_bp - n_bo - n_bac - n_bg
+            n_or = getattr(J, 'n_ori_reg', 0)
+            n_bp_prior = getattr(J, 'n_bias_prior', 0)
+            n_g = len(r_total) - n_r - n_a - n_bv - n_bp - n_bo - n_bac - n_bg - n_or - n_bp_prior
             idx = 0
             cost_radar = np.sum(r_total[idx:idx+n_r]**2); idx += n_r
             cost_accel = np.sum(r_total[idx:idx+n_a]**2); idx += n_a
@@ -1121,12 +1172,16 @@ def solve_trajectory_nonlinear(
             cost_bo = np.sum(r_total[idx:idx+n_bo]**2); idx += n_bo
             cost_bac = np.sum(r_total[idx:idx+n_bac]**2); idx += n_bac
             cost_bg = np.sum(r_total[idx:idx+n_bg]**2); idx += n_bg
+            cost_or = np.sum(r_total[idx:idx+n_or]**2); idx += n_or
+            cost_bp_prior = np.sum(r_total[idx:idx+n_bp_prior]**2); idx += n_bp_prior
             bnd_parts = []
             if n_bv > 0: bnd_parts.append(f"bnd_vel={cost_bv:.1f}")
             if n_bp > 0: bnd_parts.append(f"bnd_pos={cost_bp:.1f}")
             if n_bo > 0: bnd_parts.append(f"bnd_ori={cost_bo:.1f}")
             if n_bac > 0: bnd_parts.append(f"bnd_acc={cost_bac:.1f}")
             if n_bg > 0: bnd_parts.append(f"bnd_gyr={cost_bg:.1f}")
+            if n_or > 0: bnd_parts.append(f"ori_reg={cost_or:.1f}")
+            if n_bp_prior > 0: bnd_parts.append(f"bias_prior={cost_bp_prior:.1f}")
             bnd_str = (" " + " ".join(bnd_parts)) if bnd_parts else ""
             print(f"Cost: total={cost_total:.2f} | radar={cost_radar:.1f} accel={cost_accel:.1f} gyro={cost_gyro:.1f}{bnd_str}")
             print(f"Jacobian: {J.shape}, nnz={J.nnz}, sparsity={100*(1-J.nnz/(J.shape[0]*J.shape[1])):.2f}%")
@@ -1257,7 +1312,7 @@ def main():
         DURATION = 5.0
         
     # Sensor extrinsics (from Phase 1 calibration)
-    ROTATION_EULER_DEG = np.array([0.0, 30.0, 0.0])  # roll, pitch, yaw — +30° pitch = downlooking
+    ROTATION_EULER_DEG = np.array([180.0, 30.0, 0.0])  # roll, pitch, yaw — +30° pitch = downlooking
 
     # Body frame flip for certain trajectory profiles
     FLIP_BODY_FRAME = bag_key in FLIPPED_BAGS
@@ -1285,18 +1340,20 @@ def main():
     DT_ORI = 0.05   # Fixed knot spacing for orientation spline (seconds)
     
     # Regularization weights
-    LAMBDA_ACCEL = 0.01      # Accelerometer weight: gravity direction constrains orientation
+    LAMBDA_ACCEL = 0.01     # Accelerometer weight (0.1 worsened orientation from 8° to 15°)
     LAMBDA_GYRO = 0.50       # Gyroscope weight: omega_nominal now included
     LAMBDA_SNAP_POS = 0.0001 # Position smoothness
     LAMBDA_SNAP_ORI = 0.0001   # Orientation smoothness
+    LAMBDA_ORI_REG = 0.0       # Orientation regularization: disabled (penalizes delta CPs away from MoCap)
+    LAMBDA_BIAS_PRIOR = 1.0    # Bias prior: ||b||² penalty (σ=1 m/s² for accel, 1 rad/s for gyro)
     
     HUBER_DELTA = 1.0  # meters/second (Huber threshold for radar; ≥ 0.63 m/s quantization bin)
     HUBER_DELTA_ACCEL = 2.0  # m/s² (Huber threshold for accelerometer — clips spikes linearly)
     MIN_RANGE = 0.2
-    MAX_ITERATIONS = 40  # LM iterations (more room to converge)
+    MAX_ITERATIONS = 20  # LM iterations (more room to converge)
     IMU_MOCAP_OFFSET = +0.020  # seconds: IMU/radar timestamps are 20ms behind MoCap, shift forward to align (FINDINGS.md §3)
     USE_PHASE2_INIT = False  # Initialize position from Phase 2 linear solver
-    LOCK_BIASES = True  # Lock biases to zero (unlocked biases absorbed unphysical values ~6 m/s²)
+    LOCK_BIASES = False  # Unlock biases: diagnostic shows ~1 m/s² body-x,y accel bias coupling to z-vel
     RELINEARIZE_THRESHOLD_DEG = 15.0  # Only absorb delta into nominal when max CP delta exceeds this
     USE_JACOBI_PRECOND = '--precond' in sys.argv  # Toggle Jacobi preconditioning
     
@@ -1325,6 +1382,7 @@ def main():
     print(f"Jacobi preconditioning: {USE_JACOBI_PRECOND}")
     print(f"Boundary priors (START only): window={BOUNDARY_WINDOW}s")
     print(f"  λ_bnd: vel={LAMBDA_BOUNDARY_VEL} pos={LAMBDA_BOUNDARY_POS} ori={LAMBDA_BOUNDARY_ORI} acc={LAMBDA_BOUNDARY_ACCEL} gyr={LAMBDA_BOUNDARY_GYRO}")
+    print(f"  λ_ori_reg: {LAMBDA_ORI_REG}  λ_bias_prior: {LAMBDA_BIAS_PRIOR}")
     
     # ==================== Load Data ====================
     print(f"\n{'Loading Data':-^80}")
@@ -1688,6 +1746,8 @@ def main():
         lambda_boundary_accel=LAMBDA_BOUNDARY_ACCEL,
         lambda_boundary_gyro=LAMBDA_BOUNDARY_GYRO,
         relinearize_threshold_deg=RELINEARIZE_THRESHOLD_DEG,
+        lambda_ori_reg=LAMBDA_ORI_REG,
+        lambda_bias_prior=LAMBDA_BIAS_PRIOR,
     )
     
     # ==================== Evaluate Results ====================
@@ -1781,6 +1841,9 @@ def main():
     print(f"\nVelocity Errors:")
     print(f"  Mean: {vel_errors.mean():.4f} m/s")
     print(f"  RMSE: {np.sqrt(np.mean(vel_errors**2)):.4f} m/s")
+    vel_diff = estimated_velocities - mocap_velocities
+    print(f"  Per-axis RMSE: x={np.sqrt(np.mean(vel_diff[:,0]**2)):.3f}  y={np.sqrt(np.mean(vel_diff[:,1]**2)):.3f}  z={np.sqrt(np.mean(vel_diff[:,2]**2)):.3f}")
+    print(f"  Per-axis mean:  x={np.mean(vel_diff[:,0]):.3f}  y={np.mean(vel_diff[:,1]):.3f}  z={np.mean(vel_diff[:,2]):.3f}")
     
     print(f"\nAcceleration Errors:")
     print(f"  Mean: {accel_errors.mean():.4f} m/s²")
@@ -1840,12 +1903,16 @@ def main():
     ax = axes[1, 0]
     mocap_speeds = np.linalg.norm(mocap_velocities, axis=1)
     est_speeds = np.linalg.norm(estimated_velocities, axis=1)
-    ax.plot(time_rel, mocap_speeds, 'b-', label='MoCap', linewidth=2)
-    ax.plot(time_rel, est_speeds, 'r--', label='Estimated', linewidth=2)
+    ax.plot(time_rel, mocap_speeds, 'b-', label='MoCap |v|', linewidth=2, alpha=0.7)
+    ax.plot(time_rel, est_speeds, 'r--', label='Est |v|', linewidth=2, alpha=0.7)
+    # Per-axis velocity comparison (thin lines)
+    for dim, (lbl, color) in enumerate(zip(['x', 'y', 'z'], ['tab:blue', 'tab:green', 'tab:purple'])):
+        ax.plot(time_rel, mocap_velocities[:, dim], color=color, linewidth=0.8, alpha=0.5, label=f'MoCap v_{lbl}')
+        ax.plot(time_rel, estimated_velocities[:, dim], color=color, linewidth=0.8, alpha=0.5, linestyle='--')
     ax.set_xlabel('Time (s)')
-    ax.set_ylabel('Speed (m/s)')
-    ax.set_title('Speed Comparison')
-    ax.legend()
+    ax.set_ylabel('Velocity (m/s)')
+    ax.set_title('Velocity: |v| + per-axis')
+    ax.legend(fontsize=6, ncol=2)
     ax.grid(True, alpha=0.3)
     
     # 5. Velocity error
@@ -1916,6 +1983,7 @@ def main():
         f"  bnd_window={BOUNDARY_WINDOW}s (start only)",
         f"  max_iter={MAX_ITERATIONS}  precond={USE_JACOBI_PRECOND}",
         f"  relin_thr={RELINEARIZE_THRESHOLD_DEG}°  imu_offset={IMU_MOCAP_OFFSET*1000:.0f}ms",
+        f"  λ_ori_reg={LAMBDA_ORI_REG}  λ_bias_prior={LAMBDA_BIAS_PRIOR}",
     ]
     summary_text = "\n".join(summary_lines)
     ax.text(0.02, 0.98, summary_text, transform=ax.transAxes,
