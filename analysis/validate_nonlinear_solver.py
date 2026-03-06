@@ -280,7 +280,9 @@ class TrajectoryState:
         n_cp = self.ori_bspline.n_points
         
         # Dense sampling to minimize interpolation error between B-spline and SLERP
-        n_dense = max(200, n_cp * 20)  # ~200+ samples over the trajectory
+        # Need very high density so that SLERP and cubic interp1d reproduce the
+        # original B-spline composition with negligible error.
+        n_dense = max(5000, n_cp * 50)  # ~5000+ samples over the trajectory
         t_start = self.ori_bspline.t_start
         t_end = self.ori_bspline.t_end
         dense_times = np.linspace(t_start, t_end, n_dense)
@@ -318,8 +320,11 @@ class TrajectoryState:
         ])
         
         # Use analytically computed angular velocity (NOT numerical differentiation)
+        # Cubic interpolation is essential: linear interp introduces piecewise-constant
+        # derivative, which causes cost leaks when relinearization replaces the smooth
+        # B-spline delta composition with a lookup table.
         self.mocap_omega_interp = interp1d(dense_times, dense_omegas, axis=0,
-                                            kind='linear', fill_value='extrapolate')
+                                            kind='cubic', fill_value='extrapolate')
         
         # Reset delta control points to zero
         self.ori_bspline.control_points = np.zeros((n_cp, 3))
@@ -995,6 +1000,7 @@ def solve_trajectory_nonlinear(
     lambda_boundary_ori: float = 0.0,
     lambda_boundary_accel: float = 0.0,
     lambda_boundary_gyro: float = 0.0,
+    relinearize_threshold_deg: float = 15.0,
 ) -> TrajectoryState:
     """
     Solve for optimal trajectory using Levenberg-Marquardt.
@@ -1012,7 +1018,7 @@ def solve_trajectory_nonlinear(
     """
     if verbose:
         print(f"\n{'Levenberg-Marquardt Optimization':#^80}")
-        print(f"Max iterations: {max_iterations} (with re-linearization after each accepted step)")
+        print(f"Max iterations: {max_iterations} (re-linearize when delta > {relinearize_threshold_deg}°)")
         print(f"Huber delta (radar): {huber_delta}")
         print(f"Huber delta (accel): {huber_delta_accel if huber_delta_accel > 0 else 'OFF (L2)'}")
         print(f"Lambda accel: {lambda_accel}")
@@ -1164,15 +1170,18 @@ def solve_trajectory_nonlinear(
         if new_cost < cost_total:
             lambda_lm = max(1e-15, lambda_lm * 0.1)  # Aggressive: snap to Gauss-Newton mode
             prev_cost = new_cost
-            if verbose:
-                delta_norms = np.linalg.norm(state.ori_bspline.control_points, axis=1)
-                print(f"  Accepted: cost {cost_total:.1f} -> {new_cost:.1f} (max |delta|={np.degrees(delta_norms.max()):.1f}°)")
-            # Re-linearize: absorb delta into nominal orientation
             max_delta_deg = np.degrees(
                 np.linalg.norm(state.ori_bspline.control_points, axis=1).max())
-            state.relinearize()
             if verbose:
-                print(f"  Re-linearized: absorbed max |delta|={max_delta_deg:.1f}° into nominal")
+                print(f"  Accepted: cost {cost_total:.1f} -> {new_cost:.1f} (max |delta|={max_delta_deg:.1f}°)")
+            # Re-linearize only when delta is large enough to warrant it
+            if max_delta_deg >= relinearize_threshold_deg:
+                state.relinearize()
+                if verbose:
+                    print(f"  Re-linearized: absorbed max |delta|={max_delta_deg:.1f}° into nominal")
+            else:
+                if verbose:
+                    print(f"  Skipped re-linearization (max |delta|={max_delta_deg:.1f}° < {relinearize_threshold_deg:.1f}° threshold)")
         else:
             # Reject and increase damping
             state.from_vector(x_current)
@@ -1232,8 +1241,20 @@ def main():
     else:
         BAG_PATH = bag_key
 
-    START_TIME_OFFSET = 30.0   # Skip initial hover
-    DURATION = 5.0          # only timeframe of the loopings
+    # Per-bag flight windows (auto-detected from MoCap velocity > 0.5 m/s)
+    # Each entry: (start_offset, duration) covering the main flight segment
+    BAG_TIMING = {
+        "circle":       (25.5, 8.5),   # Window [4]: t=25.8-34.0s, mean 3.3 m/s
+        "circle_fast":  (14.5, 8.5),   # Window [7]: t=14.7-23.1s, mean 5.3 m/s (aliasing risk!)
+        "circle_fwd":   (28.0, 8.0),   # Window [2]: t=28.1-36.3s, mean 3.2 m/s
+        "loopings":     (9.5,  8.5),   # Window [3]: t=9.5-18.0s, mean 5.2 m/s (aliasing risk!)
+        "backflips":    (26.5, 5.0),   # Window [2]: t=26.4-45.2s (using first 5s to keep manageable)
+    }
+    if bag_key in BAG_TIMING:
+        START_TIME_OFFSET, DURATION = BAG_TIMING[bag_key]
+    else:
+        START_TIME_OFFSET = 30.0
+        DURATION = 5.0
         
     # Sensor extrinsics (from Phase 1 calibration)
     ROTATION_EULER_DEG = np.array([0.0, 30.0, 0.0])  # roll, pitch, yaw — +30° pitch = downlooking
@@ -1265,16 +1286,18 @@ def main():
     
     # Regularization weights
     LAMBDA_ACCEL = 0.01      # Accelerometer weight: gravity direction constrains orientation
-    LAMBDA_GYRO = 50.0       # Gyroscope weight: omega_nominal now included
+    LAMBDA_GYRO = 0.50       # Gyroscope weight: omega_nominal now included
     LAMBDA_SNAP_POS = 0.0001 # Position smoothness
     LAMBDA_SNAP_ORI = 0.0001   # Orientation smoothness
     
     HUBER_DELTA = 1.0  # meters/second (Huber threshold for radar; ≥ 0.63 m/s quantization bin)
     HUBER_DELTA_ACCEL = 2.0  # m/s² (Huber threshold for accelerometer — clips spikes linearly)
     MIN_RANGE = 0.2
-    MAX_ITERATIONS = 20  # LM iterations (re-linearization after each accepted step)
+    MAX_ITERATIONS = 40  # LM iterations (more room to converge)
+    IMU_MOCAP_OFFSET = +0.020  # seconds: IMU/radar timestamps are 20ms behind MoCap, shift forward to align (FINDINGS.md §3)
     USE_PHASE2_INIT = False  # Initialize position from Phase 2 linear solver
-    LOCK_BIASES = True  # Lock biases to zero — force solver to fix orientation instead
+    LOCK_BIASES = True  # Lock biases to zero (unlocked biases absorbed unphysical values ~6 m/s²)
+    RELINEARIZE_THRESHOLD_DEG = 15.0  # Only absorb delta into nominal when max CP delta exceeds this
     USE_JACOBI_PRECOND = '--precond' in sys.argv  # Toggle Jacobi preconditioning
     
     # Boundary priors: pin spline state at START to MoCap ground truth (no end priors)
@@ -1295,7 +1318,8 @@ def main():
     print(f"Lambda snap (pos/ori): {LAMBDA_SNAP_POS}/{LAMBDA_SNAP_ORI}")
     print(f"Huber delta (radar): {HUBER_DELTA} m/s")
     print(f"Huber delta (accel): {HUBER_DELTA_ACCEL} m/s²")
-    print(f"Max iterations: {MAX_ITERATIONS} (re-linearize after each accepted step)")
+    print(f"Max iterations: {MAX_ITERATIONS} (re-linearize when delta > {RELINEARIZE_THRESHOLD_DEG}°)")
+    print(f"IMU-MoCap time offset: {IMU_MOCAP_OFFSET*1000:.0f} ms")
     print(f"Use Phase 2 init: {USE_PHASE2_INIT}")
     print(f"Lock biases: {LOCK_BIASES}")
     print(f"Jacobi preconditioning: {USE_JACOBI_PRECOND}")
@@ -1313,6 +1337,15 @@ def main():
     agiros_states = [s for s in bag_data.agiros_state if t_start <= s.timestamp <= t_end]
     radar_frames = [f for f in bag_data.radar_velocity if t_start <= f.timestamp <= t_end]
     imu_data = [d for d in bag_data.imu_data if t_start <= d.timestamp <= t_end]
+    
+    # Apply IMU-MoCap time offset (FINDINGS.md §3: IMU timestamps are 20ms behind MoCap)
+    # Shift IMU and radar timestamps to align with MoCap time axis
+    if IMU_MOCAP_OFFSET != 0:
+        for d in imu_data:
+            d.timestamp += IMU_MOCAP_OFFSET
+        for f in radar_frames:
+            f.timestamp += IMU_MOCAP_OFFSET
+        print(f"  Applied IMU-MoCap time offset: {IMU_MOCAP_OFFSET*1000:.0f} ms to {len(imu_data)} IMU + {len(radar_frames)} radar samples")
     
     # Filter near-duplicate MoCap timestamps (dt < 1ms) that cause interpolation spikes
     # See FINDINGS.md Section 8: MoCap has samples with dt ~5us causing vel/accel spikes
@@ -1490,7 +1523,7 @@ def main():
     # Use tangent space parameterization around nominal rotations
     
     # Create orientation spline with fixed knot spacing (independent of window duration)
-    ori_degree = min(3, BSPLINE_DEGREE)  # Cubic for orientation
+    ori_degree = min(3, BSPLINE_DEGREE)  # Cubic for orientation (higher degrees destabilize)
     n_interior_ori = int(np.ceil(DURATION / DT_ORI)) + 1
     n_ori_points = max(ori_degree + 2, n_interior_ori + 2 * BOUNDARY_ORDER)
     
@@ -1518,7 +1551,7 @@ def main():
     # Create angular velocity interpolation from MoCap
     mocap_angular_velocities = np.array([s.angular_velocity for s in agiros_states])
     mocap_omega_interp = interp1d(mocap_times_rel, mocap_angular_velocities, axis=0,
-                                   kind='linear', fill_value='extrapolate')
+                                   kind='cubic', fill_value='extrapolate')
     
     print(f"Orientation spline: {n_ori_points} control points, dt={ori_bspline.dt:.4f}s")
     print(f"  SLERP from {len(mocap_times_rel)} MoCap samples ({1.0/(mocap_times_rel[1]-mocap_times_rel[0]):.0f} Hz)")
@@ -1654,6 +1687,7 @@ def main():
         lambda_boundary_ori=LAMBDA_BOUNDARY_ORI,
         lambda_boundary_accel=LAMBDA_BOUNDARY_ACCEL,
         lambda_boundary_gyro=LAMBDA_BOUNDARY_GYRO,
+        relinearize_threshold_deg=RELINEARIZE_THRESHOLD_DEG,
     )
     
     # ==================== Evaluate Results ====================
@@ -1881,6 +1915,7 @@ def main():
         f"  λ_bnd_gyr={LAMBDA_BOUNDARY_GYRO}",
         f"  bnd_window={BOUNDARY_WINDOW}s (start only)",
         f"  max_iter={MAX_ITERATIONS}  precond={USE_JACOBI_PRECOND}",
+        f"  relin_thr={RELINEARIZE_THRESHOLD_DEG}°  imu_offset={IMU_MOCAP_OFFSET*1000:.0f}ms",
     ]
     summary_text = "\n".join(summary_lines)
     ax.text(0.02, 0.98, summary_text, transform=ax.transAxes,
