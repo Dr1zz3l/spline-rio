@@ -26,7 +26,8 @@ from rosbag_loader.loader import load_bag_topics
 from radar_velocity_utils import (
     quat_to_rotation_matrix,
     rotation_matrix_from_euler,
-    predict_doppler_velocity
+    predict_doppler_velocity,
+    compute_aliasing_summary
 )
 from bspline_utils import (
     UniformBSpline,
@@ -1268,7 +1269,7 @@ def main():
     LAMBDA_SNAP_POS = 0.0001 # Position smoothness
     LAMBDA_SNAP_ORI = 0.0001   # Orientation smoothness
     
-    HUBER_DELTA = 0.5  # meters/second (Huber threshold for radar)
+    HUBER_DELTA = 1.0  # meters/second (Huber threshold for radar; ≥ 0.63 m/s quantization bin)
     HUBER_DELTA_ACCEL = 2.0  # m/s² (Huber threshold for accelerometer — clips spikes linearly)
     MIN_RANGE = 0.2
     MAX_ITERATIONS = 20  # LM iterations (re-linearization after each accepted step)
@@ -1313,14 +1314,32 @@ def main():
     radar_frames = [f for f in bag_data.radar_velocity if t_start <= f.timestamp <= t_end]
     imu_data = [d for d in bag_data.imu_data if t_start <= d.timestamp <= t_end]
     
+    # Filter near-duplicate MoCap timestamps (dt < 1ms) that cause interpolation spikes
+    # See FINDINGS.md Section 8: MoCap has samples with dt ~5us causing vel/accel spikes
+    n_before = len(agiros_states)
+    filtered_agiros = [agiros_states[0]]
+    for i in range(1, len(agiros_states)):
+        if agiros_states[i].timestamp - filtered_agiros[-1].timestamp >= 1e-3:
+            filtered_agiros.append(agiros_states[i])
+    agiros_states = filtered_agiros
+    n_removed = n_before - len(agiros_states)
+    
     print(f"\nFiltered data:")
-    print(f"  MoCap states: {len(agiros_states)}")
+    print(f"  MoCap states: {len(agiros_states)} ({n_removed} near-duplicate timestamps removed)")
     print(f"  Radar frames: {len(radar_frames)}")
     print(f"  IMU samples: {len(imu_data)}")
     
     if len(agiros_states) == 0 or len(radar_frames) == 0 or len(imu_data) == 0:
         print("ERROR: Insufficient data!")
         return
+    
+    # Aliasing risk check (uses MoCap ground truth to detect wrapped Doppler)
+    V_MAX = 4.99  # ±m/s, from 6843AOP_3d.cfg (change to 3.84 for best_velocity config)
+    aliasing_info = compute_aliasing_summary(
+        agiros_states, radar_frames,
+        TRANSLATION, SENSOR_ROTATION,
+        v_max=V_MAX, min_range=MIN_RANGE,
+    )
     
     # Downsample IMU data for computational efficiency (~200 Hz is sufficient)
     IMU_DOWNSAMPLE = max(1, len(imu_data) // (int(DURATION * 200)))

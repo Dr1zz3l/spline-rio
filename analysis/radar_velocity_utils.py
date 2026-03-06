@@ -1171,3 +1171,117 @@ def calibrate_radar_extrinsics_and_timing(
         'x_opt': x_opt
     }
 
+
+def compute_aliasing_summary(
+    agiros_states,
+    radar_frames,
+    T_body_from_sensor: np.ndarray,
+    R_body_from_sensor: np.ndarray,
+    v_max: float = 4.99,
+    time_offset: float = 0.0,
+    min_range: float = 0.2,
+    verbose: bool = True,
+) -> Dict[str, Any]:
+    """
+    Detect Doppler aliasing risk using MoCap ground truth.
+
+    For each radar point, predicts the true Doppler from MoCap and checks
+    whether |v_pred| > v_max (the max unambiguous radial velocity).  Points
+    exceeding the limit are aliased — the measured velocity has wrapped by
+    ±2·v_max.
+
+    Args:
+        agiros_states: List of AgirosState objects (MoCap ground truth)
+        radar_frames:  List of RadarVelocity objects
+        T_body_from_sensor: Translation from sensor to body origin in body frame [3]
+        R_body_from_sensor: Rotation matrix from sensor to body (3×3)
+        v_max: Maximum unambiguous radial velocity (m/s), from radar config
+        time_offset: Time offset to add to radar timestamps (seconds)
+        min_range: Minimum range threshold for filtering radar points
+        verbose: Print summary table
+
+    Returns:
+        Dictionary with per-frame and aggregate aliasing statistics.
+    """
+    agiros_times = np.array([s.timestamp for s in agiros_states])
+    vel_interp = interp1d(agiros_times,
+                          np.array([s.velocity for s in agiros_states]),
+                          axis=0, kind='linear',
+                          bounds_error=False, fill_value='extrapolate')
+    omega_interp = interp1d(agiros_times,
+                            np.array([s.angular_velocity for s in agiros_states]),
+                            axis=0, kind='linear',
+                            bounds_error=False, fill_value='extrapolate')
+    quat_interp = interp1d(agiros_times,
+                           np.array([s.orientation for s in agiros_states]),
+                           axis=0, kind='linear',
+                           bounds_error=False, fill_value='extrapolate')
+
+    total_points = 0
+    aliased_points = 0
+    frames_with_aliasing = 0
+    frame_results = []
+
+    for frame in radar_frames:
+        t = frame.timestamp + time_offset
+        if t < agiros_times[0] or t > agiros_times[-1]:
+            continue
+
+        v_world = vel_interp(t)
+        omega_body = omega_interp(t)
+        R_wb = quat_to_rotation_matrix(quat_interp(t))
+
+        positions = np.array(frame.positions)
+        ranges = np.linalg.norm(positions, axis=1)
+        valid = ranges >= min_range
+        if not np.any(valid):
+            continue
+
+        v_pred = predict_doppler_velocity(
+            v_world, omega_body, R_wb,
+            positions[valid], T_body_from_sensor, R_body_from_sensor,
+        )
+
+        n_valid = int(np.sum(valid))
+        n_aliased = int(np.sum(np.abs(v_pred) > v_max))
+        max_abs = float(np.max(np.abs(v_pred)))
+
+        total_points += n_valid
+        aliased_points += n_aliased
+        if n_aliased > 0:
+            frames_with_aliasing += 1
+
+        frame_results.append({
+            'timestamp': frame.timestamp,
+            'n_points': n_valid,
+            'n_aliased': n_aliased,
+            'max_abs_doppler': max_abs,
+        })
+
+    n_frames = len(frame_results)
+    pct_points = 100.0 * aliased_points / total_points if total_points else 0.0
+    pct_frames = 100.0 * frames_with_aliasing / n_frames if n_frames else 0.0
+
+    if verbose:
+        print(f"\n{'Doppler Aliasing Summary':-^60}")
+        print(f"  v_max (config):       ±{v_max:.2f} m/s")
+        print(f"  Total radar frames:   {n_frames}")
+        print(f"  Total radar points:   {total_points}")
+        print(f"  Aliased points:       {aliased_points} ({pct_points:.1f}%)")
+        print(f"  Frames with aliasing: {frames_with_aliasing} ({pct_frames:.1f}%)")
+        if frame_results:
+            max_doppler = max(f['max_abs_doppler'] for f in frame_results)
+            print(f"  Peak |v_pred|:        {max_doppler:.2f} m/s"
+                  f"  ({'EXCEEDS' if max_doppler > v_max else 'within'} v_max)")
+
+    return {
+        'v_max': v_max,
+        'total_points': total_points,
+        'aliased_points': aliased_points,
+        'aliased_pct': pct_points,
+        'frames_total': n_frames,
+        'frames_aliased': frames_with_aliasing,
+        'frames_aliased_pct': pct_frames,
+        'per_frame': frame_results,
+    }
+
