@@ -544,6 +544,8 @@ def compute_jacobian_analytical(
     lambda_boundary_gyro: float = 0.0,
     lambda_ori_reg: float = 0.0,
     lambda_bias_prior: float = 0.0,
+    lambda_bias_prior_accel: float = None,
+    lambda_bias_prior_gyro: float = None,
 ) -> Tuple[sparse.csr_matrix, np.ndarray]:
     """
     Compute Jacobian and residual vector analytically using SymForce-generated functions.
@@ -956,25 +958,28 @@ def compute_jacobian_analytical(
                 n_ori_reg_rows += 1
     
     # ==================== Bias prior ====================
-    # Penalize bias magnitude: r = sqrt(lambda) * b_a[k], r = sqrt(lambda) * b_g[k]
-    # Prevents biases from absorbing unphysical values while allowing reasonable estimates.
+    # Penalize bias magnitude: r = sqrt(lambda) * b[k]
+    # Separate weights for accel and gyro to allow different constraint strengths.
+    # lambda_bias_prior_accel/gyro override lambda_bias_prior if set.
+    lbp_accel = lambda_bias_prior_accel if lambda_bias_prior_accel is not None else lambda_bias_prior
+    lbp_gyro = lambda_bias_prior_gyro if lambda_bias_prior_gyro is not None else lambda_bias_prior
     n_bias_prior_rows = 0
-    if lambda_bias_prior > 0:
-        sqrt_lbp = np.sqrt(lambda_bias_prior)
+    if lbp_accel > 0:
+        sqrt_lbp_a = np.sqrt(lbp_accel)
         for k in range(3):
-            # Accel bias prior
-            all_residuals.append(sqrt_lbp * state.acc_bias[k])
+            all_residuals.append(sqrt_lbp_a * state.acc_bias[k])
             rows.append(row_idx)
             cols.append(n_pos + n_ori + k)
-            vals.append(sqrt_lbp)
+            vals.append(sqrt_lbp_a)
             row_idx += 1
             n_bias_prior_rows += 1
+    if lbp_gyro > 0:
+        sqrt_lbp_g = np.sqrt(lbp_gyro)
         for k in range(3):
-            # Gyro bias prior
-            all_residuals.append(sqrt_lbp * state.gyr_bias[k])
+            all_residuals.append(sqrt_lbp_g * state.gyr_bias[k])
             rows.append(row_idx)
             cols.append(n_pos + n_ori + 3 + k)
-            vals.append(sqrt_lbp)
+            vals.append(sqrt_lbp_g)
             row_idx += 1
             n_bias_prior_rows += 1
     
@@ -1048,6 +1053,8 @@ def solve_trajectory_nonlinear(
     relinearize_threshold_deg: float = 15.0,
     lambda_ori_reg: float = 0.0,
     lambda_bias_prior: float = 0.0,
+    lambda_bias_prior_accel: float = None,
+    lambda_bias_prior_gyro: float = None,
 ) -> TrajectoryState:
     """
     Solve for optimal trajectory using Levenberg-Marquardt.
@@ -1107,11 +1114,18 @@ def solve_trajectory_nonlinear(
     R_snap = R_snap.tocsr()
     
     # Helper: build Jacobian with all params
-    def _build_jacobian(st):
+    # Accel warm-up: first 5 iterations use lambda_accel=0 (radar+gyro only for orientation),
+    # then ramp to full lambda_accel so the accelerometer doesn't corrupt orientation early.
+    ACCEL_WARMUP_ITERS = 3
+    
+    def _build_jacobian(st, iteration_idx=None):
+        la = lambda_accel
+        if iteration_idx is not None and iteration_idx < ACCEL_WARMUP_ITERS:
+            la = 0.0
         return compute_jacobian_analytical(
             st, radar_frames, imu_data,
             sensor_translation, sensor_rotation,
-            lambda_accel, lambda_gyro, huber_delta,
+            la, lambda_gyro, huber_delta,
             boundary_vel_priors=boundary_vel_priors,
             boundary_pos_priors=boundary_pos_priors,
             lambda_boundary_vel=lambda_boundary_vel,
@@ -1125,12 +1139,21 @@ def solve_trajectory_nonlinear(
             lambda_boundary_gyro=lambda_boundary_gyro,
             lambda_ori_reg=lambda_ori_reg,
             lambda_bias_prior=lambda_bias_prior,
+            lambda_bias_prior_accel=lambda_bias_prior_accel,
+            lambda_bias_prior_gyro=lambda_bias_prior_gyro,
         )
     
     lambda_lm = 1e-3
     prev_cost = None
     
     for iteration in range(max_iterations):
+        # Reset LM state when transitioning from warmup to full accel
+        if iteration == ACCEL_WARMUP_ITERS:
+            prev_cost = None
+            lambda_lm = 1e-3
+            if verbose:
+                print(f"\n  >>> Accel warm-up complete. Enabling accelerometer (lambda_accel={lambda_accel})")
+        
         if verbose:
             print(f"\n{'Iteration ' + str(iteration + 1):-^80}")
             # Track orientation RMSE per iteration
@@ -1145,9 +1168,12 @@ def solve_trajectory_nonlinear(
         
         # Build Jacobian + residual vector analytically (includes all costs)
         if verbose:
-            print("Computing analytical Jacobian...")
+            if iteration < ACCEL_WARMUP_ITERS:
+                print(f"Computing analytical Jacobian... [ACCEL WARMUP: off, iter {iteration+1}/{ACCEL_WARMUP_ITERS}]")
+            else:
+                print("Computing analytical Jacobian...")
         
-        J, r_total = _build_jacobian(state)
+        J, r_total = _build_jacobian(state, iteration_idx=iteration)
         
         cost_total = np.sum(r_total**2)
         
@@ -1218,7 +1244,7 @@ def solve_trajectory_nonlinear(
         state.from_vector(x_new)
         
         # Evaluate new cost
-        _, r_new = _build_jacobian(state)
+        _, r_new = _build_jacobian(state, iteration_idx=iteration)
         new_cost = np.sum(r_new**2)
         
         # LM acceptance: accept only if cost decreased
@@ -1273,7 +1299,7 @@ BAGS = {
 }
 
 # Bags where the agiros body frame is rotated 180 deg in yaw
-FLIPPED_BAGS = {"circle_fwd", "loopings"}
+FLIPPED_BAGS = {"circle_fwd", "loopings", "backflips"}
 
 # ==================== Main Validation ====================
 
@@ -1340,26 +1366,28 @@ def main():
     DT_ORI = 0.05   # Fixed knot spacing for orientation spline (seconds)
     
     # Regularization weights
-    LAMBDA_ACCEL = 0.01     # Accelerometer weight (0.1 worsened orientation from 8° to 15°)
+    LAMBDA_ACCEL = 0.01     # Accelerometer weight (0.05 causes ori degradation; 0.01 too weak for z-vel)
     LAMBDA_GYRO = 0.50       # Gyroscope weight: 0.1 caused 10° ori drift, 0.5 keeps it at 3.5°
     LAMBDA_SNAP_POS = 0.0001 # Position smoothness
     LAMBDA_SNAP_ORI = 0.0001   # Orientation smoothness
     LAMBDA_ORI_REG = 0.0       # Orientation regularization: disabled (penalizes delta CPs away from MoCap)
-    LAMBDA_BIAS_PRIOR = 1.0    # Mild regularization: pulls biases toward zero but allows 0.3 rad/s gyro bias
+    LAMBDA_BIAS_PRIOR = 1.0    # Fallback (overridden by per-sensor values below)
+    LAMBDA_BIAS_PRIOR_ACCEL = 10.0  # Strong: MEMS accel bias is <0.3 m/s²; prevents gravity leakage
+    LAMBDA_BIAS_PRIOR_GYRO = 1.0    # Mild: allows real MEMS gyro bias of ~0.3 rad/s
     
     HUBER_DELTA = 1.0  # meters/second (Huber threshold for radar; ≥ 0.63 m/s quantization bin)
     HUBER_DELTA_ACCEL = 2.0  # m/s² (Huber threshold for accelerometer — clips spikes linearly)
     MIN_RANGE = 0.2
-    MAX_ITERATIONS = 20  # LM iterations (need more for bias convergence)
+    MAX_ITERATIONS = 30  # LM iterations (need more for bias convergence + warmup)
     IMU_MOCAP_OFFSET = +0.020  # seconds: IMU/radar timestamps are 20ms behind MoCap, shift forward to align (FINDINGS.md §3)
     USE_PHASE2_INIT = False  # Initialize position from Phase 2 linear solver
     LOCK_BIASES = False  # Unlocked: gyro z-bias of ~0.28 rad/s is REAL (MEMS thermal bias, confirmed by diagnose_gyro.py)
-    RELINEARIZE_THRESHOLD_DEG = 15.0  # Only absorb delta into nominal when max CP delta exceeds this
+    RELINEARIZE_THRESHOLD_DEG = 10.0  # Trigger re-linearization sooner to keep delta small
     USE_JACOBI_PRECOND = '--precond' in sys.argv  # Toggle Jacobi preconditioning
     
     # Boundary priors: pin spline state at START to MoCap ground truth (no end priors)
-    LAMBDA_BOUNDARY_VEL = 100.0   # Weight for boundary velocity priors
-    LAMBDA_BOUNDARY_POS = 100.0   # Weight for boundary position priors
+    LAMBDA_BOUNDARY_VEL = 1000.0  # Weight for boundary velocity priors (strong: prevents accel-drag)
+    LAMBDA_BOUNDARY_POS = 1000.0  # Weight for boundary position priors (strong: prevents drift from start)
     LAMBDA_BOUNDARY_ORI = 100.0   # Weight for boundary orientation priors (delta=0)
     LAMBDA_BOUNDARY_ACCEL = 0.001  # Weight for boundary acceleration priors
     LAMBDA_BOUNDARY_GYRO = 10.0  # Weight for boundary angular velocity priors (delta_dot=0)
@@ -1382,7 +1410,7 @@ def main():
     print(f"Jacobi preconditioning: {USE_JACOBI_PRECOND}")
     print(f"Boundary priors (START only): window={BOUNDARY_WINDOW}s")
     print(f"  λ_bnd: vel={LAMBDA_BOUNDARY_VEL} pos={LAMBDA_BOUNDARY_POS} ori={LAMBDA_BOUNDARY_ORI} acc={LAMBDA_BOUNDARY_ACCEL} gyr={LAMBDA_BOUNDARY_GYRO}")
-    print(f"  λ_ori_reg: {LAMBDA_ORI_REG}  λ_bias_prior: {LAMBDA_BIAS_PRIOR}")
+    print(f"  λ_ori_reg: {LAMBDA_ORI_REG}  λ_bias_prior: accel={LAMBDA_BIAS_PRIOR_ACCEL} gyro={LAMBDA_BIAS_PRIOR_GYRO}")
     
     # ==================== Load Data ====================
     print(f"\n{'Loading Data':-^80}")
@@ -1748,6 +1776,8 @@ def main():
         relinearize_threshold_deg=RELINEARIZE_THRESHOLD_DEG,
         lambda_ori_reg=LAMBDA_ORI_REG,
         lambda_bias_prior=LAMBDA_BIAS_PRIOR,
+        lambda_bias_prior_accel=LAMBDA_BIAS_PRIOR_ACCEL,
+        lambda_bias_prior_gyro=LAMBDA_BIAS_PRIOR_GYRO,
     )
     
     # ==================== Evaluate Results ====================
