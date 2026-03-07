@@ -51,7 +51,7 @@ This formula and all its Jacobians are computed **exactly via SymForce codegen**
 
 $$\mathbf{b}_a \in \mathbb{R}^3, \quad \mathbf{b}_g \in \mathbb{R}^3$$
 
-Constant accelerometer and gyroscope biases (currently locked to zero via `LOCK_BIASES=True`).
+Constant accelerometer and gyroscope biases. Currently estimated (`LOCK_BIASES=False`). The gyroscope z-bias is a real MEMS thermal bias (~0.18–0.28 rad/s, confirmed by `diagnose_gyro.py`). The accelerometer bias is constrained by a strong prior (`LAMBDA_BIAS_PRIOR_ACCEL=10.0`) to prevent gravity leakage.
 
 ### 1.5 Full State Vector
 
@@ -119,7 +119,7 @@ Where:
 - $E_{boundary}$: Boundary priors at trajectory start
 - $\lambda_{acc}, \lambda_{gyr}$: Weights balancing sensor modalities
 
-This is solved using **Levenberg-Marquardt** (damped Gauss-Newton) with **re-linearization after every accepted step**.
+This is solved using **Levenberg-Marquardt** (damped Gauss-Newton) with **conditional re-linearization** (triggered when max orientation delta exceeds a threshold).
 
 ## 4. The Radar Residual ($r_{rad}$)
 
@@ -150,7 +150,7 @@ $$E_{radar} = \sum_{k \in \mathcal{P}} \rho_{Huber} \left( r_{rad, k}; \delta_{h
 Where:
 $$\rho_{Huber}(x; \delta) = \begin{cases} \frac{1}{2}x^2 & |x| \le \delta \\ \delta |x| - \frac{1}{2}\delta^2 & |x| > \delta \end{cases}$$
 
-Current setting: $\delta_{hub} = 0.5$ m/s.
+Current setting: $\delta_{hub} = 1.0$ m/s (increased from 0.5 to account for 0.63 m/s Doppler quantization).
 
 ## 5. The Accelerometer Residual ($r_{acc}$)
 
@@ -171,6 +171,8 @@ Operates with optional Huber loss on the 3D residual norm, weighted by $\lambda_
 $$E_{accel} = \lambda_{acc} \sum_{m} \rho_{Huber}(||\mathbf{r}_{acc,m}||; \delta_{acc})$$
 
 Current settings: $\lambda_{acc} = 0.01$, $\delta_{acc} = 2.0$ m/s².
+
+**Note on accel–orientation coupling:** The accelerometer residual depends on orientation through $R_{wb}^\top$. Increasing $\lambda_{acc}$ causes the optimizer to adjust orientation to reduce accel residuals, which can degrade orientation accuracy. At $\lambda_{acc} \geq 0.05$, the accel cost dominates and pulls orientation away from the gyro-determined solution. The current value of 0.01 keeps the accel contribution balanced.
 
 ## 6. The Gyroscope Residual ($r_{gyr}$)
 
@@ -196,7 +198,7 @@ Gyroscope noise is modeled as Gaussian (L2 loss):
 
 $$E_{gyro} = \lambda_{gyr} \sum_{m} || \mathbf{r}_{gyr, m} ||^2$$
 
-Current setting: $\lambda_{gyr} = 5.0$.
+Current setting: $\lambda_{gyr} = 0.50$.
 
 ## 7. Boundary Priors
 
@@ -208,8 +210,8 @@ Each term takes the form $\lambda \cdot || x_{est}(t) - x_{target}(t) ||^2$ at s
 
 | Prior | Target | Weight |
 | :--- | :--- | :--- |
-| Position | $\mathbf{p}_{MoCap}(t)$ | $\lambda_{bnd,pos} = 100$ |
-| Velocity | $\mathbf{v}_{MoCap}(t)$ | $\lambda_{bnd,vel} = 100$ |
+| Position | $\mathbf{p}_{MoCap}(t)$ | $\lambda_{bnd,pos} = 1000$ |
+| Velocity | $\mathbf{v}_{MoCap}(t)$ | $\lambda_{bnd,vel} = 1000$ |
 | Orientation | $\boldsymbol{\delta}(t) = 0$ (trust nominal) | $\lambda_{bnd,ori} = 100$ |
 | Acceleration | $\mathbf{a}_{MoCap}(t)$ | $\lambda_{bnd,acc} = 0.001$ |
 | Ang. velocity | $\dot{\boldsymbol{\delta}}(t) = 0$ (trust nominal $\omega$) | $\lambda_{bnd,gyr} = 10$ |
@@ -264,12 +266,20 @@ Due to B-spline local support, each residual only depends on $p+1$ control point
 
 ### 10.1 Algorithm
 
-The solver uses a single LM loop with **SO(3) re-linearization after every accepted step**:
+The solver uses a single LM loop with **conditional SO(3) re-linearization** and an **accelerometer warm-up** phase:
 
 ```
 lambda = 1e-3
+ACCEL_WARMUP_ITERS = 3
+
 for iteration in range(max_iterations):
-    J, r = build_jacobian(state)
+    # Warm-up: first N iterations use lambda_accel=0 (radar+gyro only)
+    effective_lambda_accel = 0 if iteration < ACCEL_WARMUP_ITERS else lambda_accel
+    
+    if iteration == ACCEL_WARMUP_ITERS:
+        lambda = 1e-3  # reset LM damping at transition
+    
+    J, r = build_jacobian(state, effective_lambda_accel)
     H = J^T J + lambda * I + R_snap
     delta_x = solve(H, -J^T r)
     
@@ -277,7 +287,8 @@ for iteration in range(max_iterations):
     if cost(state_new) < cost(state):
         state = state_new
         lambda *= 0.1
-        state.relinearize()     # absorb delta into nominal
+        if max(|delta_ori|) >= relinearize_threshold:
+            state.relinearize()     # absorb delta into nominal
     else:
         lambda *= 10            # reject step, increase damping
     
@@ -287,7 +298,7 @@ for iteration in range(max_iterations):
 
 ### 10.2 Re-linearization
 
-After every accepted LM step, `relinearize()` absorbs the current delta perturbation into the nominal trajectory:
+After accepted LM steps **where the maximum orientation delta exceeds `RELINEARIZE_THRESHOLD_DEG`** (currently 10°), `relinearize()` absorbs the current delta perturbation into the nominal trajectory:
 
 1. **Dense sampling**: Evaluate $\mathbf{R}(t) = \mathbf{R}_{nom}(t) \exp(\boldsymbol{\delta}(t))$ and $\boldsymbol{\omega}_b(t)$ at ~200 time points
 2. **Rebuild SLERP**: Construct new `scipy.spatial.transform.Slerp` from the dense rotation samples
@@ -300,16 +311,22 @@ This keeps $\boldsymbol{\delta}$ near zero, which improves numerical conditionin
 
 | Parameter | Value | Description |
 | :--- | :--- | :--- |
-| `MAX_ITERATIONS` | 20 | LM iterations (with re-linearization) |
-| `LAMBDA_ACCEL` | 0.01 | Accelerometer weight |
-| `LAMBDA_GYRO` | 5.0 | Gyroscope weight |
-| `LAMBDA_SNAP_POS` | 0.0 | Position smoothness (disabled) |
-| `LAMBDA_SNAP_ORI` | 0.0 | Orientation smoothness (disabled) |
-| `HUBER_DELTA` | 0.5 m/s | Radar Huber threshold |
+| `MAX_ITERATIONS` | 30 | LM iterations (increased for bias convergence + warmup) |
+| `LAMBDA_ACCEL` | 0.01 | Accelerometer weight (0.05 causes ori degradation) |
+| `LAMBDA_GYRO` | 0.50 | Gyroscope weight |
+| `LAMBDA_SNAP_POS` | 0.0001 | Position smoothness |
+| `LAMBDA_SNAP_ORI` | 0.0001 | Orientation smoothness |
+| `HUBER_DELTA` | 1.0 m/s | Radar Huber threshold (≥ 0.63 m/s quantization bin) |
 | `HUBER_DELTA_ACCEL` | 2.0 m/s² | Accelerometer Huber threshold |
-| `LOCK_BIASES` | True | Biases frozen at zero |
+| `LOCK_BIASES` | False | Biases estimated (gyro z-bias confirmed real) |
+| `LAMBDA_BIAS_PRIOR_ACCEL` | 10.0 | Strong prior on accel bias (prevents gravity leakage) |
+| `LAMBDA_BIAS_PRIOR_GYRO` | 1.0 | Mild prior on gyro bias (allows real ~0.3 rad/s MEMS bias) |
 | `BSPLINE_DEGREE` | 5 (pos) / 3 (ori) | B-spline degrees |
 | `DT_POS` / `DT_ORI` | 0.05s / 0.05s | Knot spacings |
+| `IMU_MOCAP_OFFSET` | +20 ms | IMU/radar timestamps shifted forward to align with MoCap |
+| `RELINEARIZE_THRESHOLD_DEG` | 10.0° | Re-linearize only when max delta exceeds this |
+| `ACCEL_WARMUP_ITERS` | 3 | First N iters use lambda_accel=0 (radar+gyro only) |
+| `ROTATION_EULER_DEG` | [180, 30, 0] | Radar extrinsic rotation (upside-down + 30° tilt) |
 
 ## 11. Implementation Pipeline
 
@@ -343,17 +360,29 @@ This generates `analysis/generated_jacobians.py` — a pure NumPy file with no S
 - Three residual-with-Jacobians functions (radar, accel, gyro)
 - Built-in validation against finite differences (run at generation time)
 
-## 12. Current Results
+## 12. Current Results (2026-03-07)
 
-On the **backflips** bag (5 seconds of aggressive flight including backflips):
+On the **circle** bag (5 seconds, moderate circular flight, `LAMBDA_ACCEL=0.01`, `LOCK_BIASES=False`):
 
 | Metric | Value |
 | :--- | :--- |
-| Position RMSE | 2.68 m |
-| Velocity RMSE | 3.81 m/s |
-| Orientation RMSE | 11.4° |
-| Runtime | ~4.5 min (20 iterations) |
-| Iteration time | ~8-15s |
+| Position RMSE | 4.10 m |
+| Velocity RMSE | 1.10 m/s |
+| Orientation RMSE | 4.79° |
+| z-velocity mean error | -0.65 m/s |
+| Estimated gyro bias | [0.003, -0.060, 0.342] rad/s |
+| Estimated accel bias | [-0.227, -0.207, 0.031] m/s² |
+| Runtime | ~5 min (30 iterations) |
+| Iteration time | ~10s |
+
+**Best historical results** (LAMBDA_ACCEL=0.01, no warmup, old boundary weights=100):
+
+| Metric | circle | circle_fwd |
+| :--- | :--- | :--- |
+| Position RMSE | 3.56 m | 1.76 m |
+| Velocity RMSE | 1.06 m/s | 0.77 m/s |
+| Orientation RMSE | 2.98° | 4.36° |
+| z-velocity mean | -0.53 m/s | -0.17 m/s |
 
 ## 13. Future: Sliding Window for Real-Time Estimation
 

@@ -146,11 +146,14 @@ This is the standard approach: keep the residual/Jacobian computation clean and 
 
 | Issue | Severity | Action |
 |-------|----------|--------|
-| **Doppler quantization vs Huber threshold** | **HIGH** | Increase `HUBER_DELTA` from 0.5 to ≥0.8 m/s (half-bin = 0.315 m/s) |
-| **Accel cost dominates (96%)** | **HIGH** | Reduce `LAMBDA_ACCEL` further, or add `HUBER_DELTA_ACCEL` clipping |
-| **-20ms IMU-MoCap offset not applied** | **MEDIUM** | Currently `time_offset=0.0` at validate_nonlinear_solver.py. The validated -20ms offset from FINDINGS.md is not used in the solver |
-| **Orientation B-spline only cubic (deg 3)** | **MEDIUM** | `ori_degree = min(3, BSPLINE_DEGREE)` caps it at 3, so angular velocity (1st derivative) is only C¹ continuous |
+| **Doppler quantization vs Huber threshold** | **DONE** | Increased `HUBER_DELTA` from 0.5 to 1.0 m/s |
+| **Accel cost dominates orientation** | **HIGH** | `LAMBDA_ACCEL=0.01` is current best; 0.05 causes 7°+ ori error. Decoupling accel from ori CPs is a potential fix. |
+| **-20ms IMU-MoCap offset** | **DONE** | Applied: `IMU_MOCAP_OFFSET = +0.020` shifts IMU/radar timestamps forward |
+| **Gyro z-bias is real MEMS thermal bias** | **DONE** | `LOCK_BIASES=False` with split priors: accel=10.0, gyro=1.0 |
+| **z-velocity bias (-0.5 to -0.65 m/s)** | **HIGH** | Root cause: poor radar elevation diversity (2 TX). Accel can't help due to ori coupling. |
+| **Radar extrinsics approximate** | **MEDIUM** | ROTATION_EULER=[180,30,0] (180° roll confirmed, 30° pitch approximate). Translation [0.07,0,0] eyeballed. Calibration planned with better-resolution data. |
+| **Orientation B-spline only cubic (deg 3)** | **LOW** | `ori_degree = min(3, BSPLINE_DEGREE)` caps it at 3, so angular velocity (1st derivative) is only C¹ continuous |
 | **SymForce chain rule could be eliminated** | **LOW** | Create combined residuals taking `(delta, delta_dot, omega_nominal)` directly |
-| **Velocity aliasing on fast bags** | **INFO** | Max 4.99 m/s — consider best_velocity config (0.06 m/s resolution) for future collection |
+| **Velocity aliasing on fast bags** | **INFO** | Max 4.99 m/s — new bag with better velocity resolution planned |
 
-The **biggest bang for the buck** right now is probably (1) increasing Huber delta for radar, and (2) reducing the accelerometer weight even further since FINDINGS.md Section 12 showed accel cost is 96% of total and is pulling orientation away from the correct solution.
+The **biggest open issues** right now are: (1) the -0.5 to -0.65 m/s z-velocity bias caused by poor radar elevation diversity and accel-orientation coupling, and (2) the accel-gyro tension where increasing LAMBDA_ACCEL degrades orientation. Decoupling accel from orientation control points is the most promising architectural fix.

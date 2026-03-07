@@ -17,7 +17,7 @@ We define three Cartesian coordinate frames. All frames are Right-Handed.
 2. **Body Frame ($\mathcal{B}$):** The moving frame attached to the drone.
    * **Origin:** The center of the IMU (specifically the Accelerometer).
    * **Orientation:** Aligned with the flight controller's axes — **FLU** (X-Forward, Y-Left, Z-Up).
-   * **Note:** Some bags use a 180° yaw-flipped body frame (handled by `FLIP_BODY_FRAME` toggle).
+   * **Note:** Some bags have a 180° yaw-flipped agiros body frame convention (different trajectory profiles define body +x differently). Handled by `FLIP_BODY_FRAME` toggle, which applies `R_z(180°)` to extrinsics and negates the x-component of the translation vector.
 
 3. **Sensor/Radar Frame ($\mathcal{S}$):** The moving frame attached to the Radar.
    * **Origin:** The phase center of the radar antenna array.
@@ -80,7 +80,7 @@ $$
 * $\mathbf{a}_w(t)$: The true 2nd derivative of the position trajectory.
 * $\mathbf{g}_w$: The gravity vector in World Frame.
   * Convention: $\mathbf{g}_w = [0, 0, -9.81]^T$.
-* $\mathbf{b}_a$: Accelerometer Bias (modeled as constant in the current solver).
+* $\mathbf{b}_a$: Accelerometer Bias (modeled as constant over the trajectory window; estimated when `LOCK_BIASES=False`).
 * $\mathbf{n}_a(t)$: Additive White Gaussian Noise (AWGN).
 
 ## 4. The Gyroscope Forward Model
@@ -103,7 +103,7 @@ $$
 * $\boldsymbol{\omega}_{nom}(t)$: Nominal angular velocity from the reference trajectory.
 * $\boldsymbol{\delta}(t)$: Orientation perturbation (B-spline, optimization variable).
 * $\mathbf{J}_r(\boldsymbol{\delta})$: SO(3) right Jacobian (exact, via SymForce codegen).
-* $\mathbf{b}_g$: Gyroscope Bias (modeled as constant in the current solver).
+* $\mathbf{b}_g$: Gyroscope Bias (modeled as constant; estimated when `LOCK_BIASES=False`). Real MEMS gyro z-bias of ~0.18–0.28 rad/s has been confirmed across bags (thermal drift between flights).
 * $\mathbf{n}_g(t)$: Additive White Gaussian Noise.
 
 ## 5. The Radar Forward Model (Doppler)
@@ -171,6 +171,6 @@ The formula above produces a **positive** value when the sensor moves **towards*
 ## 7. Rosbag Topics
 | Topic | Description |
 | :--- | :--- |
-| `/angrybird2/agiros_pilot/state` | Kalman-smoothed MoCap data. Pose is accurate; used for nominal orientation $\mathbf{R}_{nom}$. |
-| `/angrybird2/imu` | Raw IMU data from Pixhawk (accelerometer + gyroscope). |
-| `/mmWaveDataHdl/RScanVelocity` | Raw Radar Data. The radar is mounted tilting downwards 30° from horizontal, ~7cm forward in the x-axis. |
+| `/angrybird2/agiros_pilot/state` | Kalman-smoothed MoCap data. Pose is accurate; used for nominal orientation $\mathbf{R}_{nom}$. Angular velocity is body-frame Kalman-filtered (confirmed, NOT world-frame). |
+| `/angrybird2/imu` | Raw IMU data from the **drone's own Pixhawk IMU** (accelerometer + gyroscope). This is NOT the radar board IMU — the sensor is at the drone center, so `R_bs` does NOT apply to IMU data. |
+| `/mmWaveDataHdl/RScanVelocity` | Raw Radar Data. The radar is mounted **upside-down** (180° roll) and tilted 30° downward from horizontal, ~7cm forward of the drone center. `ROTATION_EULER_DEG = [180, 30, 0]`. The 7cm translation and 30° angle are approximate (eyeballed / 3D-printed mount). |

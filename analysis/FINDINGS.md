@@ -1,23 +1,27 @@
 # Physics Validation & Calibration Findings
 
-**Date:** 2025-02-18  
-**Script:** `analysis/validate_physics.py`  
+**Date:** 2025-02-18 (last updated 2026-03-07)  
+**Script:** `analysis/validate_physics.py`, `analysis/validate_nonlinear_solver.py`, `analysis/diagnose_gyro.py`  
 **Status:** Active investigation
 
 ---
 
-## 1. Sensor Extrinsic Calibration (UPDATED: SIGN CONVENTION ISSUE)
+## 1. Sensor Extrinsic Calibration (UPDATED: 180° ROLL MOUNT)
 
 ### Physical Mounting
-User confirmed: radar mounted looking forward, adapter creates 30° **downward** tilt → `R_body_from_sensor = R_y(+30°)` → `ROTATION_EULER = [0, +30, 0]`.
+User confirmed: radar mounted **upside-down** (180° roll) looking forward, 3D-printed adapter creates 30° **downward** tilt.
 
-`Rotation.from_euler('ZYX', [0, +30, 0])` maps sensor boresight `[1,0,0]` → body `[0.866, 0, -0.5]` (forward + **down**). ✓ Matches physical mounting.
+`ROTATION_EULER_DEG = [180, +30, 0]` (roll, pitch, yaw). This is `R_x(180°) · R_y(+30°)`.
 
-### Initial Sweep (misleading)
-Pitch sweep on original/circle bags showed pitch=-30° gives better correlation (+0.71/+0.74) than pitch=+30° (+0.38/+0.41). This was due to a **confounding Doppler sign inversion** on aggressive bags that also subtly affects gentle bags (see Section 11).
+The previous value of `[0, +30, 0]` was incorrect — it did not account for the upside-down mounting. The 180° roll was discovered through radar boresight analysis.
+
+### Extrinsic Accuracy
+- **Pitch (30°):** From a 3D-printed mount, not precisely calibrated. Could be ±2°.
+- **Translation ([0.07, 0, 0]):** Eyeballed. May have a slight z-offset and could be less than 7cm forward.
+- **Impact of errors:** A 2° pitch error causes ~0.05 m/s systematic Doppler error. Translation errors are invisible at current Doppler resolution (0.63 m/s bins). Future calibration with MoCap ground truth is planned.
 
 ### Current Status
-**Use `[0, +30, 0]`** (physically correct). The apparent superiority of pitch=-30° was an artifact of the Doppler sign convention issue documented in Section 11.
+**Use `[180, +30, 0]`** for normal bags. For flipped bags, additionally apply `R_z(180°)` (see Section 11).
 
 ---
 
@@ -40,24 +44,35 @@ Cross-correlation between MoCap-derived angular velocity and IMU gyroscope readi
 
 ### Results
 Consistent across all tested bags:
-- **Offset: -20 ms** (IMU timestamps are 20ms behind MoCap)
+- **Offset: +20 ms** applied to IMU/radar timestamps (they lag MoCap by ~20ms)
 - Gyro RMSE improves: 0.18 → 0.069 rad/s (original bag), 0.42 → 0.33 rad/s (backflips)
 - Per-axis breakdown: X=-20ms, Y=-25ms, Z=-20ms (median=-20ms)
 
-**Action:** Apply -20ms offset to radar/IMU timestamps before fusion.
+**Convention:** `IMU_MOCAP_OFFSET = +0.020` means we ADD 20ms to IMU/radar timestamps to align them with MoCap timestamps. Equivalently, IMU timestamps are 20ms behind MoCap.
+
+**Action:** Applied in solver: `IMU_MOCAP_OFFSET = +0.020` shifts IMU and radar timestamps forward before fusion.
 
 ---
 
-## 4. Gyroscope Convention (VALIDATED)
+## 4. Gyroscope Convention (VALIDATED + BIAS CONFIRMED)
 
-**Verified:** MoCap angular velocity is in **body frame** (not world frame).
+**Verified:** MoCap angular velocity is in **body frame** (not world frame). Confirmed by projection tests (direct correlation 0.40/0.78/0.83 > all rotated alternatives).
 
 ### Evidence
 On all bags, body-frame RMSE ≪ world-frame RMSE:
 - Original: body=0.18 vs world=0.73 rad/s
 - Backflips: body=0.42 vs world=1.19 rad/s
 
-Gyro Z shows a consistent bias of ~0.15 rad/s on backflips bag.
+### Gyroscope Bias (CONFIRMED REAL)
+`diagnose_gyro.py` cross-validated against MoCap-derived angular velocity:
+- **circle bag:** z-bias = +0.279 rad/s (+16°/s), x-corr=0.40, y-corr=0.79, z-corr=0.87
+- **circle_fwd bag:** z-bias = +0.177 rad/s (+10.1°/s)
+- Bias differs between flights → **MEMS thermal drift** (not a fixed offset)
+- Identity axis mapping is optimal (no sign flips or axis swaps needed)
+- Solver gyro z-bias estimate of 0.293 rad/s matches diagnostic 0.279 rad/s
+- Best IMU-MoCap time offset for gyro: ~0ms (NOT the +20ms used for radar)
+
+**Note:** `/angrybird2/imu` is the **drone's own Pixhawk IMU**, NOT the radar board IMU. The agiros `angular_velocity` field is body-frame Kalman-filtered true angular velocity (gyr_bias field is all zeros — not published).
 
 ---
 
@@ -200,7 +215,7 @@ For "Flipped" bags, apply one of:
 | loopings | **-0.286** | Flipped frame, plus aliasing at high speed |
 
 ### Status
-**Awaiting user confirmation** from supervisor about which trajectory profiles have a flipped body frame convention. The pattern above should match the trajectory profile metadata.
+**Confirmed by user**: Different agiros trajectory profiles define the body frame differently. Three of the six bags have the +x axis rotated 180° in yaw. This is implemented in the solver via `FLIP_BODY_FRAME` and the `FLIPPED_BAGS` set.
 
 ---
 
@@ -265,11 +280,11 @@ The accelerometer forward model `z_pred = R_body_from_world @ (a_world - g)` rel
 
 ---
 
-## Next Steps
+## Next Steps (Updated 2026-03-07)
 
-1. **Confirm with supervisor** which trajectory profiles have a rotated body frame
-2. **Implement per-bag body frame detection** (auto-detect from corr(v_body_x, mean_Doppler) sign, or from trajectory profile metadata)
-3. **Use all 6 bags** for solver development with correct per-bag extrinsics
-4. **Use pitch=+30°** (physically correct mounting, confirmed by user)
-5. **Investigate accelerometer model** — consider downweighting accel during high-dynamics phases, or using Huber loss on accel residuals
-6. **Test on gentler bags first** (original, circle) where the accel model is more accurate
+1. **Calibrate radar extrinsics offline** — use MoCap ground truth to find true $R_{bs}$ and $t_{bs}$ (wait for better velocity resolution bag)
+2. **Investigate z-velocity bias** — persistent -0.5 to -0.65 m/s error; likely from poor radar elevation diversity (IWR6843 has only 2 TX antennas). Not caused by pitch angle error (2° → only 0.05 m/s).
+3. **Decouple accelerometer from orientation** — zero out $\partial(r_{accel})/\partial(\text{ori CPs})$ so accel only affects position. Would allow increasing LAMBDA_ACCEL for better z-vel without corrupting orientation.
+4. **Collect new data** with better velocity resolution radar config (0.06 m/s bins instead of 0.63 m/s)
+5. **Test on all 6 bags** with correct per-bag extrinsics
+6. **Sliding window formulation** for real-time operation
