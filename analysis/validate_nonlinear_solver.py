@@ -1379,7 +1379,8 @@ def main():
     HUBER_DELTA_ACCEL = 2.0  # m/s² (Huber threshold for accelerometer — clips spikes linearly)
     MIN_RANGE = 0.2
     MAX_ITERATIONS = 30  # LM iterations (need more for bias convergence + warmup)
-    IMU_MOCAP_OFFSET = +0.020  # seconds: IMU/radar timestamps are 20ms behind MoCap, shift forward to align (FINDINGS.md §3)
+    IMU_MOCAP_OFFSET = +0.020  # seconds: IMU timestamps are 20ms behind MoCap, shift forward to align (FINDINGS.md §3)
+    RADAR_IMU_OFFSET = -0.019  # seconds: radar timestamps are 19ms behind IMU (notebook 02_radar_time_sync §4)
     USE_PHASE2_INIT = False  # Initialize position from Phase 2 linear solver
     LOCK_BIASES = False  # Unlocked: gyro z-bias of ~0.28 rad/s is REAL (MEMS thermal bias, confirmed by diagnose_gyro.py)
     RELINEARIZE_THRESHOLD_DEG = 10.0  # Trigger re-linearization sooner to keep delta small
@@ -1404,7 +1405,7 @@ def main():
     print(f"Huber delta (radar): {HUBER_DELTA} m/s")
     print(f"Huber delta (accel): {HUBER_DELTA_ACCEL} m/s²")
     print(f"Max iterations: {MAX_ITERATIONS} (re-linearize when delta > {RELINEARIZE_THRESHOLD_DEG}°)")
-    print(f"IMU-MoCap time offset: {IMU_MOCAP_OFFSET*1000:.0f} ms")
+    print(f"IMU-MoCap time offset: {IMU_MOCAP_OFFSET*1000:.0f} ms  |  Radar-IMU offset: {RADAR_IMU_OFFSET*1000:.0f} ms")
     print(f"Use Phase 2 init: {USE_PHASE2_INIT}")
     print(f"Lock biases: {LOCK_BIASES}")
     print(f"Jacobi preconditioning: {USE_JACOBI_PRECOND}")
@@ -1424,14 +1425,17 @@ def main():
     radar_frames = [f for f in bag_data.radar_velocity if t_start <= f.timestamp <= t_end]
     imu_data = [d for d in bag_data.imu_data if t_start <= d.timestamp <= t_end]
     
-    # Apply IMU-MoCap time offset (FINDINGS.md §3: IMU timestamps are 20ms behind MoCap)
-    # Shift IMU and radar timestamps to align with MoCap time axis
+    # Apply time offsets to align all sensors with MoCap time axis
+    # IMU is 20ms behind MoCap (FINDINGS.md §3)
+    # Radar is 19ms behind IMU (notebook 02_radar_time_sync §4), so 39ms behind MoCap total
     if IMU_MOCAP_OFFSET != 0:
         for d in imu_data:
             d.timestamp += IMU_MOCAP_OFFSET
-        for f in radar_frames:
-            f.timestamp += IMU_MOCAP_OFFSET
-        print(f"  Applied IMU-MoCap time offset: {IMU_MOCAP_OFFSET*1000:.0f} ms to {len(imu_data)} IMU + {len(radar_frames)} radar samples")
+        print(f"  Applied IMU-MoCap time offset: {IMU_MOCAP_OFFSET*1000:.0f} ms to {len(imu_data)} IMU samples")
+    radar_total_offset = IMU_MOCAP_OFFSET - RADAR_IMU_OFFSET  # +0.020 - (-0.019) = +0.039
+    for f in radar_frames:
+        f.timestamp += radar_total_offset
+    print(f"  Applied radar time offset: {radar_total_offset*1000:.0f} ms to {len(radar_frames)} radar samples (IMU:{IMU_MOCAP_OFFSET*1000:.0f} + radar-IMU:{-RADAR_IMU_OFFSET*1000:.0f})")
     
     # Filter near-duplicate MoCap timestamps (dt < 1ms) that cause interpolation spikes
     # See FINDINGS.md Section 8: MoCap has samples with dt ~5us causing vel/accel spikes
@@ -2012,7 +2016,7 @@ def main():
         f"  λ_bnd_gyr={LAMBDA_BOUNDARY_GYRO}",
         f"  bnd_window={BOUNDARY_WINDOW}s (start only)",
         f"  max_iter={MAX_ITERATIONS}  precond={USE_JACOBI_PRECOND}",
-        f"  relin_thr={RELINEARIZE_THRESHOLD_DEG}°  imu_offset={IMU_MOCAP_OFFSET*1000:.0f}ms",
+        f"  relin_thr={RELINEARIZE_THRESHOLD_DEG}°  imu_offset={IMU_MOCAP_OFFSET*1000:.0f}ms  radar_offset={radar_total_offset*1000:.0f}ms",
         f"  λ_ori_reg={LAMBDA_ORI_REG}  λ_bias_prior={LAMBDA_BIAS_PRIOR}",
     ]
     summary_text = "\n".join(summary_lines)
