@@ -201,3 +201,101 @@ cost_corrected = 0.5 * lambda_gyro * np.sum(corrected**2)
 print(f"\n  If b_g = {bias_est} were subtracted:")
 print(f"  Total cost would be: {cost_corrected:.1f} (saved {cost - cost_corrected:.1f})")
 print(f"  ({np.degrees(bias_est[0]):+.2f}, {np.degrees(bias_est[1]):+.2f}, {np.degrees(bias_est[2]):+.2f}) deg/s")
+
+# ===== 11. Integrate IMU gyro → orientation and compare to MoCap =====
+print("\n" + "="*60)
+print("11. Gyro integration → orientation drift visualization")
+print("="*60)
+from scipy.spatial.transform import Rotation
+
+# MoCap Euler angles (roll, pitch, yaw) from quaternions [qx, qy, qz, qw]
+mocap_rots = Rotation.from_quat(agiros_quat)  # scipy expects [x, y, z, w]
+mocap_euler = mocap_rots.as_euler('xyz', degrees=True)  # roll, pitch, yaw
+ag_t_rel = agiros_times - agiros_times[0]
+
+# Integrate IMU gyro to get orientation
+# Initialize with MoCap orientation at first IMU timestamp
+imu_t_rel = imu_times - agiros_times[0]
+# Find MoCap orientation closest to first IMU time
+idx0 = np.argmin(np.abs(agiros_times - imu_times[0]))
+R_current = Rotation.from_quat(agiros_quat[idx0])
+
+imu_euler_raw = np.zeros((len(imu_times), 3))  # integrated WITHOUT bias correction
+imu_euler_corrected = np.zeros((len(imu_times), 3))  # integrated WITH bias correction
+
+# Raw integration (no bias subtracted)
+R_raw = Rotation.from_quat(agiros_quat[idx0])
+for i in range(len(imu_times)):
+    imu_euler_raw[i] = R_raw.as_euler('xyz', degrees=True)
+    if i < len(imu_times) - 1:
+        dt = imu_times[i + 1] - imu_times[i]
+        omega = imu_gyro[i]
+        angle = np.linalg.norm(omega) * dt
+        if angle > 1e-10:
+            axis = omega / np.linalg.norm(omega)
+            R_raw = R_raw * Rotation.from_rotvec(omega * dt)
+
+# Corrected integration (bias subtracted)
+R_corr = Rotation.from_quat(agiros_quat[idx0])
+for i in range(len(imu_times)):
+    imu_euler_corrected[i] = R_corr.as_euler('xyz', degrees=True)
+    if i < len(imu_times) - 1:
+        dt = imu_times[i + 1] - imu_times[i]
+        omega = imu_gyro[i] - bias_est  # subtract estimated bias
+        R_corr = R_corr * Rotation.from_rotvec(omega * dt)
+
+# Print final drift
+drift_raw = imu_euler_raw[-1] - mocap_euler[-1]
+drift_corr = imu_euler_corrected[-1] - mocap_euler[-1]
+print(f"  Duration: {imu_t_rel[-1]:.1f}s")
+print(f"  Final drift (raw):       roll={drift_raw[0]:+.1f}°  pitch={drift_raw[1]:+.1f}°  yaw={drift_raw[2]:+.1f}°")
+print(f"  Final drift (corrected): roll={drift_corr[0]:+.1f}°  pitch={drift_corr[1]:+.1f}°  yaw={drift_corr[2]:+.1f}°")
+print(f"  Bias used for correction: ({np.degrees(bias_est[0]):+.2f}, {np.degrees(bias_est[1]):+.2f}, {np.degrees(bias_est[2]):+.2f}) deg/s")
+
+# ===== Plot =====
+import matplotlib.pyplot as plt
+
+# Interpolate MoCap euler onto IMU timestamps for RMSE computation
+mocap_euler_at_imu = np.zeros((len(imu_times), 3))
+for ax_i in range(3):
+    mocap_euler_at_imu[:, ax_i] = np.interp(imu_times, agiros_times, mocap_euler[:, ax_i])
+
+# Per-axis RMSE
+rmse_raw = np.sqrt(np.mean((imu_euler_raw - mocap_euler_at_imu)**2, axis=0))
+rmse_corr = np.sqrt(np.mean((imu_euler_corrected - mocap_euler_at_imu)**2, axis=0))
+rmse_raw_mean = np.mean(rmse_raw)
+rmse_corr_mean = np.mean(rmse_corr)
+
+fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
+fig.suptitle(f'IMU Gyro Integration vs MoCap Orientation — {bag_key}', fontsize=14, fontweight='bold')
+labels = ['Roll', 'Pitch', 'Yaw']
+
+for ax_i, (ax, label) in enumerate(zip(axes, labels)):
+    ax.plot(ag_t_rel, mocap_euler[:, ax_i], 'k-', linewidth=1.5, alpha=0.8, label='MoCap (ground truth)')
+    ax.plot(imu_t_rel, imu_euler_raw[:, ax_i], 'r-', linewidth=1, alpha=0.7, label='IMU integrated (no bias corr.)')
+    ax.plot(imu_t_rel, imu_euler_corrected[:, ax_i], 'b--', linewidth=1, alpha=0.7, label='IMU integrated (bias corrected)')
+    ax.set_ylabel(f'{label} (°)')
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='upper right', fontsize=8)
+    # RMSE text box per subplot
+    rmse_text = f'RMSE raw: {rmse_raw[ax_i]:.1f}°\nRMSE corrected: {rmse_corr[ax_i]:.1f}°'
+    ax.text(0.02, 0.95, rmse_text, transform=ax.transAxes, fontsize=8,
+            verticalalignment='top', fontfamily='monospace',
+            bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+
+axes[-1].set_xlabel('Time (s)')
+
+# Add drift annotation
+drift_text = (
+    f"Bias: ({np.degrees(bias_est[0]):+.1f}, {np.degrees(bias_est[1]):+.1f}, {np.degrees(bias_est[2]):+.1f}) °/s\n"
+    f"Raw drift after {imu_t_rel[-1]:.1f}s: ({drift_raw[0]:+.1f}, {drift_raw[1]:+.1f}, {drift_raw[2]:+.1f})°  |  Mean RMSE: {rmse_raw_mean:.1f}°\n"
+    f"Corrected drift: ({drift_corr[0]:+.1f}, {drift_corr[1]:+.1f}, {drift_corr[2]:+.1f})°  |  Mean RMSE: {rmse_corr_mean:.1f}°"
+)
+fig.text(0.02, 0.01, drift_text, fontsize=9, fontfamily='monospace',
+         bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+plt.tight_layout(rect=[0, 0.06, 1, 0.96])
+outname = f'gyro_drift_{bag_key}.png'
+plt.savefig(f'analysis/{outname}', dpi=150, bbox_inches='tight')
+print(f"\n  Saved: analysis/{outname}")
+plt.show()
