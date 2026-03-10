@@ -13,6 +13,7 @@ seaborn>=0.12.0
 # The following are included but may need ROS environment setup:
 rospkg
 bagpy
+rosbags>=0.9.0
 
 # Jupyter
 jupyter>=1.0.0
