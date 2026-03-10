@@ -17,6 +17,8 @@ except ImportError:
 
 try:
     from rosbags.rosbag1 import Reader as Rosbag1Reader
+    from rosbags.typesys import Stores, get_typestore
+    from rosbags.typesys.msg import get_types_from_msg, normalize_msgtype
 
     HAS_ROSbags = True
 except ImportError:
@@ -53,8 +55,19 @@ class BagReaderWrapper:
             )
 
         if self.use_rosbags:
+            self.typestore = get_typestore(Stores.ROS1_NOETIC)
             self.reader = Rosbag1Reader(self.path)
             self.reader.open()
+            # Register custom message types from bag connection headers
+            custom_typs = {}
+            for c in self.reader.connections:
+                if c.msgtype not in self.typestore.fielddefs:
+                    _, msgdef_text = c.msgdef
+                    custom_typs.update(
+                        get_types_from_msg(msgdef_text, normalize_msgtype(c.msgtype))
+                    )
+            if custom_typs:
+                self.typestore.register(custom_typs)
         else:
             self.bag = rosbag.Bag(self.path)
 
@@ -82,7 +95,7 @@ class BagReaderWrapper:
             for connection, timestamp, rawdata in self.reader.messages(
                 connections=connections
             ):
-                msg = self.reader.deserialize(rawdata, connection.msgtype)
+                msg = self.typestore.deserialize_ros1(rawdata, connection.msgtype)
 
                 # mock the ROS time object for t.to_sec()
                 class MockTime:
