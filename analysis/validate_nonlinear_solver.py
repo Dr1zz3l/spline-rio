@@ -546,6 +546,7 @@ def compute_jacobian_analytical(
     lambda_bias_prior: float = 0.0,
     lambda_bias_prior_accel: float = None,
     lambda_bias_prior_gyro: float = None,
+    bias_prior_mean: np.ndarray = None,
 ) -> Tuple[sparse.csr_matrix, np.ndarray]:
     """
     Compute Jacobian and residual vector analytically using SymForce-generated functions.
@@ -958,16 +959,18 @@ def compute_jacobian_analytical(
                 n_ori_reg_rows += 1
     
     # ==================== Bias prior ====================
-    # Penalize bias magnitude: r = sqrt(lambda) * b[k]
+    # Penalize deviation from initial bias: r = sqrt(lambda) * (b[k] - b_init[k])
+    # This anchors the solver near the stationary-detected bias instead of zero.
     # Separate weights for accel and gyro to allow different constraint strengths.
     # lambda_bias_prior_accel/gyro override lambda_bias_prior if set.
+    bp_mean = bias_prior_mean if bias_prior_mean is not None else np.zeros(6)
     lbp_accel = lambda_bias_prior_accel if lambda_bias_prior_accel is not None else lambda_bias_prior
     lbp_gyro = lambda_bias_prior_gyro if lambda_bias_prior_gyro is not None else lambda_bias_prior
     n_bias_prior_rows = 0
     if lbp_accel > 0:
         sqrt_lbp_a = np.sqrt(lbp_accel)
         for k in range(3):
-            all_residuals.append(sqrt_lbp_a * state.acc_bias[k])
+            all_residuals.append(sqrt_lbp_a * (state.acc_bias[k] - bp_mean[k]))
             rows.append(row_idx)
             cols.append(n_pos + n_ori + k)
             vals.append(sqrt_lbp_a)
@@ -976,7 +979,7 @@ def compute_jacobian_analytical(
     if lbp_gyro > 0:
         sqrt_lbp_g = np.sqrt(lbp_gyro)
         for k in range(3):
-            all_residuals.append(sqrt_lbp_g * state.gyr_bias[k])
+            all_residuals.append(sqrt_lbp_g * (state.gyr_bias[k] - bp_mean[3 + k]))
             rows.append(row_idx)
             cols.append(n_pos + n_ori + 3 + k)
             vals.append(sqrt_lbp_g)
@@ -1055,6 +1058,7 @@ def solve_trajectory_nonlinear(
     lambda_bias_prior: float = 0.0,
     lambda_bias_prior_accel: float = None,
     lambda_bias_prior_gyro: float = None,
+    bias_prior_mean: np.ndarray = None,
 ) -> TrajectoryState:
     """
     Solve for optimal trajectory using Levenberg-Marquardt.
@@ -1080,7 +1084,9 @@ def solve_trajectory_nonlinear(
         print(f"Lambda snap pos: {lambda_snap_pos}")
         print(f"Lambda snap ori: {lambda_snap_ori}")
         if lock_biases:
-            print(f"*** BIASES LOCKED TO ZERO ***")
+            print(f"*** BIASES LOCKED TO INITIAL VALUES ***")
+        if bias_prior_mean is not None:
+            print(f"Bias prior mean: acc=[{bias_prior_mean[0]:.4f}, {bias_prior_mean[1]:.4f}, {bias_prior_mean[2]:.4f}]  gyr=[{bias_prior_mean[3]:.5f}, {bias_prior_mean[4]:.5f}, {bias_prior_mean[5]:.5f}]")
         if use_jacobi_precond:
             print(f"*** JACOBI PRECONDITIONING ENABLED ***")
         if boundary_vel_priors:
@@ -1116,7 +1122,7 @@ def solve_trajectory_nonlinear(
     # Helper: build Jacobian with all params
     # Accel warm-up: first 5 iterations use lambda_accel=0 (radar+gyro only for orientation),
     # then ramp to full lambda_accel so the accelerometer doesn't corrupt orientation early.
-    ACCEL_WARMUP_ITERS = 3
+    ACCEL_WARMUP_ITERS = 0
     
     def _build_jacobian(st, iteration_idx=None):
         la = lambda_accel
@@ -1141,6 +1147,7 @@ def solve_trajectory_nonlinear(
             lambda_bias_prior=lambda_bias_prior,
             lambda_bias_prior_accel=lambda_bias_prior_accel,
             lambda_bias_prior_gyro=lambda_bias_prior_gyro,
+            bias_prior_mean=bias_prior_mean,
         )
     
     lambda_lm = 1e-3
@@ -1288,6 +1295,127 @@ def solve_trajectory_nonlinear(
     return state
 
 
+# ==================== Stationary Bias Detection ====================
+
+def detect_stationary_bias(
+    imu_data_full,
+    window_sec: float = 1.0,
+    min_stationary_sec: float = 2.0,
+    accel_std_threshold: float = 0.15,
+    gyro_std_threshold: float = 0.05,
+    verbose: bool = True,
+) -> dict:
+    """
+    Variance-based stationary detection for IMU bias initialization.
+
+    Scans the FULL bag IMU data with a rolling window. When the standard
+    deviation of both accelerometer and gyroscope stays below tight thresholds
+    for at least `min_stationary_sec`, that window is flagged as stationary.
+    The gyro and accel means from that window give the bias estimate.
+
+    For accelerometer, the bias is computed as:
+        b_a = mean(z_accel) - [0, 0, +9.81]  (gravity in NED→FLU body frame
+        when the drone is level and z-up)
+
+    Returns dict with keys:
+        'gyr_bias': (3,) mean gyro during stationary period
+        'acc_bias': (3,) accel bias (mean - gravity)
+        'stationary_start': float timestamp
+        'stationary_end': float timestamp
+        'n_samples': int
+    """
+    if len(imu_data_full) < 10:
+        if verbose:
+            print("  [WARN] Not enough IMU data for stationary detection")
+        return None
+
+    times = np.array([d.timestamp for d in imu_data_full])
+    accels = np.array([d.linear_acceleration for d in imu_data_full])
+    gyros = np.array([d.angular_velocity for d in imu_data_full])
+
+    # Estimate sample rate
+    dt_median = np.median(np.diff(times))
+    fs = 1.0 / dt_median
+    win_samples = max(10, int(window_sec * fs))
+
+    if verbose:
+        print(f"  Stationary detection: {len(times)} samples, fs={fs:.0f} Hz, window={win_samples} samples ({window_sec}s)")
+
+    # Rolling standard deviation (per-axis, take max across axes)
+    n = len(times)
+    best_start = None
+    best_end = None
+    best_length = 0
+
+    # Sliding window: compute std for each window position
+    current_start = None
+    for i in range(0, n - win_samples, win_samples // 2):  # 50% overlap steps
+        j = i + win_samples
+        accel_window = accels[i:j]
+        gyro_window = gyros[i:j]
+
+        accel_std = np.std(accel_window, axis=0)
+        gyro_std = np.std(gyro_window, axis=0)
+
+        is_stationary = (np.max(accel_std) < accel_std_threshold and
+                         np.max(gyro_std) < gyro_std_threshold)
+
+        if is_stationary:
+            if current_start is None:
+                current_start = i
+        else:
+            if current_start is not None:
+                # End of stationary block
+                block_duration = times[i] - times[current_start]
+                if block_duration > best_length:
+                    best_length = block_duration
+                    best_start = current_start
+                    best_end = i
+                current_start = None
+
+    # Handle case where stationary extends to end of data
+    if current_start is not None:
+        block_duration = times[n - 1] - times[current_start]
+        if block_duration > best_length:
+            best_length = block_duration
+            best_start = current_start
+            best_end = n - 1
+
+    if best_start is None or best_length < min_stationary_sec:
+        if verbose:
+            print(f"  [WARN] No stationary period >= {min_stationary_sec}s found (best: {best_length:.1f}s)")
+        return None
+
+    # Extract bias from the validated stationary window
+    stat_accels = accels[best_start:best_end]
+    stat_gyros = gyros[best_start:best_end]
+
+    gyr_bias = np.mean(stat_gyros, axis=0)
+    # Accel bias: subtract expected gravity vector (assuming drone is level, z-up)
+    # In a level IMU frame, gravity reads as [0, 0, +9.81] (z-up convention FLU)
+    # We detect the actual gravity direction from the mean accel during stationary
+    gravity_measured = np.mean(stat_accels, axis=0)
+    gravity_norm = np.linalg.norm(gravity_measured)
+    acc_bias = gravity_measured - (gravity_measured / gravity_norm) * 9.81
+
+    if verbose:
+        print(f"  Stationary period: {times[best_start] - times[0]:.1f}s to {times[best_end] - times[0]:.1f}s ({best_length:.1f}s, {best_end - best_start} samples)")
+        print(f"  Accel mean (stationary): [{gravity_measured[0]:.4f}, {gravity_measured[1]:.4f}, {gravity_measured[2]:.4f}] m/s² (|a|={gravity_norm:.4f})")
+        print(f"  Accel std  (stationary): [{np.std(stat_accels[:,0]):.4f}, {np.std(stat_accels[:,1]):.4f}, {np.std(stat_accels[:,2]):.4f}] m/s²")
+        print(f"  Gyro  mean (stationary): [{gyr_bias[0]:.5f}, {gyr_bias[1]:.5f}, {gyr_bias[2]:.5f}] rad/s")
+        print(f"         = [{np.degrees(gyr_bias[0]):.3f}, {np.degrees(gyr_bias[1]):.3f}, {np.degrees(gyr_bias[2]):.3f}] deg/s")
+        print(f"  Gyro  std  (stationary): [{np.std(stat_gyros[:,0]):.5f}, {np.std(stat_gyros[:,1]):.5f}, {np.std(stat_gyros[:,2]):.5f}] rad/s")
+        print(f"  Accel bias (mean - g):   [{acc_bias[0]:.4f}, {acc_bias[1]:.4f}, {acc_bias[2]:.4f}] m/s²")
+
+    return {
+        'gyr_bias': gyr_bias,
+        'acc_bias': acc_bias,
+        'stationary_start': times[best_start],
+        'stationary_end': times[best_end],
+        'n_samples': best_end - best_start,
+    }
+
+
 # ==================== Bag Catalogue ====================
 BAGS = {
     "original":     "rosbags/2025-12-17-16-02-22.bag",
@@ -1299,7 +1427,7 @@ BAGS = {
 }
 
 # Bags where the agiros body frame is rotated 180 deg in yaw
-FLIPPED_BAGS = {"circle_fwd", "loopings", "backflips"}
+FLIPPED_BAGS = {"circle_fwd", "loopings", }
 
 # ==================== Main Validation ====================
 
@@ -1372,27 +1500,27 @@ def main():
     LAMBDA_SNAP_ORI = 0.0001   # Orientation smoothness
     LAMBDA_ORI_REG = 0.0       # Orientation regularization: disabled (penalizes delta CPs away from MoCap)
     LAMBDA_BIAS_PRIOR = 1.0    # Fallback (overridden by per-sensor values below)
-    LAMBDA_BIAS_PRIOR_ACCEL = 10.0  # Strong: MEMS accel bias is <0.3 m/s²; prevents gravity leakage
-    LAMBDA_BIAS_PRIOR_GYRO = 1.0    # Mild: allows real MEMS gyro bias of ~0.3 rad/s
-    
+    LAMBDA_BIAS_PRIOR_ACCEL = 1.0  # Weak
+    LAMBDA_BIAS_PRIOR_GYRO = 10000.0    # Very Strong
     HUBER_DELTA = 1.0  # meters/second (Huber threshold for radar; ≥ 0.63 m/s quantization bin)
     HUBER_DELTA_ACCEL = 2.0  # m/s² (Huber threshold for accelerometer — clips spikes linearly)
     MIN_RANGE = 0.2
-    MAX_ITERATIONS = 30  # LM iterations (need more for bias convergence + warmup)
+    MAX_ITERATIONS = 20  # LM iterations (need more for bias convergence + warmup)
     IMU_MOCAP_OFFSET = +0.020  # seconds: IMU timestamps are 20ms behind MoCap, shift forward to align (FINDINGS.md §3)
     RADAR_IMU_OFFSET = -0.019  # seconds: radar timestamps are 19ms behind IMU (notebook 02_radar_time_sync §4)
     USE_PHASE2_INIT = False  # Initialize position from Phase 2 linear solver
-    LOCK_BIASES = False  # Unlocked: gyro z-bias of ~0.28 rad/s is REAL (MEMS thermal bias, confirmed by diagnose_gyro.py)
+    USE_STATIONARY_BIAS = True  # Use variance-based stationary detection for bias init
+    LOCK_BIASES = False  # Lock biases to initial values (stationary-detected or zero)
     RELINEARIZE_THRESHOLD_DEG = 10.0  # Trigger re-linearization sooner to keep delta small
     USE_JACOBI_PRECOND = '--precond' in sys.argv  # Toggle Jacobi preconditioning
     
     # Boundary priors: pin spline state at START to MoCap ground truth (no end priors)
     LAMBDA_BOUNDARY_VEL = 1000.0  # Weight for boundary velocity priors (strong: prevents accel-drag)
     LAMBDA_BOUNDARY_POS = 1000.0  # Weight for boundary position priors (strong: prevents drift from start)
-    LAMBDA_BOUNDARY_ORI = 100.0   # Weight for boundary orientation priors (delta=0)
+    LAMBDA_BOUNDARY_ORI = 10000.0   # Weight for boundary orientation priors (delta=0)
     LAMBDA_BOUNDARY_ACCEL = 0.001  # Weight for boundary acceleration priors
-    LAMBDA_BOUNDARY_GYRO = 10.0  # Weight for boundary angular velocity priors (delta_dot=0)
-    BOUNDARY_WINDOW = 0.3         # Seconds near start boundary to apply priors
+    LAMBDA_BOUNDARY_GYRO = 1000.0  # Weight for boundary angular velocity priors (delta_dot=0)
+    BOUNDARY_WINDOW = 1         # Seconds near start boundary to apply priors
     
     print(f"\n{'Configuration':-^80}")
     print(f"Bag: {bag_key} -> {BAG_PATH}")
@@ -1407,7 +1535,7 @@ def main():
     print(f"Max iterations: {MAX_ITERATIONS} (re-linearize when delta > {RELINEARIZE_THRESHOLD_DEG}°)")
     print(f"IMU-MoCap time offset: {IMU_MOCAP_OFFSET*1000:.0f} ms  |  Radar-IMU offset: {RADAR_IMU_OFFSET*1000:.0f} ms")
     print(f"Use Phase 2 init: {USE_PHASE2_INIT}")
-    print(f"Lock biases: {LOCK_BIASES}")
+    print(f"Stationary bias: {USE_STATIONARY_BIAS}  |  Lock biases: {LOCK_BIASES}")
     print(f"Jacobi preconditioning: {USE_JACOBI_PRECOND}")
     print(f"Boundary priors (START only): window={BOUNDARY_WINDOW}s")
     print(f"  λ_bnd: vel={LAMBDA_BOUNDARY_VEL} pos={LAMBDA_BOUNDARY_POS} ori={LAMBDA_BOUNDARY_ORI} acc={LAMBDA_BOUNDARY_ACCEL} gyr={LAMBDA_BOUNDARY_GYRO}")
@@ -1646,39 +1774,55 @@ def main():
     print(f"Orientation spline: {n_ori_points} control points, dt={ori_bspline.dt:.4f}s")
     print(f"  SLERP from {len(mocap_times_rel)} MoCap samples ({1.0/(mocap_times_rel[1]-mocap_times_rel[0]):.0f} Hz)")
     
-    # Pre-estimate biases from initial state (MoCap orientation + Phase 2 position)
-    # b_a_init = mean(z_imu - R_mocap^T @ (p''(t) - g))
-    # b_g_init = mean(z_gyro - omega_mocap)
+    # ==================== Bias Initialization ====================
+    # Use variance-based stationary detection on the FULL bag IMU data
+    # to extract gyro/accel bias from the ground period (before takeoff).
     g_world = np.array([0, 0, -9.81])
-    accel_residuals_init = []
-    gyro_residuals_init = []
-    for imu_msg in imu_data:
-        t = imu_msg.timestamp
-        t_rel = t - t_ref
-        # Skip if outside B-spline support
-        if t_rel < pos_bspline.t_start or t_rel > pos_bspline.t_end:
-            continue
-        try:
-            a_world = pos_bspline(t_rel, derivative=2)
-            R_mocap = mocap_slerp(np.clip(t_rel, mocap_times_rel[0], mocap_times_rel[-1])).as_matrix()
-            pred_imu = R_mocap.T @ (a_world - g_world)
-            accel_residuals_init.append(imu_msg.linear_acceleration - pred_imu)
-            
-            omega_mocap = mocap_omega_interp(np.clip(t_rel, mocap_times_rel[0], mocap_times_rel[-1]))
-            gyro_residuals_init.append(imu_msg.angular_velocity - omega_mocap)
-        except Exception:
-            pass
-    
-    if LOCK_BIASES:
+    print(f"\n{'Stationary Bias Detection':-^80}")
+    if USE_STATIONARY_BIAS:
+        stationary_result = detect_stationary_bias(bag_data.imu_data, verbose=True)
+    else:
+        stationary_result = None
+        print("  Stationary detection DISABLED (USE_STATIONARY_BIAS=False)")
+
+    if USE_STATIONARY_BIAS and stationary_result is not None:
+        acc_bias = stationary_result['acc_bias']
+        gyr_bias = stationary_result['gyr_bias']
+        print(f"\n  Using STATIONARY-DETECTED biases (autonomous, no MoCap needed)")
+    elif not USE_STATIONARY_BIAS:
         acc_bias = np.zeros(3)
         gyr_bias = np.zeros(3)
-        print(f"\n  Biases LOCKED to zero (forcing orientation correction)")
+        print(f"\n  Biases initialized to ZERO (stationary detection disabled)")
     else:
+        # Fallback: estimate from flight window (MoCap-based, less reliable)
+        print(f"\n  [FALLBACK] Stationary detection failed, estimating from flight window...")
+        accel_residuals_init = []
+        gyro_residuals_init = []
+        for imu_msg in imu_data:
+            t = imu_msg.timestamp
+            t_rel = t - t_ref
+            if t_rel < pos_bspline.t_start or t_rel > pos_bspline.t_end:
+                continue
+            try:
+                a_world = pos_bspline(t_rel, derivative=2)
+                R_mocap = mocap_slerp(np.clip(t_rel, mocap_times_rel[0], mocap_times_rel[-1])).as_matrix()
+                pred_imu = R_mocap.T @ (a_world - g_world)
+                accel_residuals_init.append(imu_msg.linear_acceleration - pred_imu)
+                omega_mocap = mocap_omega_interp(np.clip(t_rel, mocap_times_rel[0], mocap_times_rel[-1]))
+                gyro_residuals_init.append(imu_msg.angular_velocity - omega_mocap)
+            except Exception:
+                pass
         acc_bias = np.mean(accel_residuals_init, axis=0) if accel_residuals_init else np.zeros(3)
         gyr_bias = np.mean(gyro_residuals_init, axis=0) if gyro_residuals_init else np.zeros(3)
-    print(f"\n  Pre-estimated biases:")
-    print(f"    Acc bias init: [{acc_bias[0]:.3f}, {acc_bias[1]:.3f}, {acc_bias[2]:.3f}] m/s² (norm={np.linalg.norm(acc_bias):.3f})")
-    print(f"    Gyr bias init: [{gyr_bias[0]:.4f}, {gyr_bias[1]:.4f}, {gyr_bias[2]:.4f}] rad/s")
+
+    # bias_prior_mean: the bias prior penalizes (b - b_init), anchoring to this value
+    bias_prior_mean = np.concatenate([acc_bias, gyr_bias])
+
+    print(f"\n  Bias initialization:")
+    print(f"    Acc bias init: [{acc_bias[0]:.4f}, {acc_bias[1]:.4f}, {acc_bias[2]:.4f}] m/s² (norm={np.linalg.norm(acc_bias):.4f})")
+    print(f"    Gyr bias init: [{gyr_bias[0]:.5f}, {gyr_bias[1]:.5f}, {gyr_bias[2]:.5f}] rad/s")
+    print(f"                 = [{np.degrees(gyr_bias[0]):.3f}, {np.degrees(gyr_bias[1]):.3f}, {np.degrees(gyr_bias[2]):.3f}] deg/s")
+    print(f"    Lock biases: {LOCK_BIASES} (if True, solver cannot change these values)")
     
     # Create initial state
     initial_state = TrajectoryState(
@@ -1782,6 +1926,7 @@ def main():
         lambda_bias_prior=LAMBDA_BIAS_PRIOR,
         lambda_bias_prior_accel=LAMBDA_BIAS_PRIOR_ACCEL,
         lambda_bias_prior_gyro=LAMBDA_BIAS_PRIOR_GYRO,
+        bias_prior_mean=bias_prior_mean,
     )
     
     # ==================== Evaluate Results ====================
@@ -2004,9 +2149,16 @@ def main():
         f"  Acc  RMSE: {accel_rmse:.4f} m/s²",
         f"  Ori  RMSE: {np.sqrt(np.mean(rot_errors**2)):.4f}°",
         f"",
+        f"INIT BIASES",
+        f"  Acc: [{bias_prior_mean[0]:+.4f}, {bias_prior_mean[1]:+.4f}, {bias_prior_mean[2]:+.4f}] m/s²",
+        f"  Gyr: [{np.degrees(bias_prior_mean[3]):+.2f}, {np.degrees(bias_prior_mean[4]):+.2f}, {np.degrees(bias_prior_mean[5]):+.2f}] deg/s",
+        f"FINAL BIASES",
+        f"  Acc: [{optimized_state.acc_bias[0]:+.4f}, {optimized_state.acc_bias[1]:+.4f}, {optimized_state.acc_bias[2]:+.4f}] m/s²",
+        f"  Gyr: [{np.degrees(optimized_state.gyr_bias[0]):+.2f}, {np.degrees(optimized_state.gyr_bias[1]):+.2f}, {np.degrees(optimized_state.gyr_bias[2]):+.2f}] deg/s",
+        f"",
         f"HYPERPARAMETERS",
         f"  bag={bag_key}  t={START_TIME_OFFSET:.0f}s+{DURATION:.0f}s",
-        f"  flip={FLIP_BODY_FRAME}  lock_bias={LOCK_BIASES}",
+        f"  flip={FLIP_BODY_FRAME}  lock_bias={LOCK_BIASES}  stat_bias={USE_STATIONARY_BIAS}",
         f"  dt_pos={DT_POS}  dt_ori={DT_ORI}  deg={BSPLINE_DEGREE}",
         f"  λ_accel={LAMBDA_ACCEL}  λ_gyro={LAMBDA_GYRO}",
         f"  λ_snap_pos={LAMBDA_SNAP_POS}  λ_snap_ori={LAMBDA_SNAP_ORI}",
@@ -2017,7 +2169,7 @@ def main():
         f"  bnd_window={BOUNDARY_WINDOW}s (start only)",
         f"  max_iter={MAX_ITERATIONS}  precond={USE_JACOBI_PRECOND}",
         f"  relin_thr={RELINEARIZE_THRESHOLD_DEG}°  imu_offset={IMU_MOCAP_OFFSET*1000:.0f}ms  radar_offset={radar_total_offset*1000:.0f}ms",
-        f"  λ_ori_reg={LAMBDA_ORI_REG}  λ_bias_prior={LAMBDA_BIAS_PRIOR}",
+        f"  λ_ori_reg={LAMBDA_ORI_REG}  λ_bp_a={LAMBDA_BIAS_PRIOR_ACCEL}  λ_bp_g={LAMBDA_BIAS_PRIOR_GYRO}",
     ]
     summary_text = "\n".join(summary_lines)
     ax.text(0.02, 0.98, summary_text, transform=ax.transAxes,
