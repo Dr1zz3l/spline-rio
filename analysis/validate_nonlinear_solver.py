@@ -1427,7 +1427,7 @@ BAGS = {
 }
 
 # Bags where the agiros body frame is rotated 180 deg in yaw
-FLIPPED_BAGS = {"circle_fwd", "loopings", }
+FLIPPED_BAGS = {"circle_fwd", "loopings", "backflips"}
 
 # ==================== Main Validation ====================
 
@@ -1500,12 +1500,12 @@ def main():
     LAMBDA_SNAP_ORI = 0.0001   # Orientation smoothness
     LAMBDA_ORI_REG = 0.0       # Orientation regularization: disabled (penalizes delta CPs away from MoCap)
     LAMBDA_BIAS_PRIOR = 1.0    # Fallback (overridden by per-sensor values below)
-    LAMBDA_BIAS_PRIOR_ACCEL = 1.0  # Weak
+    LAMBDA_BIAS_PRIOR_ACCEL = 1000.0  # Weak
     LAMBDA_BIAS_PRIOR_GYRO = 10000.0    # Very Strong
     HUBER_DELTA = 1.0  # meters/second (Huber threshold for radar; ≥ 0.63 m/s quantization bin)
     HUBER_DELTA_ACCEL = 2.0  # m/s² (Huber threshold for accelerometer — clips spikes linearly)
     MIN_RANGE = 0.2
-    MAX_ITERATIONS = 20  # LM iterations (need more for bias convergence + warmup)
+    MAX_ITERATIONS = 10  # LM iterations (need more for bias convergence + warmup)
     IMU_MOCAP_OFFSET = +0.020  # seconds: IMU timestamps are 20ms behind MoCap, shift forward to align (FINDINGS.md §3)
     RADAR_IMU_OFFSET = -0.019  # seconds: radar timestamps are 19ms behind IMU (notebook 02_radar_time_sync §4)
     USE_PHASE2_INIT = False  # Initialize position from Phase 2 linear solver
@@ -1752,19 +1752,28 @@ def main():
     # Initialize with zero perturbations (identity in tangent space)
     ori_bspline.control_points = np.zeros((n_ori_points, 3))
     
-    # Sample nominal rotations at control point times
-    rot_interp_func = lambda t: Rotation.from_quat(
-        interp1d(mocap_times_rel, mocap_orientations, axis=0,
-                 kind='linear', fill_value='extrapolate')(t)
-    )
-    nominal_times = np.linspace(ori_bspline.t_start, ori_bspline.t_end, n_ori_points)
-    nominal_rotations = np.array([
-        rot_interp_func(t).as_matrix() for t in nominal_times
-    ])
+    # Enforce quaternion hemisphere consistency BEFORE any interpolation.
+    # q and -q represent the same rotation; if consecutive quaternions lie in
+    # opposite hemispheres, SLERP takes the long (wrong) path.  This is
+    # critical for backflips where the drone rotates 360° around pitch.
+    n_flips = 0
+    for i in range(1, len(mocap_orientations)):
+        if np.dot(mocap_orientations[i], mocap_orientations[i - 1]) < 0:
+            mocap_orientations[i] *= -1
+            n_flips += 1
+    if n_flips > 0:
+        print(f"  Fixed {n_flips} quaternion sign flips for hemisphere consistency")
     
     # Create dense SLERP interpolation from MoCap (much better than nearest-neighbor)
     mocap_rots_scipy = Rotation.from_quat(mocap_orientations)  # [qx, qy, qz, qw]
     mocap_slerp = Slerp(mocap_times_rel, mocap_rots_scipy)
+    
+    # Sample nominal rotations at control point times using SLERP (not linear quat interp)
+    nominal_times = np.linspace(ori_bspline.t_start, ori_bspline.t_end, n_ori_points)
+    nominal_times_clamped = np.clip(nominal_times, mocap_times_rel[0], mocap_times_rel[-1])
+    nominal_rotations = np.array([
+        mocap_slerp(t).as_matrix() for t in nominal_times_clamped
+    ])
     
     # Create angular velocity interpolation from MoCap
     mocap_angular_velocities = np.array([s.angular_velocity for s in agiros_states])
@@ -1966,6 +1975,17 @@ def main():
     
     mocap_velocities = np.array([s.velocity for s in agiros_eval])
     
+    # Lowpass filter MoCap velocity (filtfilt, 4th-order Butterworth, 10 Hz cutoff)
+    # MoCap runs at ~300 Hz; we want to remove high-freq noise before error/plotting.
+    from scipy.signal import butter, filtfilt, savgol_filter
+    _eval_dt = np.median(np.diff(eval_times))
+    _fs = 1.0 / _eval_dt
+    _fc = min(10.0, _fs * 0.4)  # cutoff 10 Hz (or 40% Nyquist if fs is low)
+    _b, _a = butter(4, _fc / (_fs / 2), btype='low')
+    if len(mocap_velocities) > 3 * 9:  # need enough samples for filtfilt (3 * padlen)
+        for dim in range(3):
+            mocap_velocities[:, dim] = filtfilt(_b, _a, mocap_velocities[:, dim])
+
     # Compute MoCap acceleration via numerical differentiation of velocity
     # Use FULL MoCap data for differentiation, then interpolate to eval times
     all_mocap_velocities = np.array([s.velocity for s in agiros_states])
@@ -1985,7 +2005,6 @@ def main():
     clean_accel[-1] = (clean_vel[-1] - clean_vel[-2]) / dt_clean[-1]
     
     # Apply SavGol smoothing (window=15, order=3) to suppress differentiation noise
-    from scipy.signal import savgol_filter
     win = min(15, len(clean_accel) - (1 if len(clean_accel) % 2 == 0 else 0))
     if win >= 5:
         for dim in range(3):
@@ -1995,6 +2014,11 @@ def main():
     mocap_accelerations = np.zeros_like(mocap_velocities)
     for dim in range(3):
         mocap_accelerations[:, dim] = np.interp(eval_times, clean_times, clean_accel[:, dim])
+    
+    # Lowpass filter MoCap acceleration (same filter as velocity)
+    if len(mocap_accelerations) > 3 * 9:
+        for dim in range(3):
+            mocap_accelerations[:, dim] = filtfilt(_b, _a, mocap_accelerations[:, dim])
     
     # Compute errors
     pos_errors = np.linalg.norm(estimated_positions - mocap_positions_eval, axis=1)
@@ -2048,14 +2072,22 @@ def main():
     ax = axes[0, 0]
     ax.plot(mocap_positions_eval[:, 0], mocap_positions_eval[:, 1], 'b-', label='MoCap', linewidth=2)
     ax.plot(estimated_positions[:, 0], estimated_positions[:, 1], 'r--', label='Estimated', linewidth=2)
-    ax.scatter(optimized_state.pos_bspline.control_points[:, 0],
-               optimized_state.pos_bspline.control_points[:, 1],
-               c='orange', marker='x', s=30, label='Control Points')
+    # ax.scatter(optimized_state.pos_bspline.control_points[:, 0],
+    #            optimized_state.pos_bspline.control_points[:, 1],
+    #            c='orange', marker='x', s=30, label='Control Points')
     ax.set_xlabel('X (m)')
     ax.set_ylabel('Y (m)')
     ax.set_title('Trajectory (X-Y Plane)')
     ax.legend()
     ax.grid(True, alpha=0.3)
+    # # Compute axis limits from the larger of ground truth / estimated trajectory
+    # all_traj = np.vstack([mocap_positions_eval[:, :2], estimated_positions[:, :2]])
+    # x_min, x_max = all_traj[:, 0].min(), all_traj[:, 0].max()
+    # y_min, y_max = all_traj[:, 1].min(), all_traj[:, 1].max()
+    # x_pad = max(0.1, (x_max - x_min) * 0.08)
+    # y_pad = max(0.1, (y_max - y_min) * 0.08)
+    # ax.set_xlim(x_min - x_pad, x_max + x_pad)
+    # ax.set_ylim(y_min - y_pad, y_max + y_pad)
     ax.axis('equal')
     
     # 2. Position error
@@ -2178,37 +2210,58 @@ def main():
     ax.set_title('Summary & Config')
     
     plt.tight_layout()
-    output_filename = f'nonlinear_solver_validation_{bag_key}_{timestamp_str}.png'
+    plots_dir = Path(f'plots/{bag_key}/validation')
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    output_filename = plots_dir / f'nonlinear_solver_validation_{bag_key}_{timestamp_str}.png'
     plt.savefig(output_filename, dpi=150, bbox_inches='tight')
     print(f"Saved: {output_filename}")
 
-    # ==================== Zoomed X-Y Trajectory Plot ====================
-    fig2, ax2 = plt.subplots(1, 1, figsize=(10, 10))
-    ax2.plot(mocap_positions_eval[:, 0], mocap_positions_eval[:, 1], 'b-', label='MoCap', linewidth=2)
-    ax2.plot(estimated_positions[:, 0], estimated_positions[:, 1], 'r--', label='Estimated', linewidth=2)
-    ax2.scatter(optimized_state.pos_bspline.control_points[:, 0],
-                optimized_state.pos_bspline.control_points[:, 1],
-                c='orange', marker='x', s=30, alpha=0.5, label='Control Points')
-    # Start markers
-    ax2.plot(mocap_positions_eval[0, 0], mocap_positions_eval[0, 1], 'bs', markersize=10, label='Start (MoCap)')
-    ax2.plot(estimated_positions[0, 0], estimated_positions[0, 1], 'rs', markersize=10, label='Start (Est.)')
-    ax2.set_xlabel('X (m)', fontsize=12)
-    ax2.set_ylabel('Y (m)', fontsize=12)
-    ax2.set_title('Trajectory (X-Y Plane) — Zoomed to Trajectory', fontsize=14, fontweight='bold')
-    ax2.legend(fontsize=10)
-    ax2.grid(True, alpha=0.3)
-    ax2.axis('equal')
-    # Compute axis limits from the larger of ground truth / estimated trajectory
-    all_traj = np.vstack([mocap_positions_eval[:, :2], estimated_positions[:, :2]])
-    x_min, x_max = all_traj[:, 0].min(), all_traj[:, 0].max()
-    y_min, y_max = all_traj[:, 1].min(), all_traj[:, 1].max()
-    x_pad = max(0.1, (x_max - x_min) * 0.08)
-    y_pad = max(0.1, (y_max - y_min) * 0.08)
-    ax2.set_xlim(x_min - x_pad, x_max + x_pad)
-    ax2.set_ylim(y_min - y_pad, y_max + y_pad)
-    zoomed_filename = f'nonlinear_trajectory_zoomed_{bag_key}_{timestamp_str}.png'
-    fig2.savefig(zoomed_filename, dpi=150, bbox_inches='tight')
-    print(f"Saved: {zoomed_filename}")
+    # ==================== Multi-View Trajectory Plot ====================
+    fig2 = plt.figure(figsize=(14, 12))
+    gt = mocap_positions_eval
+    est = estimated_positions
+
+    # Helper for 2D subplots
+    def _setup_2d(ax, xi, yi, xlabel, ylabel, title):
+        ax.plot(gt[:, xi], gt[:, yi], 'b-', label='MoCap', linewidth=2)
+        ax.plot(est[:, xi], est[:, yi], 'r--', label='Estimated', linewidth=1.5)
+        ax.plot(gt[0, xi], gt[0, yi], 'bs', markersize=8)
+        ax.plot(est[0, xi], est[0, yi], 'rs', markersize=8)
+        ax.set_xlabel(xlabel, fontsize=11)
+        ax.set_ylabel(ylabel, fontsize=11)
+        ax.set_title(title, fontsize=12, fontweight='bold')
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3)
+        ax.set_aspect('equal')
+
+    ax_xy = fig2.add_subplot(2, 2, 1)
+    _setup_2d(ax_xy, 0, 1, 'X (m)', 'Y (m)', 'X-Y Plane')
+
+    ax_xz = fig2.add_subplot(2, 2, 2)
+    _setup_2d(ax_xz, 0, 2, 'X (m)', 'Z (m)', 'X-Z Plane')
+
+    ax_yz = fig2.add_subplot(2, 2, 3)
+    _setup_2d(ax_yz, 1, 2, 'Y (m)', 'Z (m)', 'Y-Z Plane')
+
+    # 3D view
+    ax3d = fig2.add_subplot(2, 2, 4, projection='3d')
+    ax3d.plot(gt[:, 0], gt[:, 1], gt[:, 2], 'b-', label='MoCap', linewidth=2)
+    ax3d.plot(est[:, 0], est[:, 1], est[:, 2], 'r--', label='Estimated', linewidth=1.5)
+    ax3d.plot([gt[0, 0]], [gt[0, 1]], [gt[0, 2]], 'bs', markersize=8)
+    ax3d.plot([est[0, 0]], [est[0, 1]], [est[0, 2]], 'rs', markersize=8)
+    ax3d.set_xlabel('X (m)', fontsize=10)
+    ax3d.set_ylabel('Y (m)', fontsize=10)
+    ax3d.set_zlabel('Z (m)', fontsize=10)
+    ax3d.set_title('3D View', fontsize=12, fontweight='bold')
+    ax3d.legend(fontsize=9)
+
+    fig2.suptitle(f'Trajectory Views — {bag_key}', fontsize=14, fontweight='bold')
+    fig2.tight_layout()
+    views_dir = Path(f'plots/{bag_key}/trajectory_views')
+    views_dir.mkdir(parents=True, exist_ok=True)
+    views_filename = views_dir / f'nonlinear_trajectory_views_{bag_key}_{timestamp_str}.png'
+    fig2.savefig(views_filename, dpi=150, bbox_inches='tight')
+    print(f"Saved: {views_filename}")
     
     # ==================== Summary ====================
     total_time = time.time() - start_time
