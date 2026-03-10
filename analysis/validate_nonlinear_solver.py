@@ -1466,8 +1466,8 @@ def main():
         DURATION = 5.0
         
     # Sensor extrinsics (from Phase 1 calibration)
-    ROTATION_EULER_DEG = np.array([180.0, 30.0, 0.0])  # roll, pitch, yaw — +30° pitch = downlooking
-
+    ROTATION_EULER_DEG = np.array([180.0, 35.0, 0.0])  # roll, pitch, yaw — +30° pitch = downlooking
+    
     # Body frame flip for certain trajectory profiles
     FLIP_BODY_FRAME = bag_key in FLIPPED_BAGS
     if "--flip" in sys.argv:
