@@ -132,53 +132,80 @@ void DataUARTHandler::setMaxAllowedAzimuthAngleDeg(int myMaxAllowedAzimuthAngleD
 /*Implementation of readIncomingData*/
 void *DataUARTHandler::readIncomingData(void)
 {
+    const int MAX_RECONNECT_ATTEMPTS = 30;
+    const double RECONNECT_DELAY_SEC = 1.0;
     
     int firstPacketReady = 0;
     uint8_t last8Bytes[8] = {0};
+    bool needMutexCleanup = false;  // tracks whether we hold nextBufp_mutex
     
     /*Open UART Port and error checking*/
     serial::Serial mySerialObject("", dataBaudRate, serial::Timeout::simpleTimeout(100));
     mySerialObject.setPort(dataSerialPort);
-    try
+
+reconnect:
+    /* Reset state for (re)connection */
+    firstPacketReady = 0;
+    memset(last8Bytes, 0, sizeof(last8Bytes));
+
+    /* Close port if it was previously open (reconnect path) */
+    try { if (mySerialObject.isOpen()) mySerialObject.close(); } catch (...) {}
+
+    /* Retry loop to open serial port */
     {
-        mySerialObject.open();
-    } catch (std::exception &e1) {
-        ROS_INFO("DataUARTHandler Read Thread: Failed to open Data serial port with error: %s", e1.what());
-        ROS_INFO("DataUARTHandler Read Thread: Waiting 20 seconds before trying again...");
-        try
+        int reconnect_attempts = 0;
+        while (ros::ok() && !mySerialObject.isOpen())
         {
-            // Wait 20 seconds and try to open serial port again
-            ros::Duration(20).sleep();
-            mySerialObject.open();
-        } catch (std::exception &e2) {
-            ROS_ERROR("DataUARTHandler Read Thread: Failed second time to open Data serial port, error: %s", e1.what());
-            ROS_ERROR("DataUARTHandler Read Thread: Port could not be opened. Port is \"%s\" and baud rate is %d", dataSerialPort, dataBaudRate);
-            pthread_exit(NULL);
+            try
+            {
+                mySerialObject.open();
+            } catch (std::exception &e) {
+                reconnect_attempts++;
+                if (reconnect_attempts == 1) {
+                    ROS_WARN("DataUARTHandler Read Thread: Serial port lost. Attempting reconnect...");
+                }
+                if (reconnect_attempts % 5 == 0) {
+                    ROS_WARN("DataUARTHandler Read Thread: Reconnect attempt %d/%d: %s",
+                             reconnect_attempts, MAX_RECONNECT_ATTEMPTS, e.what());
+                }
+                if (reconnect_attempts >= MAX_RECONNECT_ATTEMPTS) {
+                    ROS_ERROR("DataUARTHandler Read Thread: Max reconnect attempts (%d) reached. Giving up.", MAX_RECONNECT_ATTEMPTS);
+                    ROS_ERROR("DataUARTHandler Read Thread: Port is \"%s\" and baud rate is %d", dataSerialPort, dataBaudRate);
+                    pthread_exit(NULL);
+                }
+                ros::Duration(RECONNECT_DELAY_SEC).sleep();
+            }
         }
     }
+
+    if (!ros::ok()) {
+        pthread_exit(NULL);
+    }
     
-    if(mySerialObject.isOpen())
-        ROS_INFO("DataUARTHandler Read Thread: Port is open");
-    else
-        ROS_ERROR("DataUARTHandler Read Thread: Port could not be opened");
+    ROS_INFO("DataUARTHandler Read Thread: Port is open");
     
     /*Quick magicWord check to synchronize program with data Stream*/
-    while(!isMagicWord(last8Bytes))
+    try
     {
-
-        last8Bytes[0] = last8Bytes[1];
-        last8Bytes[1] = last8Bytes[2];
-        last8Bytes[2] = last8Bytes[3];
-        last8Bytes[3] = last8Bytes[4];
-        last8Bytes[4] = last8Bytes[5];
-        last8Bytes[5] = last8Bytes[6];
-        last8Bytes[6] = last8Bytes[7];
-        mySerialObject.read(&last8Bytes[7], 1);
-        
+        while(!isMagicWord(last8Bytes) && ros::ok())
+        {
+            last8Bytes[0] = last8Bytes[1];
+            last8Bytes[1] = last8Bytes[2];
+            last8Bytes[2] = last8Bytes[3];
+            last8Bytes[3] = last8Bytes[4];
+            last8Bytes[4] = last8Bytes[5];
+            last8Bytes[5] = last8Bytes[6];
+            last8Bytes[6] = last8Bytes[7];
+            mySerialObject.read(&last8Bytes[7], 1);
+        }
+    } catch (std::exception &e) {
+        ROS_WARN("DataUARTHandler Read Thread: Serial error during magic word sync: %s", e.what());
+        goto reconnect;
     }
     
     /*Lock nextBufp before entering main loop*/
     pthread_mutex_lock(&nextBufp_mutex);
+    needMutexCleanup = true;
     
     while(ros::ok())
     {
@@ -190,7 +217,32 @@ void *DataUARTHandler::readIncomingData(void)
         last8Bytes[4] = last8Bytes[5];
         last8Bytes[5] = last8Bytes[6];
         last8Bytes[6] = last8Bytes[7];
-        mySerialObject.read(&last8Bytes[7], 1);
+
+        try {
+            mySerialObject.read(&last8Bytes[7], 1);
+        } catch (std::exception &e) {
+            ROS_WARN("DataUARTHandler Read Thread: Serial read error: %s. Attempting reconnect...", e.what());
+
+            /* Clean up buffer */
+            nextBufp->clear();
+            memset(last8Bytes, 0, sizeof(last8Bytes));
+
+            /* Release nextBufp_mutex that we hold */
+            pthread_mutex_unlock(&nextBufp_mutex);
+            needMutexCleanup = false;
+
+            /* Wake up sort/swap threads so they don't deadlock.
+             * Signal countSync_max_cv in case swap thread is waiting,
+             * and sort_go_cv/read_go_cv to unblock any condvar waits. */
+            pthread_mutex_lock(&countSync_mutex);
+            countSync = 0;
+            pthread_cond_signal(&countSync_max_cv);
+            pthread_cond_signal(&sort_go_cv);
+            pthread_cond_signal(&read_go_cv);
+            pthread_mutex_unlock(&countSync_mutex);
+
+            goto reconnect;
+        }
         
         nextBufp->push_back( last8Bytes[7] );  //push byte onto buffer
         
@@ -210,6 +262,7 @@ void *DataUARTHandler::readIncomingData(void)
             /*Lock countSync Mutex while unlocking nextBufp so that the swap thread can use it*/
             pthread_mutex_lock(&countSync_mutex);
             pthread_mutex_unlock(&nextBufp_mutex);
+            needMutexCleanup = false;
             
             /*increment countSync*/
             countSync++;
@@ -233,6 +286,7 @@ void *DataUARTHandler::readIncomingData(void)
             /*Unlock countSync so that Swap Thread can use it*/
             pthread_mutex_unlock(&countSync_mutex);
             pthread_mutex_lock(&nextBufp_mutex);
+            needMutexCleanup = true;
             
             nextBufp->clear();
             memset(last8Bytes, 0, sizeof(last8Bytes));
@@ -241,6 +295,9 @@ void *DataUARTHandler::readIncomingData(void)
       
     }
     
+    if (needMutexCleanup) {
+        pthread_mutex_unlock(&nextBufp_mutex);
+    }
     
     mySerialObject.close();
     
