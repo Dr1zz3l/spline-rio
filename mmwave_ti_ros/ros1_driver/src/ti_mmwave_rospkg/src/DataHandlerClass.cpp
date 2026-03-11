@@ -1,5 +1,6 @@
 #include <DataHandlerClass.h>
 #include <stdexcept>
+#include <ti_mmwave_rospkg/mmWaveCLI.h>
 #define PCL_NO_PRECOMPILE
 
 //#include <pcl/memory.h>
@@ -44,6 +45,7 @@ POINT_CLOUD_REGISTER_POINT_STRUCT (mmWaveCloudType,
                                     (float, velocity, velocity))
 
 DataUARTHandler::DataUARTHandler(ros::NodeHandle* nh) : currentBufp(&pingPongBuffers[0]) , nextBufp(&pingPongBuffers[1]) {
+    nodeHandle = nh;
     DataUARTHandler_pub = nh->advertise<sensor_msgs::PointCloud2>("/ti_mmwave/radar_scan_pcl", 100);
     radar_scan_pub = nh->advertise<ti_mmwave_rospkg::RadarScan>("/ti_mmwave/radar_scan", 100);
     radar_occupancy_pub = nh->advertise<ti_mmwave_rospkg::RadarOccupancy>("/ti_mmwave/radar_occupancy", 100);
@@ -140,6 +142,7 @@ void *DataUARTHandler::readIncomingData(void)
     int firstPacketReady = 0;
     uint8_t last8Bytes[8] = {0};
     bool needMutexCleanup = false;  // tracks whether we hold nextBufp_mutex
+    bool isReconnecting = false;    // true after first connection attempt
     
     /*Open UART Port and error checking*/
     serial::Serial mySerialObject("", dataBaudRate, serial::Timeout::simpleTimeout(100));
@@ -186,6 +189,35 @@ reconnect:
     }
     
     ROS_INFO("DataUARTHandler Read Thread: Port is open");
+
+    /* After reconnect, re-send sensorStart to resume radar data output */
+    if (isReconnecting) {
+        ROS_WARN("DataUARTHandler Read Thread: *** Sending sensorStart to resume radar... ***");
+        try {
+            std::string mmWaveCLIName;
+            nodeHandle->getParam("mmWaveCLI_name", mmWaveCLIName);
+            if (mmWaveCLIName.empty()) mmWaveCLIName = "/mmWaveCLI";
+            
+            ros::NodeHandle nh;  // global NH for service client
+            ros::ServiceClient cli_client = nh.serviceClient<ti_mmwave_rospkg::mmWaveCLI>(mmWaveCLIName);
+            
+            if (cli_client.waitForExistence(ros::Duration(5.0))) {
+                ti_mmwave_rospkg::mmWaveCLI srv;
+                srv.request.comm = "sensorStart";
+                if (cli_client.call(srv)) {
+                    ROS_INFO("DataUARTHandler Read Thread: *** sensorStart sent successfully. Response: %s ***", srv.response.resp.c_str());
+                } else {
+                    ROS_WARN("DataUARTHandler Read Thread: sensorStart service call failed.");
+                }
+            } else {
+                ROS_WARN("DataUARTHandler Read Thread: mmWaveCLI service not available (command port may also be disconnected).");
+            }
+        } catch (std::exception &e) {
+            ROS_WARN("DataUARTHandler Read Thread: Exception while sending sensorStart: %s", e.what());
+        }
+        ros::Duration(0.5).sleep();  // Give sensor time to start outputting frames
+    }
+    isReconnecting = true;  // Next time through, we know it's a reconnect
     
     /*Quick magicWord check to synchronize program with data Stream*/
     try
