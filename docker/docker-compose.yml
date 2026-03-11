@@ -29,7 +29,7 @@ services:
       - RADAR_CONFIG_PATH=/root/config/radar_config.cfg
     stdin_open: true
     tty: true
-    command: /bin/bash
+    command: /bin/bash -lc "/workspace/scripts/setup_usb_devices.sh || true; exec /bin/bash"
 
 volumes:
   catkin_build:

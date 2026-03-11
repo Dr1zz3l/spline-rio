@@ -51,6 +51,15 @@ The easiest way to develop is using VS Code's Dev Containers extension:
    catkin_make
    source devel/setup.bash
    roslaunch ti_mmwave_rospkg 6843_multi_3d_0.launch
+
+
+   # alternatively: 
+
+   # Use the best_velocity config
+   roslaunch ti_mmwave_rospkg 6843AOP_velocity_3d.launch cfg_file:=$(rospack find ti_mmwave_rospkg)/cfg/6843AOP_best_velocity.cfg
+
+   # Headless version
+   roslaunch ti_mmwave_rospkg 6843AOP_velocity_3d_headless.launch cfg_file:=$(rospack find ti_mmwave_rospkg)/cfg/6843AOP_best_velocity.cfg
    ```
 
 ### Manual Docker Workflow (Alternative)

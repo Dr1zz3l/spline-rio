@@ -11,6 +11,7 @@
   <arg name="max_allowed_elevation_angle_deg" default="90" doc="Maximum allowed elevation angle in degrees for detected object data [0 > value >= 90]}"/>
   <arg name="max_allowed_azimuth_angle_deg" default="90" doc="Maximum allowed azimuth angle in degrees for detected object data [0 > value >= 90]}"/>
   <arg name="publish_velocity_cloud" default="true" doc="Enable velocity-focused PointCloud2 publisher for odometry"/>
+  <arg name="cfg_file" default="$(find ti_mmwave_rospkg)/cfg/6843AOP_3d.cfg" doc="Path to radar configuration file"/>
 
   <!-- mmWave_Manager node -->
   <node pkg="ti_mmwave_rospkg" type="ti_mmwave_rospkg" name="ti_mmwave" ns="radar_0" output="screen">
@@ -27,7 +28,7 @@
   </node>
 
   <!-- mmWaveQuickConfig node (terminates after configuring mmWave sensor) -->
-  <node pkg="ti_mmwave_rospkg" type="mmWaveQuickConfig" name="ti_mmwave_config" ns="radar_0" args="$(find ti_mmwave_rospkg)/cfg/6843AOP_3d.cfg" output="screen" >
+  <node pkg="ti_mmwave_rospkg" type="mmWaveQuickConfig" name="ti_mmwave_config" ns="radar_0" args="$(arg cfg_file)" output="screen" >
     <param name="mmWaveCLI_name" value="/mmWaveCLI" />
   </node>
 
