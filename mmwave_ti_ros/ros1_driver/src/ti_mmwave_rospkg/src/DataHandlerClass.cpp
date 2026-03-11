@@ -1,4 +1,5 @@
 #include <DataHandlerClass.h>
+#include <stdexcept>
 #define PCL_NO_PRECOMPILE
 
 //#include <pcl/memory.h>
@@ -134,6 +135,7 @@ void *DataUARTHandler::readIncomingData(void)
 {
     const int MAX_RECONNECT_ATTEMPTS = 30;
     const double RECONNECT_DELAY_SEC = 1.0;
+    const int MAX_ZERO_READ_COUNT = 50;  // 50 consecutive 0-byte reads (~5s at 100ms timeout) = disconnect
     
     int firstPacketReady = 0;
     uint8_t last8Bytes[8] = {0};
@@ -145,6 +147,7 @@ void *DataUARTHandler::readIncomingData(void)
 
 reconnect:
     /* Reset state for (re)connection */
+    int zero_read_count = 0;
     firstPacketReady = 0;
     memset(last8Bytes, 0, sizeof(last8Bytes));
 
@@ -196,7 +199,18 @@ reconnect:
             last8Bytes[4] = last8Bytes[5];
             last8Bytes[5] = last8Bytes[6];
             last8Bytes[6] = last8Bytes[7];
-            mySerialObject.read(&last8Bytes[7], 1);
+            size_t n = mySerialObject.read(&last8Bytes[7], 1);
+            if (n == 0) {
+                zero_read_count++;
+                if (zero_read_count >= MAX_ZERO_READ_COUNT) {
+                    ROS_ERROR("DataUARTHandler Read Thread: *** USB DISCONNECT DETECTED (no data for ~%.1fs during sync) ***",
+                              zero_read_count * 0.1);
+                    ROS_ERROR("DataUARTHandler Read Thread: *** Attempting to reconnect... ***");
+                    goto reconnect;
+                }
+            } else {
+                zero_read_count = 0;
+            }
         }
     } catch (std::exception &e) {
         ROS_WARN("DataUARTHandler Read Thread: Serial error during magic word sync: %s", e.what());
@@ -219,7 +233,18 @@ reconnect:
         last8Bytes[6] = last8Bytes[7];
 
         try {
-            mySerialObject.read(&last8Bytes[7], 1);
+            size_t bytes_read = mySerialObject.read(&last8Bytes[7], 1);
+            if (bytes_read == 0) {
+                zero_read_count++;
+                if (zero_read_count >= MAX_ZERO_READ_COUNT) {
+                    ROS_ERROR("DataUARTHandler Read Thread: *** USB DISCONNECT DETECTED (no data for ~%.1fs) ***",
+                              zero_read_count * 0.1);
+                    ROS_ERROR("DataUARTHandler Read Thread: *** Attempting to reconnect... ***");
+                    throw std::runtime_error("USB disconnect detected (repeated read timeouts)");
+                }
+                continue;  // skip pushing empty byte onto buffer
+            }
+            zero_read_count = 0;
         } catch (std::exception &e) {
             ROS_WARN("DataUARTHandler Read Thread: Serial read error: %s. Attempting reconnect...", e.what());
 
