@@ -94,12 +94,12 @@ class Rot3:
 # ======================================================================
 
 
-# --- From: radar_residual_with_jacobians023.py ---
+# --- From: radar_residual_with_jacobians0236.py ---
 
 def radar_residual_with_jacobians(
     v_world, R_nominal, delta, omega, u_sensor, t_body_sensor, R_body_sensor, v_meas, epsilon
 ):
-    # type: (numpy.ndarray, Rot3, numpy.ndarray, numpy.ndarray, numpy.ndarray, numpy.ndarray, Rot3, float, float) -> T.Tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray, numpy.ndarray]
+    # type: (numpy.ndarray, Rot3, numpy.ndarray, numpy.ndarray, numpy.ndarray, numpy.ndarray, Rot3, float, float) -> T.Tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray, numpy.ndarray, numpy.ndarray]
     """
     Radar Doppler residual.
 
@@ -113,9 +113,10 @@ def radar_residual_with_jacobians(
         res_D_v_world: (1x3) jacobian of res (1) wrt arg v_world (3)
         res_D_delta: (1x3) jacobian of res (1) wrt arg delta (3)
         res_D_omega: (1x3) jacobian of res (1) wrt arg omega (3)
+        res_D_R_body_sensor: (1x3) jacobian of res (1) wrt arg R_body_sensor (3)
     """
 
-    # Total ops: 513
+    # Total ops: 584
 
     # Input arrays
     if v_world.shape == (3,):
@@ -166,326 +167,367 @@ def radar_residual_with_jacobians(
 
     _R_body_sensor = R_body_sensor.data
 
-    # Intermediate terms (156)
-    _tmp0 = 2 * _R_body_sensor[1]
-    _tmp1 = _R_body_sensor[2] * _tmp0
+    # Intermediate terms (183)
+    _tmp0 = 2 * _R_body_sensor[2]
+    _tmp1 = _R_body_sensor[1] * _tmp0
     _tmp2 = 2 * _R_body_sensor[0] * _R_body_sensor[3]
-    _tmp3 = -2 * _R_body_sensor[0] ** 2
-    _tmp4 = 1 - 2 * _R_body_sensor[2] ** 2
-    _tmp5 = _R_body_sensor[0] * _tmp0
-    _tmp6 = 2 * _R_body_sensor[2]
-    _tmp7 = _R_body_sensor[3] * _tmp6
-    _tmp8 = (
-        u_sensor[0, 0] * (_tmp5 + _tmp7)
-        + u_sensor[1, 0] * (_tmp3 + _tmp4)
-        + u_sensor[2, 0] * (_tmp1 - _tmp2)
-    )
-    _tmp9 = delta[2, 0] ** 2
-    _tmp10 = delta[1, 0] ** 2
-    _tmp11 = delta[0, 0] ** 2
-    _tmp12 = _tmp10 + _tmp11 + _tmp9 + epsilon**2
-    _tmp13 = math.sqrt(_tmp12)
-    _tmp14 = (1.0 / 2.0) * _tmp13
-    _tmp15 = math.sin(_tmp14)
-    _tmp16 = _tmp15 / _tmp13
-    _tmp17 = _R_nominal[3] * _tmp16
-    _tmp18 = _tmp17 * delta[1, 0]
-    _tmp19 = _R_nominal[0] * _tmp16
-    _tmp20 = _tmp19 * delta[2, 0]
-    _tmp21 = _R_nominal[2] * _tmp16
-    _tmp22 = _tmp21 * delta[0, 0]
-    _tmp23 = math.cos(_tmp14)
-    _tmp24 = _R_nominal[1] * _tmp23
-    _tmp25 = _tmp18 - _tmp20 + _tmp22 + _tmp24
-    _tmp26 = _tmp17 * delta[0, 0]
-    _tmp27 = _R_nominal[1] * _tmp16
-    _tmp28 = _tmp27 * delta[2, 0]
-    _tmp29 = _tmp21 * delta[1, 0]
-    _tmp30 = _R_nominal[0] * _tmp23
-    _tmp31 = _tmp26 + _tmp28 - _tmp29 + _tmp30
-    _tmp32 = 2 * _tmp31
-    _tmp33 = _tmp25 * _tmp32
-    _tmp34 = _tmp17 * delta[2, 0]
-    _tmp35 = _tmp19 * delta[1, 0]
-    _tmp36 = _tmp27 * delta[0, 0]
-    _tmp37 = _R_nominal[2] * _tmp23
-    _tmp38 = _tmp34 + _tmp35 - _tmp36 + _tmp37
-    _tmp39 = _tmp19 * delta[0, 0]
-    _tmp40 = _tmp27 * delta[1, 0]
-    _tmp41 = _tmp21 * delta[2, 0]
-    _tmp42 = _R_nominal[3] * _tmp23
+    _tmp3 = -_tmp2
+    _tmp4 = _tmp1 + _tmp3
+    _tmp5 = _R_body_sensor[2] ** 2
+    _tmp6 = -2 * _tmp5
+    _tmp7 = _R_body_sensor[0] ** 2
+    _tmp8 = 1 - 2 * _tmp7
+    _tmp9 = 2 * _R_body_sensor[1]
+    _tmp10 = _R_body_sensor[0] * _tmp9
+    _tmp11 = _R_body_sensor[3] * _tmp0
+    _tmp12 = _tmp10 + _tmp11
+    _tmp13 = _tmp12 * u_sensor[0, 0] + _tmp4 * u_sensor[2, 0] + u_sensor[1, 0] * (_tmp6 + _tmp8)
+    _tmp14 = delta[2, 0] ** 2
+    _tmp15 = delta[1, 0] ** 2
+    _tmp16 = delta[0, 0] ** 2
+    _tmp17 = _tmp14 + _tmp15 + _tmp16 + epsilon**2
+    _tmp18 = math.sqrt(_tmp17)
+    _tmp19 = (1.0 / 2.0) * _tmp18
+    _tmp20 = math.sin(_tmp19)
+    _tmp21 = _tmp20 / _tmp18
+    _tmp22 = _R_nominal[3] * _tmp21
+    _tmp23 = _tmp22 * delta[0, 0]
+    _tmp24 = _R_nominal[1] * _tmp21
+    _tmp25 = _tmp24 * delta[2, 0]
+    _tmp26 = _R_nominal[2] * _tmp21
+    _tmp27 = _tmp26 * delta[1, 0]
+    _tmp28 = math.cos(_tmp19)
+    _tmp29 = _R_nominal[0] * _tmp28
+    _tmp30 = _tmp23 + _tmp25 - _tmp27 + _tmp29
+    _tmp31 = _tmp22 * delta[1, 0]
+    _tmp32 = _R_nominal[0] * _tmp21
+    _tmp33 = _tmp32 * delta[2, 0]
+    _tmp34 = _tmp26 * delta[0, 0]
+    _tmp35 = _R_nominal[1] * _tmp28
+    _tmp36 = _tmp31 - _tmp33 + _tmp34 + _tmp35
+    _tmp37 = 2 * _tmp36
+    _tmp38 = _tmp30 * _tmp37
+    _tmp39 = _tmp32 * delta[0, 0]
+    _tmp40 = _tmp24 * delta[1, 0]
+    _tmp41 = _tmp26 * delta[2, 0]
+    _tmp42 = _R_nominal[3] * _tmp28
     _tmp43 = -_tmp39 - _tmp40 - _tmp41 + _tmp42
-    _tmp44 = 2 * _tmp43
-    _tmp45 = _tmp38 * _tmp44
-    _tmp46 = _tmp33 - _tmp45
-    _tmp47 = 2 * _tmp25
-    _tmp48 = _tmp38 * _tmp47
-    _tmp49 = _tmp32 * _tmp43
-    _tmp50 = _tmp48 + _tmp49
-    _tmp51 = -2 * _tmp38**2
-    _tmp52 = 1 - 2 * _tmp31**2
-    _tmp53 = _tmp51 + _tmp52
-    _tmp54 = _R_body_sensor[3] * _tmp0
-    _tmp55 = _R_body_sensor[0] * _tmp6
-    _tmp56 = -2 * _R_body_sensor[1] ** 2
-    _tmp57 = (
-        u_sensor[0, 0] * (_tmp4 + _tmp56)
-        + u_sensor[1, 0] * (_tmp5 - _tmp7)
-        + u_sensor[2, 0] * (_tmp54 + _tmp55)
+    _tmp44 = _tmp22 * delta[2, 0]
+    _tmp45 = _tmp32 * delta[1, 0]
+    _tmp46 = _tmp24 * delta[0, 0]
+    _tmp47 = _R_nominal[2] * _tmp28
+    _tmp48 = _tmp44 + _tmp45 - _tmp46 + _tmp47
+    _tmp49 = 2 * _tmp48
+    _tmp50 = _tmp43 * _tmp49
+    _tmp51 = _tmp38 - _tmp50
+    _tmp52 = _tmp36 * _tmp49
+    _tmp53 = 2 * _tmp30
+    _tmp54 = _tmp43 * _tmp53
+    _tmp55 = _tmp52 + _tmp54
+    _tmp56 = -2 * _tmp30**2
+    _tmp57 = 1 - 2 * _tmp48**2
+    _tmp58 = _tmp56 + _tmp57
+    _tmp59 = (
+        _tmp51 * v_world[0, 0]
+        + _tmp55 * v_world[2, 0]
+        + _tmp58 * v_world[1, 0]
+        - omega[0, 0] * t_body_sensor[2, 0]
+        + omega[2, 0] * t_body_sensor[0, 0]
     )
-    _tmp58 = -2 * _tmp25**2
-    _tmp59 = _tmp51 + _tmp58 + 1
-    _tmp60 = _tmp33 + _tmp45
-    _tmp61 = _tmp32 * _tmp38
-    _tmp62 = _tmp25 * _tmp44
-    _tmp63 = _tmp61 - _tmp62
-    _tmp64 = _tmp52 + _tmp58
-    _tmp65 = _tmp48 - _tmp49
-    _tmp66 = _tmp61 + _tmp62
+    _tmp60 = _R_body_sensor[3] * _tmp9
+    _tmp61 = _R_body_sensor[0] * _tmp0
+    _tmp62 = _tmp60 + _tmp61
+    _tmp63 = _R_body_sensor[1] ** 2
+    _tmp64 = -2 * _tmp63
+    _tmp65 = -_tmp11
+    _tmp66 = _tmp10 + _tmp65
     _tmp67 = (
-        u_sensor[0, 0] * (-_tmp54 + _tmp55)
-        + u_sensor[1, 0] * (_tmp1 + _tmp2)
-        + u_sensor[2, 0] * (_tmp3 + _tmp56 + 1)
+        _tmp62 * u_sensor[2, 0] + _tmp66 * u_sensor[1, 0] + u_sensor[0, 0] * (_tmp6 + _tmp64 + 1)
     )
-    _tmp68 = -_tmp19
-    _tmp69 = _tmp15 / _tmp12 ** (3.0 / 2.0)
-    _tmp70 = _R_nominal[2] * _tmp69
-    _tmp71 = delta[0, 0] * delta[2, 0]
-    _tmp72 = _tmp70 * _tmp71
-    _tmp73 = (1.0 / 2.0) / _tmp12
-    _tmp74 = _tmp30 * _tmp73
-    _tmp75 = _R_nominal[0] * _tmp69
-    _tmp76 = _tmp37 * _tmp73
-    _tmp77 = _tmp71 * _tmp76
-    _tmp78 = _R_nominal[1] * _tmp69
-    _tmp79 = _tmp78 * delta[1, 0]
-    _tmp80 = _tmp24 * _tmp73
-    _tmp81 = delta[0, 0] * delta[1, 0]
-    _tmp82 = _tmp79 * delta[0, 0] - _tmp80 * _tmp81
-    _tmp83 = (
-        -_tmp11 * _tmp74 + _tmp11 * _tmp75 - 1.0 / 2.0 * _tmp26 + _tmp68 + _tmp72 - _tmp77 + _tmp82
+    _tmp68 = -2 * _tmp36**2
+    _tmp69 = _tmp57 + _tmp68
+    _tmp70 = _tmp38 + _tmp50
+    _tmp71 = _tmp30 * _tmp49
+    _tmp72 = _tmp37 * _tmp43
+    _tmp73 = _tmp71 - _tmp72
+    _tmp74 = (
+        _tmp69 * v_world[0, 0]
+        + _tmp70 * v_world[1, 0]
+        + _tmp73 * v_world[2, 0]
+        + omega[1, 0] * t_body_sensor[2, 0]
+        - omega[2, 0] * t_body_sensor[1, 0]
     )
-    _tmp84 = 2 * _tmp38
-    _tmp85 = _tmp83 * _tmp84
-    _tmp86 = _tmp75 * _tmp81
-    _tmp87 = -_tmp27
-    _tmp88 = _tmp74 * _tmp81
-    _tmp89 = _R_nominal[3] * _tmp69
-    _tmp90 = _tmp42 * _tmp73
-    _tmp91 = -_tmp71 * _tmp89 + _tmp71 * _tmp90
-    _tmp92 = (
-        _tmp11 * _tmp78 - _tmp11 * _tmp80 - 1.0 / 2.0 * _tmp22 - _tmp86 + _tmp87 + _tmp88 + _tmp91
+    _tmp75 = _tmp56 + _tmp68 + 1
+    _tmp76 = _tmp52 - _tmp54
+    _tmp77 = _tmp71 + _tmp72
+    _tmp78 = (
+        _tmp75 * v_world[2, 0]
+        + _tmp76 * v_world[1, 0]
+        + _tmp77 * v_world[0, 0]
+        + omega[0, 0] * t_body_sensor[1, 0]
+        - omega[1, 0] * t_body_sensor[0, 0]
     )
-    _tmp93 = _tmp44 * _tmp92
-    _tmp94 = -_tmp71 * _tmp74 + _tmp71 * _tmp75
-    _tmp95 = -_tmp81 * _tmp89 + _tmp81 * _tmp90
-    _tmp96 = -_tmp11 * _tmp70 + _tmp11 * _tmp76 + _tmp21 - 1.0 / 2.0 * _tmp36 + _tmp94 + _tmp95
-    _tmp97 = _tmp71 * _tmp78
-    _tmp98 = _tmp70 * _tmp81
-    _tmp99 = _tmp76 * _tmp81
-    _tmp100 = _tmp71 * _tmp80
-    _tmp101 = (
+    _tmp79 = -_tmp60
+    _tmp80 = _tmp61 + _tmp79
+    _tmp81 = _tmp1 + _tmp2
+    _tmp82 = _tmp80 * u_sensor[0, 0] + _tmp81 * u_sensor[1, 0] + u_sensor[2, 0] * (_tmp64 + _tmp8)
+    _tmp83 = _tmp20 / _tmp17 ** (3.0 / 2.0)
+    _tmp84 = _R_nominal[2] * _tmp83
+    _tmp85 = delta[0, 0] * delta[2, 0]
+    _tmp86 = _tmp84 * _tmp85
+    _tmp87 = -_tmp32
+    _tmp88 = (1.0 / 2.0) / _tmp17
+    _tmp89 = _tmp29 * _tmp88
+    _tmp90 = _R_nominal[0] * _tmp83
+    _tmp91 = _tmp47 * _tmp88
+    _tmp92 = _tmp85 * _tmp91
+    _tmp93 = _R_nominal[1] * _tmp83
+    _tmp94 = delta[0, 0] * delta[1, 0]
+    _tmp95 = _tmp35 * _tmp88
+    _tmp96 = _tmp93 * _tmp94 - _tmp94 * _tmp95
+    _tmp97 = (
+        -_tmp16 * _tmp89 + _tmp16 * _tmp90 - 1.0 / 2.0 * _tmp23 + _tmp86 + _tmp87 - _tmp92 + _tmp96
+    )
+    _tmp98 = _tmp49 * _tmp97
+    _tmp99 = _tmp90 * _tmp94
+    _tmp100 = -_tmp24
+    _tmp101 = _tmp89 * _tmp94
+    _tmp102 = _R_nominal[3] * _tmp83
+    _tmp103 = _tmp102 * delta[2, 0]
+    _tmp104 = _tmp42 * _tmp88
+    _tmp105 = -_tmp103 * delta[0, 0] + _tmp104 * _tmp85
+    _tmp106 = (
         _tmp100
-        - _tmp11 * _tmp89
-        + _tmp11 * _tmp90
-        + _tmp17
-        - 1.0 / 2.0 * _tmp39
-        - _tmp97
-        + _tmp98
+        + _tmp101
+        + _tmp105
+        + _tmp16 * _tmp93
+        - _tmp16 * _tmp95
+        - 1.0 / 2.0 * _tmp34
         - _tmp99
     )
-    _tmp102 = _tmp101 * _tmp47 + _tmp32 * _tmp96
-    _tmp103 = _tmp32 * _tmp83
-    _tmp104 = _tmp101 * _tmp44
-    _tmp105 = _tmp47 * _tmp92 + _tmp84 * _tmp96
-    _tmp106 = 4 * _tmp38
-    _tmp107 = -_tmp106 * _tmp92
-    _tmp108 = 4 * _tmp31
-    _tmp109 = -_tmp101 * _tmp108
-    _tmp110 = 4 * _tmp25
-    _tmp111 = -_tmp110 * _tmp96
-    _tmp112 = _tmp47 * _tmp83
-    _tmp113 = _tmp44 * _tmp96
-    _tmp114 = _tmp101 * _tmp84 + _tmp32 * _tmp92
-    _tmp115 = delta[1, 0] * delta[2, 0]
-    _tmp116 = _tmp115 * _tmp70 - _tmp115 * _tmp76
-    _tmp117 = (
-        _tmp10 * _tmp78 - _tmp10 * _tmp80 + _tmp116 - 1.0 / 2.0 * _tmp18 + _tmp86 + _tmp87 - _tmp88
+    _tmp107 = 2 * _tmp43
+    _tmp108 = _tmp106 * _tmp107
+    _tmp109 = -_tmp102 * _tmp94 + _tmp104 * _tmp94
+    _tmp110 = -_tmp85 * _tmp89 + _tmp85 * _tmp90
+    _tmp111 = _tmp109 + _tmp110 - _tmp16 * _tmp84 + _tmp16 * _tmp91 + _tmp26 - 1.0 / 2.0 * _tmp46
+    _tmp112 = _tmp85 * _tmp93
+    _tmp113 = _tmp84 * _tmp94
+    _tmp114 = _tmp91 * _tmp94
+    _tmp115 = _tmp85 * _tmp95
+    _tmp116 = (
+        -_tmp102 * _tmp16
+        + _tmp104 * _tmp16
+        - _tmp112
+        + _tmp113
+        - _tmp114
+        + _tmp115
+        + _tmp22
+        - 1.0 / 2.0 * _tmp39
     )
-    _tmp118 = _tmp117 * _tmp47
-    _tmp119 = _tmp115 * _tmp75
-    _tmp120 = _tmp115 * _tmp74
-    _tmp121 = (
-        -_tmp10 * _tmp89
-        + _tmp10 * _tmp90
-        + _tmp119
-        - _tmp120
-        + _tmp17
-        - 1.0 / 2.0 * _tmp40
-        - _tmp98
+    _tmp117 = _tmp111 * _tmp53 + _tmp116 * _tmp37
+    _tmp118 = _tmp53 * _tmp97
+    _tmp119 = _tmp107 * _tmp116
+    _tmp120 = _tmp106 * _tmp37 + _tmp111 * _tmp49
+    _tmp121 = 4 * _tmp48
+    _tmp122 = -_tmp106 * _tmp121
+    _tmp123 = 4 * _tmp30
+    _tmp124 = -_tmp116 * _tmp123
+    _tmp125 = 4 * _tmp36
+    _tmp126 = -_tmp111 * _tmp125
+    _tmp127 = _tmp37 * _tmp97
+    _tmp128 = _tmp107 * _tmp111
+    _tmp129 = _tmp106 * _tmp53 + _tmp116 * _tmp49
+    _tmp130 = delta[1, 0] * delta[2, 0]
+    _tmp131 = _tmp130 * _tmp84 - _tmp130 * _tmp91
+    _tmp132 = (
+        _tmp100
+        - _tmp101
+        + _tmp131
+        + _tmp15 * _tmp93
+        - _tmp15 * _tmp95
+        - 1.0 / 2.0 * _tmp31
         + _tmp99
     )
-    _tmp122 = _tmp121 * _tmp44
-    _tmp123 = -_tmp115 * _tmp89 + _tmp115 * _tmp90
-    _tmp124 = _tmp10 * _tmp74 - _tmp10 * _tmp75 + _tmp123 + _tmp19 - 1.0 / 2.0 * _tmp29 + _tmp82
-    _tmp125 = -_tmp21
-    _tmp126 = _tmp79 * delta[2, 0]
-    _tmp127 = _tmp115 * _tmp80
-    _tmp128 = (
-        _tmp10 * _tmp70
-        - _tmp10 * _tmp76
-        + _tmp125
-        - _tmp126
-        + _tmp127
-        - 1.0 / 2.0 * _tmp35
-        + _tmp95
+    _tmp133 = _tmp132 * _tmp37
+    _tmp134 = _tmp130 * _tmp90
+    _tmp135 = _tmp130 * _tmp89
+    _tmp136 = (
+        -_tmp102 * _tmp15
+        + _tmp104 * _tmp15
+        - _tmp113
+        + _tmp114
+        + _tmp134
+        - _tmp135
+        + _tmp22
+        - 1.0 / 2.0 * _tmp40
     )
-    _tmp129 = _tmp124 * _tmp32 + _tmp128 * _tmp84
-    _tmp130 = -_tmp110 * _tmp121
-    _tmp131 = -_tmp108 * _tmp128
-    _tmp132 = _tmp117 * _tmp32
-    _tmp133 = _tmp128 * _tmp44
-    _tmp134 = _tmp121 * _tmp84 + _tmp124 * _tmp47
-    _tmp135 = -_tmp106 * _tmp124
-    _tmp136 = _tmp117 * _tmp84
-    _tmp137 = _tmp124 * _tmp44
-    _tmp138 = _tmp121 * _tmp32 + _tmp128 * _tmp47
-    _tmp139 = (
-        -_tmp100
-        - _tmp119
-        + _tmp120
-        + _tmp17
+    _tmp137 = _tmp107 * _tmp136
+    _tmp138 = -_tmp103 * delta[1, 0] + _tmp104 * _tmp130
+    _tmp139 = _tmp138 + _tmp15 * _tmp89 - _tmp15 * _tmp90 - 1.0 / 2.0 * _tmp27 + _tmp32 + _tmp96
+    _tmp140 = _tmp130 * _tmp93
+    _tmp141 = -_tmp26
+    _tmp142 = _tmp130 * _tmp95
+    _tmp143 = (
+        _tmp109
+        - _tmp140
+        + _tmp141
+        + _tmp142
+        + _tmp15 * _tmp84
+        - _tmp15 * _tmp91
+        - 1.0 / 2.0 * _tmp45
+    )
+    _tmp144 = _tmp139 * _tmp53 + _tmp143 * _tmp49
+    _tmp145 = -_tmp125 * _tmp136
+    _tmp146 = -_tmp123 * _tmp143
+    _tmp147 = _tmp132 * _tmp53
+    _tmp148 = _tmp107 * _tmp143
+    _tmp149 = _tmp136 * _tmp49 + _tmp139 * _tmp37
+    _tmp150 = -_tmp121 * _tmp139
+    _tmp151 = _tmp132 * _tmp49
+    _tmp152 = _tmp107 * _tmp139
+    _tmp153 = _tmp136 * _tmp53 + _tmp143 * _tmp37
+    _tmp154 = _tmp14 * _tmp88
+    _tmp155 = (
+        -_tmp102 * _tmp14
+        + _tmp112
+        - _tmp115
+        - _tmp134
+        + _tmp135
+        + _tmp154 * _tmp42
+        + _tmp22
         - 1.0 / 2.0 * _tmp41
-        - _tmp89 * _tmp9
-        + _tmp9 * _tmp90
-        + _tmp97
     )
-    _tmp140 = 2 * _tmp139
-    _tmp141 = _tmp140 * _tmp43
-    _tmp142 = (
-        2 * _tmp125
-        + 2 * _tmp126
-        - 2 * _tmp127
-        - _tmp34
-        + 2 * _tmp70 * _tmp9
-        - 2 * _tmp76 * _tmp9
-        + 2 * _tmp94
+    _tmp156 = _tmp107 * _tmp155
+    _tmp157 = (
+        _tmp110
+        + _tmp14 * _tmp84
+        + _tmp140
+        + _tmp141
+        - _tmp142
+        - _tmp154 * _tmp47
+        - 1.0 / 2.0 * _tmp44
     )
-    _tmp143 = _tmp142 * _tmp38
-    _tmp144 = (
-        _tmp123 - 1.0 / 2.0 * _tmp28 + _tmp68 - _tmp72 - _tmp74 * _tmp9 + _tmp75 * _tmp9 + _tmp77
+    _tmp158 = _tmp157 * _tmp49
+    _tmp159 = (
+        _tmp138 + _tmp14 * _tmp90 - _tmp154 * _tmp29 - 1.0 / 2.0 * _tmp25 - _tmp86 + _tmp87 + _tmp92
     )
-    _tmp145 = _tmp116 - 1.0 / 2.0 * _tmp20 + _tmp27 - _tmp78 * _tmp9 + _tmp80 * _tmp9 + _tmp91
-    _tmp146 = _tmp144 * _tmp32 + _tmp145 * _tmp47
-    _tmp147 = -_tmp110 * _tmp144
-    _tmp148 = -_tmp106 * _tmp139
-    _tmp149 = _tmp144 * _tmp44
-    _tmp150 = _tmp142 * _tmp25
-    _tmp151 = _tmp140 * _tmp31 + _tmp145 * _tmp84
-    _tmp152 = _tmp145 * _tmp44
-    _tmp153 = _tmp142 * _tmp31
-    _tmp154 = _tmp140 * _tmp25 + _tmp144 * _tmp84
-    _tmp155 = -_tmp108 * _tmp145
+    _tmp160 = _tmp105 + _tmp131 - _tmp14 * _tmp93 + _tmp154 * _tmp35 + _tmp24 - 1.0 / 2.0 * _tmp33
+    _tmp161 = _tmp159 * _tmp53 + _tmp160 * _tmp37
+    _tmp162 = -_tmp125 * _tmp159
+    _tmp163 = -_tmp121 * _tmp155
+    _tmp164 = _tmp107 * _tmp159
+    _tmp165 = _tmp157 * _tmp37
+    _tmp166 = _tmp155 * _tmp53 + _tmp160 * _tmp49
+    _tmp167 = _tmp107 * _tmp160
+    _tmp168 = _tmp157 * _tmp53
+    _tmp169 = _tmp155 * _tmp37 + _tmp159 * _tmp49
+    _tmp170 = -_tmp123 * _tmp160
+    _tmp171 = _R_body_sensor[3] ** 2
+    _tmp172 = -_tmp171
+    _tmp173 = -_tmp63
+    _tmp174 = -_tmp1
+    _tmp175 = _tmp171 + _tmp173
+    _tmp176 = -_tmp7
+    _tmp177 = _tmp176 + _tmp5
+    _tmp178 = -_tmp10
+    _tmp179 = -_tmp61
+    _tmp180 = -_tmp5
+    _tmp181 = _tmp180 + _tmp7
+    _tmp182 = _tmp172 + _tmp63
 
     # Output terms
     _res = numpy.zeros(1)
-    _res[0] = (
-        -_tmp57
-        * (
-            _tmp59 * v_world[0, 0]
-            + _tmp60 * v_world[1, 0]
-            + _tmp63 * v_world[2, 0]
-            + omega[1, 0] * t_body_sensor[2, 0]
-            - omega[2, 0] * t_body_sensor[1, 0]
-        )
-        - _tmp67
-        * (
-            _tmp64 * v_world[2, 0]
-            + _tmp65 * v_world[1, 0]
-            + _tmp66 * v_world[0, 0]
-            + omega[0, 0] * t_body_sensor[1, 0]
-            - omega[1, 0] * t_body_sensor[0, 0]
-        )
-        - _tmp8
-        * (
-            _tmp46 * v_world[0, 0]
-            + _tmp50 * v_world[2, 0]
-            + _tmp53 * v_world[1, 0]
-            - omega[0, 0] * t_body_sensor[2, 0]
-            + omega[2, 0] * t_body_sensor[0, 0]
-        )
-        + v_meas
-    )
+    _res[0] = -_tmp13 * _tmp59 - _tmp67 * _tmp74 - _tmp78 * _tmp82 + v_meas
     _res_D_v_world = numpy.zeros(3)
-    _res_D_v_world[0] = -_tmp46 * _tmp8 - _tmp57 * _tmp59 - _tmp66 * _tmp67
-    _res_D_v_world[1] = -_tmp53 * _tmp8 - _tmp57 * _tmp60 - _tmp65 * _tmp67
-    _res_D_v_world[2] = -_tmp50 * _tmp8 - _tmp57 * _tmp63 - _tmp64 * _tmp67
+    _res_D_v_world[0] = -_tmp13 * _tmp51 - _tmp67 * _tmp69 - _tmp77 * _tmp82
+    _res_D_v_world[1] = -_tmp13 * _tmp58 - _tmp67 * _tmp70 - _tmp76 * _tmp82
+    _res_D_v_world[2] = -_tmp13 * _tmp55 - _tmp67 * _tmp73 - _tmp75 * _tmp82
     _res_D_delta = numpy.zeros(3)
     _res_D_delta[0] = (
-        -_tmp57
+        -_tmp13
         * (
-            v_world[0, 0] * (_tmp107 + _tmp111)
-            + v_world[1, 0] * (_tmp102 + _tmp85 + _tmp93)
-            + v_world[2, 0] * (-_tmp112 - _tmp113 + _tmp114)
+            v_world[0, 0] * (-_tmp108 + _tmp117 - _tmp98)
+            + v_world[1, 0] * (_tmp122 + _tmp124)
+            + v_world[2, 0] * (_tmp118 + _tmp119 + _tmp120)
         )
         - _tmp67
         * (
-            v_world[0, 0] * (_tmp112 + _tmp113 + _tmp114)
-            + v_world[1, 0] * (-_tmp103 - _tmp104 + _tmp105)
-            + v_world[2, 0] * (_tmp109 + _tmp111)
+            v_world[0, 0] * (_tmp122 + _tmp126)
+            + v_world[1, 0] * (_tmp108 + _tmp117 + _tmp98)
+            + v_world[2, 0] * (-_tmp127 - _tmp128 + _tmp129)
         )
-        - _tmp8
+        - _tmp82
         * (
-            v_world[0, 0] * (_tmp102 - _tmp85 - _tmp93)
-            + v_world[1, 0] * (_tmp107 + _tmp109)
-            + v_world[2, 0] * (_tmp103 + _tmp104 + _tmp105)
+            v_world[0, 0] * (_tmp127 + _tmp128 + _tmp129)
+            + v_world[1, 0] * (-_tmp118 - _tmp119 + _tmp120)
+            + v_world[2, 0] * (_tmp124 + _tmp126)
         )
     )
     _res_D_delta[1] = (
-        -_tmp57
+        -_tmp13
         * (
-            v_world[0, 0] * (_tmp130 + _tmp135)
-            + v_world[1, 0] * (_tmp136 + _tmp137 + _tmp138)
-            + v_world[2, 0] * (-_tmp118 - _tmp122 + _tmp129)
+            v_world[0, 0] * (-_tmp151 - _tmp152 + _tmp153)
+            + v_world[1, 0] * (_tmp146 + _tmp150)
+            + v_world[2, 0] * (_tmp147 + _tmp148 + _tmp149)
         )
         - _tmp67
         * (
-            v_world[0, 0] * (_tmp118 + _tmp122 + _tmp129)
-            + v_world[1, 0] * (-_tmp132 - _tmp133 + _tmp134)
-            + v_world[2, 0] * (_tmp130 + _tmp131)
+            v_world[0, 0] * (_tmp145 + _tmp150)
+            + v_world[1, 0] * (_tmp151 + _tmp152 + _tmp153)
+            + v_world[2, 0] * (-_tmp133 - _tmp137 + _tmp144)
         )
-        - _tmp8
+        - _tmp82
         * (
-            v_world[0, 0] * (-_tmp136 - _tmp137 + _tmp138)
-            + v_world[1, 0] * (_tmp131 + _tmp135)
-            + v_world[2, 0] * (_tmp132 + _tmp133 + _tmp134)
+            v_world[0, 0] * (_tmp133 + _tmp137 + _tmp144)
+            + v_world[1, 0] * (-_tmp147 - _tmp148 + _tmp149)
+            + v_world[2, 0] * (_tmp145 + _tmp146)
         )
     )
     _res_D_delta[2] = (
-        -_tmp57
+        -_tmp13
         * (
-            v_world[0, 0] * (_tmp147 + _tmp148)
-            + v_world[1, 0] * (_tmp141 + _tmp143 + _tmp146)
-            + v_world[2, 0] * (-_tmp149 - _tmp150 + _tmp151)
+            v_world[0, 0] * (-_tmp156 - _tmp158 + _tmp161)
+            + v_world[1, 0] * (_tmp163 + _tmp170)
+            + v_world[2, 0] * (_tmp167 + _tmp168 + _tmp169)
         )
         - _tmp67
         * (
-            v_world[0, 0] * (_tmp149 + _tmp150 + _tmp151)
-            + v_world[1, 0] * (-_tmp152 - _tmp153 + _tmp154)
-            + v_world[2, 0] * (_tmp147 + _tmp155)
+            v_world[0, 0] * (_tmp162 + _tmp163)
+            + v_world[1, 0] * (_tmp156 + _tmp158 + _tmp161)
+            + v_world[2, 0] * (-_tmp164 - _tmp165 + _tmp166)
         )
-        - _tmp8
+        - _tmp82
         * (
-            v_world[0, 0] * (-_tmp141 - _tmp143 + _tmp146)
-            + v_world[1, 0] * (_tmp148 + _tmp155)
-            + v_world[2, 0] * (_tmp152 + _tmp153 + _tmp154)
+            v_world[0, 0] * (_tmp164 + _tmp165 + _tmp166)
+            + v_world[1, 0] * (-_tmp167 - _tmp168 + _tmp169)
+            + v_world[2, 0] * (_tmp162 + _tmp170)
         )
     )
     _res_D_omega = numpy.zeros(3)
-    _res_D_omega[0] = -_tmp67 * t_body_sensor[1, 0] + _tmp8 * t_body_sensor[2, 0]
-    _res_D_omega[1] = -_tmp57 * t_body_sensor[2, 0] + _tmp67 * t_body_sensor[0, 0]
-    _res_D_omega[2] = _tmp57 * t_body_sensor[1, 0] - _tmp8 * t_body_sensor[0, 0]
-    return _res, _res_D_v_world, _res_D_delta, _res_D_omega
+    _res_D_omega[0] = _tmp13 * t_body_sensor[2, 0] - _tmp82 * t_body_sensor[1, 0]
+    _res_D_omega[1] = -_tmp67 * t_body_sensor[2, 0] + _tmp82 * t_body_sensor[0, 0]
+    _res_D_omega[2] = -_tmp13 * t_body_sensor[0, 0] + _tmp67 * t_body_sensor[1, 0]
+    _res_D_R_body_sensor = numpy.zeros(3)
+    _res_D_R_body_sensor[0] = (
+        -_tmp59 * (_tmp4 * u_sensor[1, 0] + u_sensor[2, 0] * (_tmp172 + _tmp173 + _tmp5 + _tmp7))
+        - _tmp74 * (_tmp62 * u_sensor[1, 0] + u_sensor[2, 0] * (_tmp11 + _tmp178))
+        - _tmp78 * (u_sensor[1, 0] * (_tmp175 + _tmp177) + u_sensor[2, 0] * (_tmp174 + _tmp3))
+    )
+    _res_D_R_body_sensor[1] = (
+        -_tmp59 * (_tmp12 * u_sensor[2, 0] + u_sensor[0, 0] * (_tmp174 + _tmp2))
+        - _tmp74 * (u_sensor[0, 0] * (_tmp179 + _tmp79) + u_sensor[2, 0] * (_tmp175 + _tmp181))
+        - _tmp78 * (_tmp80 * u_sensor[2, 0] + u_sensor[0, 0] * (_tmp181 + _tmp182))
+    )
+    _res_D_R_body_sensor[2] = (
+        -_tmp59
+        * (
+            u_sensor[0, 0] * (_tmp171 + _tmp176 + _tmp180 + _tmp63)
+            + u_sensor[1, 0] * (_tmp178 + _tmp65)
+        )
+        - _tmp74 * (_tmp66 * u_sensor[0, 0] + u_sensor[1, 0] * (_tmp177 + _tmp182))
+        - _tmp78 * (_tmp81 * u_sensor[0, 0] + u_sensor[1, 0] * (_tmp179 + _tmp60))
+    )
+    return _res, _res_D_v_world, _res_D_delta, _res_D_omega, _res_D_R_body_sensor
 
 
 # ======================================================================

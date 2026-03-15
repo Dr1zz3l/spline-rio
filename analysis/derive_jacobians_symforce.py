@@ -216,12 +216,12 @@ def main():
     print("SymForce Jacobian Code Generation")
     print("=" * 60)
 
-    # Generate radar residual with Jacobians w.r.t. v_world, delta, omega
+    # Generate radar residual with Jacobians w.r.t. v_world, delta, omega, R_body_sensor
     print("\n[1/3] Radar residual:")
     radar_code = generate_and_read(
         radar_residual,
         "radar",
-        which_args=["v_world", "delta", "omega"],
+        which_args=["v_world", "delta", "omega", "R_body_sensor"],
     )
 
     # Generate accel residual with Jacobians w.r.t. a_world, delta, b_a
@@ -397,7 +397,7 @@ class Rot3:
         output_parts.append(code.strip())
 
     # Write output file
-    output_path = "/workspace/analysis/generated_jacobians.py"
+    output_path = os.path.join(os.path.dirname(__file__), "generated_jacobians.py")
     output_content = "\n".join(output_parts) + "\n"
 
     with open(output_path, 'w') as f:
@@ -429,17 +429,18 @@ class Rot3:
     # Test radar
     result = mod.radar_residual_with_jacobians(
         np.array([1.0, 0.0, 0.0]),   # v_world
-        R_nom,                         # R_nominal
+        R_nom,                       # R_nominal
         np.array([0.0, 0.0, 0.0]),   # delta (zero = identity)
         np.array([0.0, 0.0, 0.0]),   # omega
         np.array([1.0, 0.0, 0.0]),   # u_sensor
         np.array([0.07, 0.0, 0.0]),  # t_body_sensor
-        R_bs,                          # R_body_sensor
-        0.5,                           # v_meas
-        1e-10,                         # epsilon
+        R_bs,                        # R_body_sensor
+        0.5,                         # v_meas
+        1e-10,                       # epsilon
     )
     print(f"   radar: residual={result[0]}, "
-          f"J_v={result[1].shape}, J_delta={result[2].shape}, J_omega={result[3].shape}")
+          f"J_v={result[1].shape}, J_delta={result[2].shape}, "
+          f"J_omega={result[3].shape}, J_Rbs={result[4].shape}")
 
     # Verify: v_world=[1,0,0], R=I, u=[1,0,0] => v_pred=1.0, residual=0.5-1.0=-0.5
     assert abs(result[0][0] - (-0.5)) < 1e-6, f"Radar residual sanity check failed: {result[0]}"

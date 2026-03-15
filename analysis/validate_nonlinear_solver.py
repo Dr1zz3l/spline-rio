@@ -157,6 +157,7 @@ class TrajectoryState:
         nominal_rotations: np.ndarray,  # Reference rotations for tangent space
         acc_bias: np.ndarray = None,
         gyr_bias: np.ndarray = None,
+        radar_extrinsic_delta: np.ndarray = None,
         mocap_slerp = None,  # scipy Slerp for dense nominal rotation interpolation
         mocap_omega_interp = None,  # interp1d for nominal angular velocity
     ):
@@ -166,6 +167,9 @@ class TrajectoryState:
         
         self.acc_bias = acc_bias if acc_bias is not None else np.zeros(3)
         self.gyr_bias = gyr_bias if gyr_bias is not None else np.zeros(3)
+        
+        # 3D tangent vector perturbation on top of the nominal SENSOR_ROTATION
+        self.radar_extrinsic_delta = radar_extrinsic_delta if radar_extrinsic_delta is not None else np.zeros(3)
         
         # Dense interpolation objects (from MoCap)
         self.mocap_slerp = mocap_slerp
@@ -242,12 +246,13 @@ class TrajectoryState:
             [pos_control_points (N_pos*3),
              ori_control_points (N_ori*3),
              acc_bias (3),
-             gyr_bias (3)]
+             gyr_bias (3),
+             radar_extrinsic_delta (3)]
         """
         pos_flat = self.pos_bspline.control_points.flatten()
         ori_flat = self.ori_bspline.control_points.flatten()
         
-        return np.concatenate([pos_flat, ori_flat, self.acc_bias, self.gyr_bias])
+        return np.concatenate([pos_flat, ori_flat, self.acc_bias, self.gyr_bias, self.radar_extrinsic_delta])
     
     def from_vector(self, x: np.ndarray):
         """Update state from optimization vector."""
@@ -258,10 +263,11 @@ class TrajectoryState:
         self.ori_bspline.control_points = x[n_pos:n_pos+n_ori].reshape(-1, 3)
         self.acc_bias = x[n_pos+n_ori:n_pos+n_ori+3]
         self.gyr_bias = x[n_pos+n_ori+3:n_pos+n_ori+6]
+        self.radar_extrinsic_delta = x[n_pos+n_ori+6:n_pos+n_ori+9]
     
     def get_state_size(self) -> int:
         """Total number of optimization variables."""
-        return self.pos_bspline.n_points * 3 + self.ori_bspline.n_points * 3 + 6
+        return self.pos_bspline.n_points * 3 + self.ori_bspline.n_points * 3 + 9
     
     def relinearize(self):
         """
@@ -547,6 +553,9 @@ def compute_jacobian_analytical(
     lambda_bias_prior_accel: float = None,
     lambda_bias_prior_gyro: float = None,
     bias_prior_mean: np.ndarray = None,
+    lock_extrinsics: bool = False,
+    optimize_pitch_only: bool = True,
+    lambda_extrinsic_prior: float = 0.0,
 ) -> Tuple[sparse.csr_matrix, np.ndarray]:
     """
     Compute Jacobian and residual vector analytically using SymForce-generated functions.
@@ -566,8 +575,11 @@ def compute_jacobian_analytical(
     n_ori = state.ori_bspline.n_points * 3
     n_total = state.get_state_size()
     
-    # Pre-compute sensor rotation quaternion
-    R_bs_quat = Rot3.from_rotation_matrix(sensor_rotation)
+    # Pre-compute sensor rotation quaternion with extrinsic perturbation
+    # sensor_rotation already contains the base Euler and flip logic from __main__
+    R_bs_nominal = sensor_rotation
+    R_bs_delta_matrix = so3_exp(state.radar_extrinsic_delta)
+    R_bs_quat = Rot3.from_rotation_matrix(R_bs_nominal @ R_bs_delta_matrix)
     
     # Collect Jacobian entries
     rows = []
@@ -614,8 +626,8 @@ def compute_jacobian_analytical(
             u_sensor = p_s / np.linalg.norm(p_s)
             v_meas = frame.velocities[i]
             
-            # Call generated function
-            res, J_v, J_delta_radar, J_omega_radar = radar_residual_with_jacobians(
+            # Call generated function with proper argument order
+            res, J_v, J_delta_radar, J_omega_radar, J_Rbs = radar_residual_with_jacobians(
                 v_world, R_nom_quat, delta, omega,
                 u_sensor, sensor_translation, R_bs_quat,
                 v_meas, 1e-10
@@ -662,6 +674,18 @@ def compute_jacobian_analytical(
                 for dim in range(3):
                     col = n_pos + cp_idx * 3 + dim
                     val = sqrt_w * J_eff_dot[dim] * basis_val
+                    if abs(val) > 1e-15:
+                        rows.append(row_idx)
+                        cols.append(col)
+                        vals.append(val)
+            
+            # Jacobian w.r.t Extrinsic Radar Rotation (radar_extrinsic_delta)
+            if not lock_extrinsics:
+                for dim in range(3):
+                    if optimize_pitch_only and dim != 1:
+                        continue # Roll (0) and Yaw (2) locked
+                    col = n_pos + n_ori + 6 + dim
+                    val = sqrt_w * J_Rbs[dim]
                     if abs(val) > 1e-15:
                         rows.append(row_idx)
                         cols.append(col)
@@ -986,6 +1010,21 @@ def compute_jacobian_analytical(
             row_idx += 1
             n_bias_prior_rows += 1
     
+    # ==================== Extrinsic Prior ====================
+    n_extrinsic_prior_rows = 0
+    prior_cost_extrinsic = 0.0
+    if lambda_extrinsic_prior > 0:
+        sqrt_lep = np.sqrt(lambda_extrinsic_prior)
+        for k in range(3):
+            r = state.radar_extrinsic_delta[k]
+            all_residuals.append(sqrt_lep * r)
+            prior_cost_extrinsic += lambda_extrinsic_prior * r * r
+            rows.append(row_idx)
+            cols.append(n_pos + n_ori + 6 + k)
+            vals.append(sqrt_lep)
+            row_idx += 1
+            n_extrinsic_prior_rows += 1
+    
     # Build sparse Jacobian
     n_residuals = row_idx
     J = sparse.csr_matrix(
@@ -1004,6 +1043,8 @@ def compute_jacobian_analytical(
     J.n_boundary_gyro = n_boundary_gyro_rows
     J.n_ori_reg = n_ori_reg_rows
     J.n_bias_prior = n_bias_prior_rows
+    J.n_extrinsic_prior = n_extrinsic_prior_rows
+    J.prior_cost_extrinsic = prior_cost_extrinsic
     
     return J, r
 
@@ -1059,6 +1100,9 @@ def solve_trajectory_nonlinear(
     lambda_bias_prior_accel: float = None,
     lambda_bias_prior_gyro: float = None,
     bias_prior_mean: np.ndarray = None,
+    lock_extrinsics: bool = False,
+    optimize_pitch_only: bool = True,
+    lambda_extrinsic_prior: float = 0.0,
 ) -> TrajectoryState:
     """
     Solve for optimal trajectory using Levenberg-Marquardt.
@@ -1085,6 +1129,12 @@ def solve_trajectory_nonlinear(
         print(f"Lambda snap ori: {lambda_snap_ori}")
         if lock_biases:
             print(f"*** BIASES LOCKED TO INITIAL VALUES ***")
+        if lock_extrinsics:
+            print(f"*** EXTRINSICS LOCKED TO INITIAL VALUES ***")
+        if optimize_pitch_only:
+            print(f"*** EXTRINSICS: OPTIMIZING PITCH ONLY ***")
+        if lambda_extrinsic_prior > 0:
+            print(f"Extrinsic prior strength: {lambda_extrinsic_prior}")
         if bias_prior_mean is not None:
             print(f"Bias prior mean: acc=[{bias_prior_mean[0]:.4f}, {bias_prior_mean[1]:.4f}, {bias_prior_mean[2]:.4f}]  gyr=[{bias_prior_mean[3]:.5f}, {bias_prior_mean[4]:.5f}, {bias_prior_mean[5]:.5f}]")
         if use_jacobi_precond:
@@ -1148,6 +1198,9 @@ def solve_trajectory_nonlinear(
             lambda_bias_prior_accel=lambda_bias_prior_accel,
             lambda_bias_prior_gyro=lambda_bias_prior_gyro,
             bias_prior_mean=bias_prior_mean,
+            lock_extrinsics=lock_extrinsics,
+            optimize_pitch_only=optimize_pitch_only,
+            lambda_extrinsic_prior=lambda_extrinsic_prior,
         )
     
     lambda_lm = 1e-3
@@ -1207,6 +1260,9 @@ def solve_trajectory_nonlinear(
             cost_bg = np.sum(r_total[idx:idx+n_bg]**2); idx += n_bg
             cost_or = np.sum(r_total[idx:idx+n_or]**2); idx += n_or
             cost_bp_prior = np.sum(r_total[idx:idx+n_bp_prior]**2); idx += n_bp_prior
+            n_ep = getattr(J, 'n_extrinsic_prior', 0)
+            cost_ep = np.sum(r_total[idx:idx+n_ep]**2) if n_ep > 0 else 0.0; idx += n_ep
+            
             bnd_parts = []
             if n_bv > 0: bnd_parts.append(f"bnd_vel={cost_bv:.1f}")
             if n_bp > 0: bnd_parts.append(f"bnd_pos={cost_bp:.1f}")
@@ -1215,6 +1271,7 @@ def solve_trajectory_nonlinear(
             if n_bg > 0: bnd_parts.append(f"bnd_gyr={cost_bg:.1f}")
             if n_or > 0: bnd_parts.append(f"ori_reg={cost_or:.1f}")
             if n_bp_prior > 0: bnd_parts.append(f"bias_prior={cost_bp_prior:.1f}")
+            if n_ep > 0: bnd_parts.append(f"ext_prior={cost_ep:.1f}")
             bnd_str = (" " + " ".join(bnd_parts)) if bnd_parts else ""
             print(f"Cost: total={cost_total:.2f} | radar={cost_radar:.1f} accel={cost_accel:.1f} gyro={cost_gyro:.1f}{bnd_str}")
             print(f"Jacobian: {J.shape}, nnz={J.nnz}, sparsity={100*(1-J.nnz/(J.shape[0]*J.shape[1])):.2f}%")
@@ -1244,9 +1301,17 @@ def solve_trajectory_nonlinear(
         
         # Try update
         x_current = state.to_vector()
-        # Zero out bias updates when locked
+        
+        # Zero out updates for locked components
         if lock_biases:
-            delta_x[-(6):] = 0.0
+            delta_x[n_pos + n_ori : n_pos + n_ori + 6] = 0.0
+        if lock_extrinsics:
+            delta_x[n_pos + n_ori + 6 : n_pos + n_ori + 9] = 0.0
+        elif optimize_pitch_only:
+            # Zero out roll (x) and yaw (z) updates to only calibrate pitch (y)
+            delta_x[n_pos + n_ori + 6] = 0.0
+            delta_x[n_pos + n_ori + 8] = 0.0
+            
         x_new = x_current + delta_x
         state.from_vector(x_new)
         
@@ -1465,7 +1530,7 @@ def main():
         START_TIME_OFFSET = 30.0
         DURATION = 5.0
         
-    # Sensor extrinsics (from Phase 1 calibration)
+    # Sensor extrinsics (from user spec)
     ROTATION_EULER_DEG = np.array([180.0, 35.0, 0.0])  # roll, pitch, yaw — +30° pitch = downlooking
     
     # Body frame flip for certain trajectory profiles
@@ -1495,7 +1560,7 @@ def main():
     
     # Regularization weights
     LAMBDA_ACCEL = 0.01     # Accelerometer weight (0.05 causes ori degradation; 0.01 too weak for z-vel)
-    LAMBDA_GYRO = 0.50       # Gyroscope weight: 0.1 caused 10° ori drift, 0.5 keeps it at 3.5°
+    LAMBDA_GYRO = 5.0       # Gyroscope weight: 0.1 caused 10° ori drift, 0.5 keeps it at 3.5°
     LAMBDA_SNAP_POS = 0.0001 # Position smoothness
     LAMBDA_SNAP_ORI = 0.0001   # Orientation smoothness
     LAMBDA_ORI_REG = 0.0       # Orientation regularization: disabled (penalizes delta CPs away from MoCap)
@@ -1505,12 +1570,15 @@ def main():
     HUBER_DELTA = 1.0  # meters/second (Huber threshold for radar; ≥ 0.63 m/s quantization bin)
     HUBER_DELTA_ACCEL = 2.0  # m/s² (Huber threshold for accelerometer — clips spikes linearly)
     MIN_RANGE = 0.2
-    MAX_ITERATIONS = 10  # LM iterations (need more for bias convergence + warmup)
+    MAX_ITERATIONS = 20  # LM iterations (need more for bias convergence + warmup)
     IMU_MOCAP_OFFSET = +0.020  # seconds: IMU timestamps are 20ms behind MoCap, shift forward to align (FINDINGS.md §3)
     RADAR_IMU_OFFSET = -0.019  # seconds: radar timestamps are 19ms behind IMU (notebook 02_radar_time_sync §4)
     USE_PHASE2_INIT = False  # Initialize position from Phase 2 linear solver
     USE_STATIONARY_BIAS = True  # Use variance-based stationary detection for bias init
     LOCK_BIASES = False  # Lock biases to initial values (stationary-detected or zero)
+    LOCK_EXTRINSICS = True # Lock radar extrinsics to ROTATION_EULER_DEG (don't optimize)
+    OPTIMIZE_PITCH_ONLY = True # Unobservable roll/yaw cause massive drift. Lock them.
+    LAMBDA_EXTRINSIC_PRIOR = 1.0 # Prior to penalize deviation from ROTATION_EULER_DEG
     RELINEARIZE_THRESHOLD_DEG = 10.0  # Trigger re-linearization sooner to keep delta small
     USE_JACOBI_PRECOND = '--precond' in sys.argv  # Toggle Jacobi preconditioning
     
@@ -1536,6 +1604,7 @@ def main():
     print(f"IMU-MoCap time offset: {IMU_MOCAP_OFFSET*1000:.0f} ms  |  Radar-IMU offset: {RADAR_IMU_OFFSET*1000:.0f} ms")
     print(f"Use Phase 2 init: {USE_PHASE2_INIT}")
     print(f"Stationary bias: {USE_STATIONARY_BIAS}  |  Lock biases: {LOCK_BIASES}")
+    print(f"Extrinsics lock: {LOCK_EXTRINSICS} | Optimize pitch only: {OPTIMIZE_PITCH_ONLY} | Extrinsics prior λ={LAMBDA_EXTRINSIC_PRIOR}")
     print(f"Jacobi preconditioning: {USE_JACOBI_PRECOND}")
     print(f"Boundary priors (START only): window={BOUNDARY_WINDOW}s")
     print(f"  λ_bnd: vel={LAMBDA_BOUNDARY_VEL} pos={LAMBDA_BOUNDARY_POS} ori={LAMBDA_BOUNDARY_ORI} acc={LAMBDA_BOUNDARY_ACCEL} gyr={LAMBDA_BOUNDARY_GYRO}")
@@ -1840,6 +1909,7 @@ def main():
         nominal_rotations=nominal_rotations,
         acc_bias=acc_bias,
         gyr_bias=gyr_bias,
+        radar_extrinsic_delta=np.zeros(3),
         mocap_slerp=mocap_slerp,
         mocap_omega_interp=mocap_omega_interp
     )
@@ -1936,10 +2006,21 @@ def main():
         lambda_bias_prior_accel=LAMBDA_BIAS_PRIOR_ACCEL,
         lambda_bias_prior_gyro=LAMBDA_BIAS_PRIOR_GYRO,
         bias_prior_mean=bias_prior_mean,
+        lock_extrinsics=LOCK_EXTRINSICS,
+        optimize_pitch_only=OPTIMIZE_PITCH_ONLY,
+        lambda_extrinsic_prior=LAMBDA_EXTRINSIC_PRIOR,
     )
     
     # ==================== Evaluate Results ====================
     print(f"\n{'Evaluating Results':-^80}")
+    
+    # Print calibrated radar extrinsics
+    calibrated_R_bs = Rot3.from_rotation_matrix(sensor_rotation @ so3_exp(optimized_state.radar_extrinsic_delta))
+    calibrated_euler = np.degrees(Rotation.from_quat(calibrated_R_bs.data).as_euler('xyz'))
+    print(f"  Initial Radar Extrinsics (Euler xyz): [{ROTATION_EULER_DEG[0]:.2f}, {ROTATION_EULER_DEG[1]:.2f}, {ROTATION_EULER_DEG[2]:.2f}] deg")
+    print(f"  Optimized Radar Extrinsics (Euler xyz): [{calibrated_euler[0]:.2f}, {calibrated_euler[1]:.2f}, {calibrated_euler[2]:.2f}] deg")
+    delta_deg = np.degrees(optimized_state.radar_extrinsic_delta)
+    print(f"  Extrinsic Delta (Tangent xyz): [{delta_deg[0]:.2f}, {delta_deg[1]:.2f}, {delta_deg[2]:.2f}] deg")
     
     # Check boundary velocities after optimization
     t_eval_start_abs = max(pos_bspline.t_start + t_ref, mocap_times_abs[0])
