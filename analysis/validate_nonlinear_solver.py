@@ -1489,10 +1489,16 @@ BAGS = {
     "circle_fwd":   "rosbags/circle_forward_2025-12-17-17-37-38.bag",
     "loopings":     "rosbags/circle_fast_forward_2025-12-17-17-39-49.bag",
     "backflips":    "rosbags/backflips_2025-12-17-17-41-24.bag",
+    "backflips_best_velocity":              "rosbags/Wed_11032026_1503/backflip_oldconfig_2026-03-11-16-40-51.bag",
+    "circle_best_velocity":                 "rosbags/Wed_11032026_1503/circle_5mps_oldconfig_2026-03-11-16-38-36.bag",
+    "fast_racing_1_velocity_no_clustering": "rosbags/Wed_11032026_1503/fast_racing_2026-03-11-15-19-58.bag",
+    # "fast_racing_best_velocity_crash":      "rosbags/Wed_11032026_1503/fastracing_oldconfig_2026-03-11-16-52-09.bag",
+    "fast_racing_best_velocity":            "rosbags/Wed_11032026_1503/fastracing_oldconfig_2026-03-11-17-20-18.bag",
+    "slow_racing_best_velocity":            "rosbags/Wed_11032026_1503/slowracing_oldconfig_2026-03-11-17-18-43.bag"
 }
 
 # Bags where the agiros body frame is rotated 180 deg in yaw
-FLIPPED_BAGS = {"circle_fwd", "loopings", "backflips"}
+FLIPPED_BAGS = {"circle_fwd", "loopings", "backflips", "circle_best_velocity_config", "slow_racing_best_velocity"}
 
 # ==================== Main Validation ====================
 
@@ -1523,6 +1529,12 @@ def main():
         "circle_fwd":   (28.0, 8.0),   # Window [2]: t=28.1-36.3s, mean 3.2 m/s
         "loopings":     (9.5,  8.5),   # Window [3]: t=9.5-18.0s, mean 5.2 m/s (aliasing risk!)
         "backflips":    (26.5, 5.0),   # Window [2]: t=26.4-45.2s (using first 5s to keep manageable)
+        "backflips_best_velocity":              (15.6, 10), # total duration 28.2s, using first 10s to keep manageable
+        "circle_best_velocity":                 (22.2, 8.4),
+        "fast_racing_1_velocity_no_clustering": (16.9, 18.1),
+        # "fast_racing_best_velocity_crash":      (22.0, 4.2),
+        "fast_racing_best_velocity":            (19.1, 18.0),
+        "slow_racing_best_velocity":            (19.1, 25.8)
     }
     if bag_key in BAG_TIMING:
         START_TIME_OFFSET, DURATION = BAG_TIMING[bag_key]
