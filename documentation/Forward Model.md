@@ -17,7 +17,7 @@ We define three Cartesian coordinate frames. All frames are Right-Handed.
 2. **Body Frame ($\mathcal{B}$):** The moving frame attached to the drone.
    * **Origin:** The center of the IMU (specifically the Accelerometer).
    * **Orientation:** Aligned with the flight controller's axes — **FLU** (X-Forward, Y-Left, Z-Up).
-   * **Note:** Some bags have a 180° yaw-flipped agiros body frame convention (different trajectory profiles define body +x differently). Handled by `FLIP_BODY_FRAME` toggle, which applies `R_z(180°)` to extrinsics and negates the x-component of the translation vector.
+   * **Note:** Some bags have a 180° yaw-flipped agiros body frame convention (different trajectory profiles define body +x differently). Handled by `FLIP_BODY_FRAME` toggle, which applies `R_z(180°)` to both the rotation and translation: `R_sensor = R_z(180°) @ R_base`, `t_sensor = R_z(180°) @ t_base`.
 
 3. **Sensor/Radar Frame ($\mathcal{S}$):** The moving frame attached to the Radar.
    * **Origin:** The phase center of the radar antenna array.
@@ -173,4 +173,4 @@ The formula above produces a **positive** value when the sensor moves **towards*
 | :--- | :--- |
 | `/angrybird2/agiros_pilot/state` | Kalman-smoothed MoCap data. Pose is accurate; used for nominal orientation $\mathbf{R}_{nom}$. Angular velocity is body-frame Kalman-filtered (confirmed, NOT world-frame). |
 | `/angrybird2/imu` | Raw IMU data from the **drone's own Pixhawk IMU** (accelerometer + gyroscope). This is NOT the radar board IMU — the sensor is at the drone center, so `R_bs` does NOT apply to IMU data. |
-| `/mmWaveDataHdl/RScanVelocity` | Raw Radar Data. The radar is mounted **upside-down** (180° roll) and tilted 30° downward from horizontal, ~7cm forward of the drone center. `ROTATION_EULER_DEG = [180, 30, 0]`. The 7cm translation and 30° angle are approximate (eyeballed / 3D-printed mount). |
+| `/mmWaveDataHdl/RScanVelocity` | Raw Radar Data. The radar is mounted **upside-down** (180° roll) and tilted 30° downward from horizontal. `ROTATION_EULER_DEG = [180, 30, 0]`. Translation: `[0.08, 0.02, -0.01]` m in body frame (8 cm forward, 2 cm left, 1 cm down). |

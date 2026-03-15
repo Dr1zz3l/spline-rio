@@ -30,14 +30,20 @@ All scripts run from `analysis/` and take a bag name as the first argument:
 cd analysis/
 
 # Bag name aliases: original, circle, circle_fast, circle_fwd, loopings, backflips
+# (plus newer bags: backflips_best_velocity, circle_best_velocity, fast_racing_*, slow_racing_*)
 python validate_physics.py original          # Ground truth forward model validation (no optimization)
 python validate_forward_model.py             # Doppler prediction accuracy
 python validate_linear_solver.py             # Phase 2: sparse linear LS for position only
 python validate_nonlinear_solver.py          # Phase 3: full LM solver (main script)
 
-# Diagnostics
-python diagnose_doppler.py original
-python diagnose_gyro.py original
+# Diagnostics (in diagnostics/ subdir — run from analysis/)
+python diagnostics/diagnose_doppler.py circle
+python diagnostics/diagnose_gyro.py circle
+
+# Visualization
+python viz/plot_radar_map.py circle_fwd      # Interactive 3D radar map (Open3D)
+python viz/plot_extrinsics.py                # Show extrinsic calibration frames
+python viz/plot_extrinsics.py circle_fwd     # Show with yaw-flip applied
 ```
 
 Outputs go to `../plots/`. No test framework — validation is script-driven.
@@ -46,10 +52,10 @@ Outputs go to `../plots/`. No test framework — validation is script-driven.
 
 ```bash
 cd analysis/
-python derive_jacobians_symforce.py   # Overwrites generated_jacobians.py
+python codegen/derive_jacobians_symforce.py   # Overwrites codegen/generated_jacobians.py
 ```
 
-`generated_jacobians.py` has zero runtime dependency on SymForce — it's pure NumPy.
+`codegen/generated_jacobians.py` has zero runtime dependency on SymForce — it's pure NumPy.
 
 ## Architecture
 
@@ -68,11 +74,16 @@ python derive_jacobians_symforce.py   # Overwrites generated_jacobians.py
 
 | File | Role |
 |------|------|
-| `radar_velocity_utils.py` | Forward model, WLS ego-velocity solver, Huber loss, extrinsic calibration |
-| `bspline_utils.py` | Uniform B-splines (Cox-de Boor), derivatives, min-snap regularization |
-| `generated_jacobians.py` | SymForce-generated residuals + Jacobians for radar, accel, gyro factors |
-| `derive_jacobians_symforce.py` | Source for regenerating `generated_jacobians.py` |
-| `rosbag_loader/loader.py` | Unified API to load 7 ROS topics into typed dataclasses |
+| `lib/radar_velocity_utils.py` | Forward model, WLS ego-velocity solver, Huber loss, extrinsic calibration |
+| `lib/bspline_utils.py` | Uniform B-splines (Cox-de Boor), derivatives, min-snap regularization |
+| `codegen/generated_jacobians.py` | SymForce-generated residuals + Jacobians for radar, accel, gyro factors |
+| `codegen/derive_jacobians_symforce.py` | Source for regenerating `generated_jacobians.py` |
+| `lib/rosbag_loader/loader.py` | Unified API to load 7 ROS topics into typed dataclasses |
+| `config_loader.py` | Loads all YAML configs from `config/` as a dict-of-dicts |
+| `config/extrinsics.yaml` | Canonical extrinsics: rotation [180,30,0] deg, translation [0,0.02,-0.01] m |
+| `config/bags.yaml` | Bag aliases → paths, flipped bag set |
+| `config/timing.yaml` | Per-bag flight window (start offset, duration) |
+| `config/solver.yaml` | LM hyperparameters, B-spline config |
 
 ### State Representation
 
@@ -93,13 +104,18 @@ Regularization: minimum-snap (∫||P⁴(t)||² dt)
 
 ### Rosbag Datasets
 
-Located at `../rosbags/`. Alias → filename mapping is in `validate_nonlinear_solver.py`. Notable: `circle_fwd` and `loopings` bags require a 180° yaw correction (documented in the solver).
+Located at `../rosbags/`. Alias → filename mapping is in `config/bags.yaml`. Notable: `circle_fwd`, `loopings`, `backflips`, `slow_racing_best_velocity` require a 180° yaw flip (see `flipped` list in `config/bags.yaml`).
 
 ### Coordinate Frames & Calibration
 
-Extrinsic calibration (radar-to-IMU) is embedded in `radar_velocity_utils.py`. The radar has limited elevation diversity (2 TX antennas), causing a systematic z-velocity bias of −0.5 to −0.65 m/s. Doppler quantization is 0.63 m/s per bin — keep Huber δ ≥ 1.0 m/s.
+Extrinsic calibration lives in `config/extrinsics.yaml` (single source of truth):
+- **Rotation**: `[roll=180°, pitch=30°, yaw=0°]` — 180° roll + 30° downtilt
+- **Translation**: `[0.0, +0.02, -0.01]` m in body frame (2 cm left, 1 cm down)
+- Body frame: x=forward, y=left, z=up
 
-## Key Hyperparameters (hardcoded in `validate_nonlinear_solver.py`)
+The radar has limited elevation diversity (2 TX antennas), causing a systematic z-velocity bias of −0.5 to −0.65 m/s. Doppler quantization is 0.63 m/s per bin — keep Huber δ ≥ 1.0 m/s.
+
+## Key Hyperparameters (in `validate_nonlinear_solver.py` and `config/solver.yaml`)
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
@@ -120,4 +136,4 @@ Extrinsic calibration (radar-to-IMU) is embedded in `radar_velocity_utils.py`. T
 | `/agiros_pilot/state` | Full Agiros state |
 | `/agiros_pilot/odometry` | Agiros odometry |
 
-See `analysis/rosbag_loader/RADAR_FIELDS.md` for field-level documentation.
+See `analysis/lib/rosbag_loader/RADAR_FIELDS.md` for field-level documentation and `analysis/lib/rosbag_loader/README.md` for module overview.

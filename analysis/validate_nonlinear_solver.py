@@ -14,6 +14,7 @@ Based on the Backward Model formulation:
 import sys
 import numpy as np
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent / 'lib'))
 import matplotlib.pyplot as plt
 from typing import Tuple, Optional
 from scipy import sparse
@@ -34,12 +35,13 @@ from bspline_utils import (
     create_uniform_bspline_from_times,
     build_minimum_snap_regularization
 )
-from generated_jacobians import (
+from codegen.generated_jacobians import (
     radar_residual_with_jacobians,
     accel_residual_with_jacobians,
     gyro_residual_with_jacobians,
     Rot3
 )
+from config_loader import load_config
 
 
 # ==================== Orientation Parameterization ====================
@@ -1481,24 +1483,13 @@ def detect_stationary_bias(
     }
 
 
-# ==================== Bag Catalogue ====================
-BAGS = {
-    "original":     "rosbags/2025-12-17-16-02-22.bag",
-    "circle":       "rosbags/circle_2025-12-17-17-21-37.bag",
-    "circle_fast":  "rosbags/circle_fast_2025-12-17-17-25-34.bag",
-    "circle_fwd":   "rosbags/circle_forward_2025-12-17-17-37-38.bag",
-    "loopings":     "rosbags/circle_fast_forward_2025-12-17-17-39-49.bag",
-    "backflips":    "rosbags/backflips_2025-12-17-17-41-24.bag",
-    "backflips_best_velocity":              "rosbags/Wed_11032026_1503/backflip_oldconfig_2026-03-11-16-40-51.bag",
-    "circle_best_velocity":                 "rosbags/Wed_11032026_1503/circle_5mps_oldconfig_2026-03-11-16-38-36.bag",
-    "fast_racing_1_velocity_no_clustering": "rosbags/Wed_11032026_1503/fast_racing_2026-03-11-15-19-58.bag",
-    # "fast_racing_best_velocity_crash":      "rosbags/Wed_11032026_1503/fastracing_oldconfig_2026-03-11-16-52-09.bag",
-    "fast_racing_best_velocity":            "rosbags/Wed_11032026_1503/fastracing_oldconfig_2026-03-11-17-20-18.bag",
-    "slow_racing_best_velocity":            "rosbags/Wed_11032026_1503/slowracing_oldconfig_2026-03-11-17-18-43.bag"
-}
-
-# Bags where the agiros body frame is rotated 180 deg in yaw
-FLIPPED_BAGS = {"circle_fwd", "loopings", "backflips", "circle_best_velocity_config", "slow_racing_best_velocity"}
+# ==================== Bag Catalogue (loaded from config/bags.yaml) ====================
+_cfg = load_config()
+BAGS = _cfg['bags']['bags']
+FLIPPED_BAGS = set(_cfg['bags']['flipped'])
+_BAG_TIMING_CFG = _cfg['timing']
+_EXTRINSICS_CFG = _cfg['extrinsics']
+del _cfg
 
 # ==================== Main Validation ====================
 
@@ -1521,30 +1512,19 @@ def main():
     else:
         BAG_PATH = bag_key
 
-    # Per-bag flight windows (auto-detected from MoCap velocity > 0.5 m/s)
-    # Each entry: (start_offset, duration) covering the main flight segment
-    BAG_TIMING = {
-        "circle":       (25.5, 8.5),   # Window [4]: t=25.8-34.0s, mean 3.3 m/s
-        "circle_fast":  (14.5, 8.5),   # Window [7]: t=14.7-23.1s, mean 5.3 m/s (aliasing risk!)
-        "circle_fwd":   (28.0, 8.0),   # Window [2]: t=28.1-36.3s, mean 3.2 m/s
-        "loopings":     (9.5,  8.5),   # Window [3]: t=9.5-18.0s, mean 5.2 m/s (aliasing risk!)
-        "backflips":    (26.5, 5.0),   # Window [2]: t=26.4-45.2s (using first 5s to keep manageable)
-        "backflips_best_velocity":              (15.6, 10), # total duration 28.2s, using first 10s to keep manageable
-        "circle_best_velocity":                 (22.2, 8.4),
-        "fast_racing_1_velocity_no_clustering": (16.9, 18.1),
-        # "fast_racing_best_velocity_crash":      (22.0, 4.2),
-        "fast_racing_best_velocity":            (19.1, 18.0),
-        "slow_racing_best_velocity":            (19.1, 25.8)
-    }
-    if bag_key in BAG_TIMING:
-        START_TIME_OFFSET, DURATION = BAG_TIMING[bag_key]
+    # Per-bag flight windows (from config/timing.yaml)
+    if bag_key in _BAG_TIMING_CFG:
+        START_TIME_OFFSET, DURATION = _BAG_TIMING_CFG[bag_key]
     else:
         START_TIME_OFFSET = 30.0
         DURATION = 5.0
-        
-    # Sensor extrinsics (from user spec)
-    ROTATION_EULER_DEG = np.array([180.0, 35.0, 0.0])  # roll, pitch, yaw — +30° pitch = downlooking
-    
+
+    # Sensor extrinsics (from config/extrinsics.yaml — confirmed correct values)
+    ROTATION_EULER_DEG = np.array(_EXTRINSICS_CFG['rotation_euler_deg'])  # [180, 30, 0]
+    _t_base = np.array(_EXTRINSICS_CFG['translation_body_m'])              # [0, 0.02, -0.01]
+    IMU_MOCAP_OFFSET = _EXTRINSICS_CFG['imu_mocap_offset_sec']
+    RADAR_IMU_OFFSET = _EXTRINSICS_CFG['radar_imu_offset_sec']
+
     # Body frame flip for certain trajectory profiles
     FLIP_BODY_FRAME = bag_key in FLIPPED_BAGS
     if "--flip" in sys.argv:
@@ -1557,19 +1537,19 @@ def main():
         np.radians(ROTATION_EULER_DEG[1]),
         np.radians(ROTATION_EULER_DEG[2]),
     )
+    R_yaw_flip = rotation_matrix_from_euler(0.0, 0.0, np.pi)
     if FLIP_BODY_FRAME:
-        TRANSLATION = np.array([-0.07, 0.0, 0.0])
-        R_yaw_flip = rotation_matrix_from_euler(0.0, 0.0, np.pi)
+        TRANSLATION = R_yaw_flip @ _t_base
         SENSOR_ROTATION = R_yaw_flip @ R_base
         print(f"  Body frame FLIPPED (R_z(180 deg) applied) for bag '{bag_key}'")
     else:
-        TRANSLATION = np.array([0.07, 0.0, 0.0])
+        TRANSLATION = _t_base.copy()
         SENSOR_ROTATION = R_base
-    
+
     BSPLINE_DEGREE = 5  # Quintic for continuous snap
     DT_POS = 0.05   # Fixed knot spacing for position spline (seconds)
     DT_ORI = 0.05   # Fixed knot spacing for orientation spline (seconds)
-    
+
     # Regularization weights
     LAMBDA_ACCEL = 0.01     # Accelerometer weight (0.05 causes ori degradation; 0.01 too weak for z-vel)
     LAMBDA_GYRO = 5.0       # Gyroscope weight: 0.1 caused 10° ori drift, 0.5 keeps it at 3.5°
@@ -1579,12 +1559,10 @@ def main():
     LAMBDA_BIAS_PRIOR = 1.0    # Fallback (overridden by per-sensor values below)
     LAMBDA_BIAS_PRIOR_ACCEL = 1000.0  # Weak
     LAMBDA_BIAS_PRIOR_GYRO = 10000.0    # Very Strong
-    HUBER_DELTA = 1.0  # meters/second (Huber threshold for radar; ≥ 0.63 m/s quantization bin)
-    HUBER_DELTA_ACCEL = 2.0  # m/s² (Huber threshold for accelerometer — clips spikes linearly)
+    HUBER_DELTA = 1.0  # meters/second (Huber threshold for radar; >= 0.63 m/s quantization bin)
+    HUBER_DELTA_ACCEL = 2.0  # m/s^2 (Huber threshold for accelerometer — clips spikes linearly)
     MIN_RANGE = 0.2
     MAX_ITERATIONS = 20  # LM iterations (need more for bias convergence + warmup)
-    IMU_MOCAP_OFFSET = +0.020  # seconds: IMU timestamps are 20ms behind MoCap, shift forward to align (FINDINGS.md §3)
-    RADAR_IMU_OFFSET = -0.019  # seconds: radar timestamps are 19ms behind IMU (notebook 02_radar_time_sync §4)
     USE_PHASE2_INIT = False  # Initialize position from Phase 2 linear solver
     USE_STATIONARY_BIAS = True  # Use variance-based stationary detection for bias init
     LOCK_BIASES = False  # Lock biases to initial values (stationary-detected or zero)
@@ -1593,7 +1571,7 @@ def main():
     LAMBDA_EXTRINSIC_PRIOR = 1.0 # Prior to penalize deviation from ROTATION_EULER_DEG
     RELINEARIZE_THRESHOLD_DEG = 10.0  # Trigger re-linearization sooner to keep delta small
     USE_JACOBI_PRECOND = '--precond' in sys.argv  # Toggle Jacobi preconditioning
-    
+
     # Boundary priors: pin spline state at START to MoCap ground truth (no end priors)
     LAMBDA_BOUNDARY_VEL = 1000.0  # Weight for boundary velocity priors (strong: prevents accel-drag)
     LAMBDA_BOUNDARY_POS = 1000.0  # Weight for boundary position priors (strong: prevents drift from start)

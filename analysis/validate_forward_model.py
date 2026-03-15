@@ -21,8 +21,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from typing import Dict, Any
 
-# Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent))
+# Add lib/ to path for shared libraries
+sys.path.insert(0, str(Path(__file__).parent / 'lib'))
 
 from rosbag_loader import load_bag_topics
 from radar_velocity_utils import (

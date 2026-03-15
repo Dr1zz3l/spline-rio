@@ -1,0 +1,18 @@
+bags:
+  original:     rosbags/2025-12-17-16-02-22.bag
+  circle:       rosbags/circle_2025-12-17-17-21-37.bag
+  circle_fast:  rosbags/circle_fast_2025-12-17-17-25-34.bag
+  circle_fwd:   rosbags/circle_forward_2025-12-17-17-37-38.bag
+  loopings:     rosbags/circle_fast_forward_2025-12-17-17-39-49.bag
+  backflips:    rosbags/backflips_2025-12-17-17-41-24.bag
+  backflips_best_velocity:              rosbags/Wed_11032026_1503/backflip_oldconfig_2026-03-11-16-40-51.bag
+  circle_best_velocity:                 rosbags/Wed_11032026_1503/circle_5mps_oldconfig_2026-03-11-16-38-36.bag
+  fast_racing_1_velocity_no_clustering: rosbags/Wed_11032026_1503/fast_racing_2026-03-11-15-19-58.bag
+  fast_racing_best_velocity:            rosbags/Wed_11032026_1503/fastracing_oldconfig_2026-03-11-17-20-18.bag
+  slow_racing_best_velocity:            rosbags/Wed_11032026_1503/slowracing_oldconfig_2026-03-11-17-18-43.bag
+
+flipped:
+  - circle_fwd
+  - loopings
+  - backflips
+  - slow_racing_best_velocity

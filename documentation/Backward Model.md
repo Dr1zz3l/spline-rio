@@ -51,7 +51,7 @@ This formula and all its Jacobians are computed **exactly via SymForce codegen**
 
 $$\mathbf{b}_a \in \mathbb{R}^3, \quad \mathbf{b}_g \in \mathbb{R}^3$$
 
-Constant accelerometer and gyroscope biases. Currently estimated (`LOCK_BIASES=False`). The gyroscope z-bias is a real MEMS thermal bias (~0.18–0.28 rad/s, confirmed by `diagnose_gyro.py`). The accelerometer bias is constrained by a strong prior (`LAMBDA_BIAS_PRIOR_ACCEL=10.0`) to prevent gravity leakage.
+Constant accelerometer and gyroscope biases. Currently estimated (`LOCK_BIASES=False`). The gyroscope z-bias is a real MEMS thermal bias (~0.18–0.28 rad/s, confirmed by `diagnostics/diagnose_gyro.py`). The accelerometer bias is constrained by a strong prior (`LAMBDA_BIAS_PRIOR_ACCEL=10.0`) to prevent gravity leakage.
 
 ### 1.5 Full State Vector
 
@@ -232,7 +232,7 @@ Current settings: $\lambda_{snap,pos} = 0$, $\lambda_{snap,ori} = 0$ (disabled �
 
 ## 9. Analytical Jacobians (SymForce Codegen)
 
-All Jacobians are computed **analytically via SymForce code generation**. The codegen pipeline (`derive_jacobians_symforce.py`) produces three functions in `generated_jacobians.py` (pure NumPy, no SymForce runtime dependency):
+All Jacobians are computed **analytically via SymForce code generation**. The codegen pipeline (`codegen/derive_jacobians_symforce.py`) produces three functions in `codegen/generated_jacobians.py` (pure NumPy, no SymForce runtime dependency):
 
 1. **`radar_residual_with_jacobians`**: $r_{rad}$ and $\frac{\partial r}{\partial \mathbf{v}_w}, \frac{\partial r}{\partial \boldsymbol{\delta}}, \frac{\partial r}{\partial \boldsymbol{\omega}}$
 2. **`accel_residual_with_jacobians`**: $\mathbf{r}_{acc}$ and $\frac{\partial \mathbf{r}}{\partial \mathbf{a}_w}, \frac{\partial \mathbf{r}}{\partial \boldsymbol{\delta}}, \frac{\partial \mathbf{r}}{\partial \mathbf{b}_a}$
@@ -352,10 +352,10 @@ The SymForce codegen runs separately in Docker (SymForce requires specific depen
 
 ```bash
 docker exec iwr6843-dev /workspace/.venv_docker/bin/python \
-    /workspace/analysis/derive_jacobians_symforce.py
+    /workspace/analysis/codegen/derive_jacobians_symforce.py
 ```
 
-This generates `analysis/generated_jacobians.py` — a pure NumPy file with no SymForce dependency, containing:
+This generates `analysis/codegen/generated_jacobians.py` — a pure NumPy file with no SymForce dependency, containing:
 - `Rot3` class (quaternion representation with `from_rotation_matrix` converter)
 - Three residual-with-Jacobians functions (radar, accel, gyro)
 - Built-in validation against finite differences (run at generation time)

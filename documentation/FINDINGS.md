@@ -17,7 +17,7 @@ The previous value of `[0, +30, 0]` was incorrect — it did not account for the
 
 ### Extrinsic Accuracy
 - **Pitch (30°):** From a 3D-printed mount, not precisely calibrated. Could be ±2°.
-- **Translation ([0.07, 0, 0]):** Eyeballed. May have a slight z-offset and could be less than 7cm forward.
+- **Translation ([0.08, 0.02, -0.01]):** 8 cm forward, 2 cm left, 1 cm down in body frame. Updated from eyeballed 7 cm forward estimate.
 - **Impact of errors:** A 2° pitch error causes ~0.05 m/s systematic Doppler error. Translation errors are invisible at current Doppler resolution (0.63 m/s bins). Future calibration with MoCap ground truth is planned.
 
 ### Current Status
@@ -181,8 +181,8 @@ Applied `R_z(180°)` correction to extrinsics for each bag and compared:
 | backflips | -0.103 | 45.6% | **+0.161** | **58.6%** | **Flipped** |
 | loopings | -0.257 | 38.1% | **+0.261** | **64.2%** | **Flipped** |
 
-Normal extrinsics: `T=[+0.07,0,0]`, `R_bs = R_y(+30°)` → boresight in body = `[0.866, 0, -0.5]`  
-Flipped extrinsics: `T=[-0.07,0,0]`, `R_bs = R_z(180°) @ R_y(+30°)` → boresight in body = `[-0.866, 0, -0.5]`
+Normal extrinsics: `T=[+0.08,+0.02,-0.01]`, `R_bs = R_x(180°) @ R_y(+30°)` → boresight in body = `[0.866, 0, -0.5]`
+Flipped extrinsics: `T=[-0.08,-0.02,-0.01]`, `R_bs = R_z(180°) @ R_x(180°) @ R_y(+30°)` → boresight in body = `[-0.866, 0, -0.5]`
 
 ### Body-Frame Flight Direction Analysis
 
@@ -200,7 +200,7 @@ Flipped extrinsics: `T=[-0.07,0,0]`, `R_bs = R_z(180°) @ R_y(+30°)` → boresi
 ### How to Apply the Fix
 
 For "Flipped" bags, apply one of:
-1. **Correct the extrinsics**: Use `ROTATION_EULER = [0, +30, 180]` and `T = [-0.07, 0, 0]`
+1. **Correct the extrinsics**: Use `ROTATION_EULER = [180, +30, 0]` with `R_z(180°)` applied and `T = R_z(180°) @ [0.08, 0.02, -0.01] = [-0.08, -0.02, -0.01]`
 2. **Correct the state**: Apply 180° yaw rotation to all agiros quaternions, negate v_body_x and v_body_y, negate ω_x and ω_y
 
 ### Per-Bag corr(v_body_x, mean_Doppler) — Original Observations

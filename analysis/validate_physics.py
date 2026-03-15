@@ -13,6 +13,8 @@ Diagnoses:
 """
 
 import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent / 'lib'))
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d

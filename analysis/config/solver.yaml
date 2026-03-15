@@ -1,0 +1,10 @@
+huber_delta: 1.0
+lambda_accel: 0.01
+lambda_gyro: 1.0
+lambda_snap: 1.0e-6
+bspline_degree: 5
+n_control_points: 20
+gyro_bias_prior_std: 1.0
+accel_bias_prior_std: 10.0
+optimize_pitch_only: true
+lock_extrinsics: false
