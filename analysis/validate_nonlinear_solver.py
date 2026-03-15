@@ -1487,7 +1487,7 @@ def detect_stationary_bias(
 _cfg = load_config()
 BAGS = _cfg['bags']['bags']
 FLIPPED_BAGS = set(_cfg['bags']['flipped'])
-_BAG_TIMING_CFG = _cfg['timing']
+_BAG_TIMING_CFG = _cfg['bags']['timing']
 _EXTRINSICS_CFG = _cfg['extrinsics']
 del _cfg
 
@@ -1512,7 +1512,7 @@ def main():
     else:
         BAG_PATH = bag_key
 
-    # Per-bag flight windows (from config/timing.yaml)
+    # Per-bag flight windows (from config/bags.yaml timing section)
     if bag_key in _BAG_TIMING_CFG:
         START_TIME_OFFSET, DURATION = _BAG_TIMING_CFG[bag_key]
     else:

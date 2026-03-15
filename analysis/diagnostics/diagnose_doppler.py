@@ -19,7 +19,7 @@ from config_loader import load_config
 _cfg = load_config()
 BAGS = _cfg['bags']['bags']
 FLIPPED_BAGS = set(_cfg['bags']['flipped'])
-_TIMING = _cfg['timing']
+_TIMING = _cfg['bags']['timing']
 _EXT = _cfg['extrinsics']
 
 bag_key = sys.argv[1] if len(sys.argv) > 1 else "circle"

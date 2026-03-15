@@ -38,7 +38,7 @@ _EXT = _cfg['extrinsics']
 
 # ==================== Extrinsics (from config/extrinsics.yaml) ====================
 _rotation_euler_deg = np.array(_EXT['rotation_euler_deg'])  # [180, 30, 0]
-_t_base = np.array(_EXT['translation_body_m'])               # [0, 0.02, -0.01]
+_t_base = np.array(_EXT['translation_body_m'])               # [0.08, 0.02, -0.01]
 _R_base = rotation_matrix_from_euler(
     np.radians(_rotation_euler_deg[0]),
     np.radians(_rotation_euler_deg[1]),

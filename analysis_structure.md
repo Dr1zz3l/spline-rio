@@ -7,7 +7,6 @@ analysis/
 │
 ├── config/                          # Single source of truth — all hardcoded values
 │   ├── bags.yaml                    # bag aliases → paths, flipped bag set
-│   ├── timing.yaml                  # per-bag flight window (start_offset, duration)
 │   ├── extrinsics.yaml              # rotation [180,30,0] deg, translation [0,0.02,-0.01] m
 │   └── solver.yaml                  # LM hyperparameters, B-spline config
 │
@@ -71,8 +70,7 @@ python codegen/derive_jacobians_symforce.py
 
 | File | Content |
 |------|---------|
-| `config/bags.yaml` | `bags: {alias: path}` + `flipped: [...]` list |
-| `config/timing.yaml` | `{bag_key: [start_offset, duration]}` |
+| `config/bags.yaml` | `bags: {alias: path}`, `flipped: [...]`, `timing: {bag: [start, dur]}` |
 | `config/extrinsics.yaml` | `rotation_euler_deg`, `translation_body_m`, time offsets |
 | `config/solver.yaml` | `huber_delta`, `lambda_accel`, `bspline_degree`, etc. |
 

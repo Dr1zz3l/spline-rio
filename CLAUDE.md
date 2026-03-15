@@ -81,8 +81,7 @@ python codegen/derive_jacobians_symforce.py   # Overwrites codegen/generated_jac
 | `lib/rosbag_loader/loader.py` | Unified API to load 7 ROS topics into typed dataclasses |
 | `config_loader.py` | Loads all YAML configs from `config/` as a dict-of-dicts |
 | `config/extrinsics.yaml` | Canonical extrinsics: rotation [180,30,0] deg, translation [0,0.02,-0.01] m |
-| `config/bags.yaml` | Bag aliases → paths, flipped bag set |
-| `config/timing.yaml` | Per-bag flight window (start offset, duration) |
+| `config/bags.yaml` | Bag aliases → paths, flipped bag set, per-bag timing windows |
 | `config/solver.yaml` | LM hyperparameters, B-spline config |
 
 ### State Representation
