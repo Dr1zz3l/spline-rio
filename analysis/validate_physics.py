@@ -19,22 +19,30 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
 from scipy.spatial.transform import Rotation, Slerp
+from scipy.signal import butter, filtfilt
 
 from rosbag_loader.loader import load_bag_topics
 from radar_velocity_utils import (
     rotation_matrix_from_euler,
     predict_doppler_velocity,
 )
+from config_loader import load_config
 
-# Available bags
-BAGS = {
-    "original":     "rosbags/2025-12-17-16-02-22.bag",
-    "circle":       "rosbags/circle_2025-12-17-17-21-37.bag",
-    "circle_fast":  "rosbags/circle_fast_2025-12-17-17-25-34.bag",
-    "circle_fwd":   "rosbags/circle_forward_2025-12-17-17-37-38.bag",
-    "loopings":     "rosbags/circle_fast_forward_2025-12-17-17-39-49.bag",
-    "backflips":    "rosbags/backflips_2025-12-17-17-41-24.bag",
-}
+
+def zero_phase_lowpass(x, dt, cutoff_hz=12.0, order=4):
+    """Apply zero-phase Butterworth low-pass filter along axis 0."""
+    if x is None or len(x) < 8 or dt <= 0:
+        return x
+    fs = 1.0 / dt
+    nyq = 0.5 * fs
+    if cutoff_hz >= 0.95 * nyq:
+        return x
+
+    b, a = butter(order, cutoff_hz / nyq, btype='low')
+    padlen = 3 * (max(len(a), len(b)) - 1)
+    if len(x) <= padlen:
+        return x
+    return filtfilt(b, a, x, axis=0)
 
 
 def run_physics_diagnostics():
@@ -43,44 +51,52 @@ def run_physics_diagnostics():
     print("=" * 80)
 
     # ==================== Configuration ====================
-    bag_key = sys.argv[1] if len(sys.argv) > 1 else "original"
-    if bag_key in BAGS:
-        BAG_PATH = BAGS[bag_key]
+    cfg = load_config()
+    bags_cfg = cfg['bags']
+    ext = cfg['extrinsics']
+
+    bags = bags_cfg.get('bags', {})
+    flipped_bags = set(bags_cfg.get('flipped', []))
+    timing = bags_cfg.get('timing', {})
+
+    positional_args = [arg for arg in sys.argv[1:] if not arg.startswith('--')]
+    bag_key = positional_args[0] if positional_args else "original"
+
+    if bag_key in bags:
+        BAG_PATH = bags[bag_key]
     else:
         BAG_PATH = bag_key  # Allow direct path
+
     START_OFFSET = 5.0
     DURATION = 120.0
+    if bag_key in timing:
+        START_OFFSET, DURATION = timing[bag_key]
+
     print(f"Bag: {bag_key} → {BAG_PATH}")
 
     # --- Extrinsic calibration ---
-    # Physical mounting: radar at body +x, 30° downward tilt
-    ROTATION_EULER = np.array([0, 30, 0])  # degrees (roll, pitch, yaw)
+    ROTATION_EULER = np.array(ext['rotation_euler_deg'], dtype=float)  # [roll, pitch, yaw] deg
+    TRANSLATION = np.array(ext['translation_body_m'], dtype=float)
 
-    # Some agiros trajectory profiles define body +x rotated 180° in yaw.
-    # For those bags the radar appears at body -x, so we apply R_z(180°) and negate T_x.
-    FLIPPED_BAGS = {"circle_fwd", "backflips", "loopings"}
-    FLIP_BODY_FRAME = bag_key in FLIPPED_BAGS
+    FLIP_BODY_FRAME = bag_key in flipped_bags
     if "--flip" in sys.argv:
         FLIP_BODY_FRAME = True
     if "--no-flip" in sys.argv:
         FLIP_BODY_FRAME = False
 
+    ROTATION_EULER_RAD = np.radians(ROTATION_EULER)
+    R_base = rotation_matrix_from_euler(
+        ROTATION_EULER_RAD[0], ROTATION_EULER_RAD[1], ROTATION_EULER_RAD[2],
+    )
+
     if FLIP_BODY_FRAME:
-        TRANSLATION = np.array([-0.07, 0.0, 0.0])
-        ROTATION_EULER_RAD = np.radians(ROTATION_EULER)
-        # R_z(180°) @ R_y(+30°): flipped boresight = [-0.866, 0, -0.5]
         R_yaw_flip = rotation_matrix_from_euler(0.0, 0.0, np.pi)  # R_z(180°)
-        sensor_rotation = R_yaw_flip @ rotation_matrix_from_euler(
-            ROTATION_EULER_RAD[0], ROTATION_EULER_RAD[1], ROTATION_EULER_RAD[2],
-        )
+        sensor_rotation = R_yaw_flip @ R_base
+        sensor_translation = R_yaw_flip @ TRANSLATION
         print(f"  ★ Body frame FLIPPED (R_z(180°) applied) — bag '{bag_key}' uses rotated agiros frame")
     else:
-        TRANSLATION = np.array([0.07, 0.0, 0.0])
-        sensor_rotation = rotation_matrix_from_euler(
-            np.radians(ROTATION_EULER[0]),
-            np.radians(ROTATION_EULER[1]),
-            np.radians(ROTATION_EULER[2]),
-        )
+        sensor_rotation = R_base
+        sensor_translation = TRANSLATION.copy()
 
     MIN_RANGE = 0.2
     g_world = np.array([0, 0, -9.81])
@@ -202,9 +218,9 @@ def run_physics_diagnostics():
                 r = frame.ranges[i] if frame.ranges is not None else np.linalg.norm(p_s)
                 if r < MIN_RANGE:
                     continue
-                v_pred = predict_doppler_velocity(
+                v_pred = predict_doppler_velocity( 
                     v_world, omega_body, R_wb,
-                    p_s.reshape(1, 3), TRANSLATION, sensor_rotation
+                    p_s.reshape(1, 3), sensor_translation, sensor_rotation
                 )[0]
                 if wrap_alias:
                     v_pred = ((v_pred + V_MAX_UNAMBIGUOUS) % (2 * V_MAX_UNAMBIGUOUS)) - V_MAX_UNAMBIGUOUS
@@ -217,7 +233,7 @@ def run_physics_diagnostics():
         return corr, preds, meas, meas - preds
 
     # Sweep time offsets to find best alignment — try both raw and alias-wrapped
-    offsets = np.linspace(-0.15, 0.15, 61)
+    offsets = np.linspace(-0.4, 0.4, 61)
     corrs_raw = []
     corrs_alias = []
     for dt in offsets:
@@ -337,18 +353,30 @@ def run_physics_diagnostics():
         accel_times.append(t - t_start)
         accel_meas.append(z_imu)
 
-        # Velocity-diff source
-        key = f'{label_vd}: R_bw*(a-g)'
+        # Velocity-diff source (includes untransformed/world-frame variants for debugging)
+        key = f'{label_vd}: world a (raw)'
+        combos.setdefault(key, []).append(a_vd)
+        key = f'{label_vd}: world (a-g)'
+        combos.setdefault(key, []).append(a_vd - g_world)
+        key = f'{label_vd}: body R_bw*a'
+        combos.setdefault(key, []).append(R_bw @ a_vd)
+        key = f'{label_vd}: body R_bw*(a-g)'
         combos.setdefault(key, []).append(R_bw @ (a_vd - g_world))
-        key = f'{label_vd}: R_bw*a+[0,0,g]'
+        key = f'{label_vd}: body R_bw*a+[0,0,g] (legacy)'
         combos.setdefault(key, []).append(R_bw @ a_vd + np.array([0, 0, 9.81]))
 
         # Agiros source (if available)
         if accel_agiros_interp is not None:
             a_ag = accel_agiros_interp(t)
-            key = f'{label_ag}: R_bw*(a-g)'
+            key = f'{label_ag}: world a (raw)'
+            combos.setdefault(key, []).append(a_ag)
+            key = f'{label_ag}: world (a-g)'
+            combos.setdefault(key, []).append(a_ag - g_world)
+            key = f'{label_ag}: body R_bw*a'
+            combos.setdefault(key, []).append(R_bw @ a_ag)
+            key = f'{label_ag}: body R_bw*(a-g)'
             combos.setdefault(key, []).append(R_bw @ (a_ag - g_world))
-            key = f'{label_ag}: R_bw*a+[0,0,g]'
+            key = f'{label_ag}: body R_bw*a+[0,0,g] (legacy)'
             combos.setdefault(key, []).append(R_bw @ a_ag + np.array([0, 0, 9.81]))
 
     accel_times = np.array(accel_times)
@@ -356,7 +384,34 @@ def run_physics_diagnostics():
     for k in combos:
         combos[k] = np.array(combos[k])
 
+    # Low-pass filter both IMU accel and model predictions for cleaner comparison.
+    if len(accel_times) > 12:
+        dt_acc = float(np.median(np.diff(accel_times)))
+        accel_cutoff_hz = 10.0
+        accel_filter_order = 4
+        accel_meas = zero_phase_lowpass(
+            accel_meas,
+            dt_acc,
+            cutoff_hz=accel_cutoff_hz,
+            order=accel_filter_order,
+        )
+        for k in combos:
+            combos[k] = zero_phase_lowpass(
+                combos[k],
+                dt_acc,
+                cutoff_hz=accel_cutoff_hz,
+                order=accel_filter_order,
+            )
+        print(
+            f"  Applied zero-phase low-pass filter to accel signals "
+            f"(Butterworth order={accel_filter_order}, cutoff={accel_cutoff_hz:.1f} Hz, dt≈{dt_acc*1000:.1f} ms)"
+        )
+
     print(f"  Samples: {len(accel_times)}")
+    if not combos:
+        print("ERROR: No acceleration models could be evaluated!")
+        return
+
     print(f"\n  Forward model variant comparison (source: model):")
     best_model = None
     best_total_corr = -999
@@ -371,7 +426,7 @@ def run_physics_diagnostics():
             best_total_corr = total
             best_model = model_name
         rmse = np.sqrt(np.mean((accel_meas - pred)**2))
-        print(f"    {model_name:30s}: X={corrs_ax[0]:+.4f}  Y={corrs_ax[1]:+.4f}  Z={corrs_ax[2]:+.4f}  "
+        print(f"    {model_name:38s}: X={corrs_ax[0]:+.4f}  Y={corrs_ax[1]:+.4f}  Z={corrs_ax[2]:+.4f}  "
               f"Σ={total:+.4f}  RMSE={rmse:.2f}{marker}")
 
     # Use the best variant for remaining analysis
@@ -588,6 +643,53 @@ def run_physics_diagnostics():
     outname = f'physics_check_{bag_key}.png'
     plt.savefig(outname, dpi=150, bbox_inches='tight')
     print(f"Saved: {outname}")
+
+    # ==================== EXTRA PLOT: ALL ACCEL MODELS ====================
+    combo_names = list(combos.keys())
+    n_models = len(combo_names)
+    fig2, axes2 = plt.subplots(
+        3,
+        n_models,
+        figsize=(max(18, 4.0 * n_models), 10),
+        sharex=True,
+        squeeze=False,
+    )
+    fig2.suptitle(f'Accel model comparison: {bag_key}', fontsize=13, fontweight='bold')
+
+    axis_names = ['X', 'Y', 'Z']
+    for col, model_name in enumerate(combo_names):
+        pred = combos[model_name]
+        for row in range(3):
+            ax2 = axes2[row, col]
+            ax2.plot(accel_times, accel_meas[:, row], 'k-', alpha=0.45, linewidth=0.6, label='IMU')
+            ax2.plot(accel_times, pred[:, row], 'tab:blue', alpha=0.8, linewidth=0.7, label='Model')
+            if row == 0:
+                ax2.set_title(model_name, fontsize=8)
+            if col == 0:
+                ax2.set_ylabel(f'Accel {axis_names[row]} (m/s²)')
+            if row == 2:
+                ax2.set_xlabel('Time (s)')
+
+            corr_ax = np.corrcoef(accel_meas[:, row], pred[:, row])[0, 1]
+            ax2.text(
+                0.02,
+                0.92,
+                f'corr={corr_ax:+.2f}',
+                transform=ax2.transAxes,
+                fontsize=7,
+                va='top',
+                ha='left',
+                bbox=dict(boxstyle='round,pad=0.15', facecolor='white', alpha=0.6, linewidth=0.0),
+            )
+            ax2.grid(True, alpha=0.25)
+
+            if row == 0 and col == 0:
+                ax2.legend(fontsize=7)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    outname_models = f'physics_check_{bag_key}_accel_models.png'
+    plt.savefig(outname_models, dpi=160, bbox_inches='tight')
+    print(f"Saved: {outname_models}")
 
     # ==================== VERDICT ====================
     print(f"\n{'VERDICT':#^80}")

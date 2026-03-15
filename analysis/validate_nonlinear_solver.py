@@ -2119,9 +2119,15 @@ def main():
     print(f"  Per-axis RMSE: x={np.sqrt(np.mean(vel_diff[:,0]**2)):.3f}  y={np.sqrt(np.mean(vel_diff[:,1]**2)):.3f}  z={np.sqrt(np.mean(vel_diff[:,2]**2)):.3f}")
     print(f"  Per-axis mean:  x={np.mean(vel_diff[:,0]):.3f}  y={np.mean(vel_diff[:,1]):.3f}  z={np.mean(vel_diff[:,2]):.3f}")
     
-    print(f"\nAcceleration Errors:")
+    print(f"\nAcceleration Errors (post-fit eval vs differentiated MoCap velocity):")
     print(f"  Mean: {accel_errors.mean():.4f} m/s²")
     print(f"  RMSE: {np.sqrt(np.mean(accel_errors**2)):.4f} m/s²")
+
+    print(f"\nAccelerometer Optimization Residual Model:")
+    print(f"  During fitting, accel residuals use raw IMU specific force measurements")
+    print(f"  compared against predicted body-frame specific force R_bw @ (a_world - g) + b_a.")
+    print(f"  The post-fit acceleration RMSE above instead compares estimated a_world")
+    print(f"  against MoCap-velocity-differentiated acceleration for evaluation only.")
     
     print(f"\nOrientation Errors:")
     print(f"  Mean: {rot_errors.mean():.4f} deg")
@@ -2215,7 +2221,7 @@ def main():
     ax.plot(time_rel, est_accel_norm, 'r--', label='Estimated', linewidth=1, alpha=0.7)
     ax.set_xlabel('Time (s)')
     ax.set_ylabel('Acceleration (m/s²)')
-    ax.set_title('Acceleration Magnitude')
+    ax.set_title('Acceleration Magnitude (post-fit vs diff(MoCap vel))')
     ax.legend()
     ax.grid(True, alpha=0.3)
     
@@ -2225,7 +2231,7 @@ def main():
     ax.axhline(accel_errors.mean(), color='b', linestyle='--', label=f'Mean: {accel_errors.mean():.4f}m/s²')
     ax.set_xlabel('Time (s)')
     ax.set_ylabel('Acceleration Error (m/s²)')
-    ax.set_title('Acceleration Error')
+    ax.set_title('Acceleration Error (vs diff(MoCap vel))')
     ax.legend()
     ax.grid(True, alpha=0.3)
     
@@ -2238,7 +2244,7 @@ def main():
         ax.plot(time_rel, estimated_accelerations[:, i], f'{clr}--', alpha=0.7, linewidth=1, label=f'Est {lbl}')
     ax.set_xlabel('Time (s)')
     ax.set_ylabel('Acceleration (m/s²)')
-    ax.set_title('Acceleration per Axis')
+    ax.set_title('Acceleration per Axis (vs diff(MoCap vel))')
     ax.legend(fontsize=7, ncol=2)
     ax.grid(True, alpha=0.3)
     
@@ -2249,7 +2255,8 @@ def main():
         f"RESULTS",
         f"  Pos  RMSE: {np.sqrt(np.mean(pos_errors**2)):.4f} m",
         f"  Vel  RMSE: {np.sqrt(np.mean(vel_errors**2)):.4f} m/s",
-        f"  Acc  RMSE: {accel_rmse:.4f} m/s²",
+        f"  Acc  RMSE: {accel_rmse:.4f} m/s² (vs diff(MoCap vel))",
+        f"  Accel fit: IMU specific force residual",
         f"  Ori  RMSE: {np.sqrt(np.mean(rot_errors**2)):.4f}°",
         f"",
         f"INIT BIASES",
