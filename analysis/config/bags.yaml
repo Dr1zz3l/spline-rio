@@ -12,9 +12,9 @@ bags:
   slow_racing_best_velocity:            rosbags/Wed_11032026_1503/slowracing_oldconfig_2026-03-11-17-18-43.bag
 
 flipped:
-  - circle_fwd
+  # - circle_fwd
   - loopings
-  - backflips
+  # - backflips
   # - slow_racing_best_velocity
   # - fast_racing_best_velocity
 

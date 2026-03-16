@@ -129,9 +129,9 @@ The residual is the difference between measured and predicted Doppler velocity:
 
 $$r_{rad, k} = v_{D, meas} - h_{rad}(\mathcal{X}, t, \hat{\mathbf{u}}_s)$$
 
-Expanding $h_{rad}$ using the Lie algebra parameterization:
+Expanding $h_{rad}$ using the Lie algebra parameterization (with TI sign convention: positive = receding):
 
-$$h_{rad} = \hat{\mathbf{u}}_b^T \left[ \mathbf{R}_{w \gets b}(t)^T \mathbf{v}_w(t) + \boldsymbol{\omega}_b(t) \times \mathbf{T}_{b \gets s} \right]$$
+$$h_{rad} = -\hat{\mathbf{u}}_b^T \left[ \mathbf{R}_{w \gets b}(t)^T \mathbf{v}_w(t) + \boldsymbol{\omega}_b(t) \times \mathbf{T}_{b \gets s} \right]$$
 
 Where:
 - $\hat{\mathbf{u}}_b = \mathbf{R}_{b\gets s} \hat{\mathbf{u}}_s$: Ray direction in body frame
@@ -270,16 +270,9 @@ The solver uses a single LM loop with **conditional SO(3) re-linearization** and
 
 ```
 lambda = 1e-3
-ACCEL_WARMUP_ITERS = 3
 
 for iteration in range(max_iterations):
-    # Warm-up: first N iterations use lambda_accel=0 (radar+gyro only)
-    effective_lambda_accel = 0 if iteration < ACCEL_WARMUP_ITERS else lambda_accel
-    
-    if iteration == ACCEL_WARMUP_ITERS:
-        lambda = 1e-3  # reset LM damping at transition
-    
-    J, r = build_jacobian(state, effective_lambda_accel)
+    J, r = build_jacobian(state, lambda_accel)
     H = J^T J + lambda * I + R_snap
     delta_x = solve(H, -J^T r)
     
@@ -311,21 +304,21 @@ This keeps $\boldsymbol{\delta}$ near zero, which improves numerical conditionin
 
 | Parameter | Value | Description |
 | :--- | :--- | :--- |
-| `MAX_ITERATIONS` | 30 | LM iterations (increased for bias convergence + warmup) |
-| `LAMBDA_ACCEL` | 0.01 | Accelerometer weight (0.05 causes ori degradation) |
-| `LAMBDA_GYRO` | 0.50 | Gyroscope weight |
+| `MAX_ITERATIONS` | 20 | LM iterations |
+| `LAMBDA_ACCEL` | 1.0 | Accelerometer weight |
+| `LAMBDA_GYRO` | 100.0 | Gyroscope weight (high: gyro is the primary orientation sensor) |
 | `LAMBDA_SNAP_POS` | 0.0001 | Position smoothness |
 | `LAMBDA_SNAP_ORI` | 0.0001 | Orientation smoothness |
 | `HUBER_DELTA` | 1.0 m/s | Radar Huber threshold (≥ 0.63 m/s quantization bin) |
 | `HUBER_DELTA_ACCEL` | 2.0 m/s² | Accelerometer Huber threshold |
 | `LOCK_BIASES` | False | Biases estimated (gyro z-bias confirmed real) |
-| `LAMBDA_BIAS_PRIOR_ACCEL` | 10.0 | Strong prior on accel bias (prevents gravity leakage) |
-| `LAMBDA_BIAS_PRIOR_GYRO` | 1.0 | Mild prior on gyro bias (allows real ~0.3 rad/s MEMS bias) |
-| `BSPLINE_DEGREE` | 5 (pos) / 3 (ori) | B-spline degrees |
+| `LAMBDA_BIAS_PRIOR_ACCEL` | 1000.0 | Strong prior on accel bias (prevents gravity leakage) |
+| `LAMBDA_BIAS_PRIOR_GYRO` | 10000.0 | Very strong prior on gyro bias |
+| `BSPLINE_DEGREE` | 5 (pos) / 5 (ori) | B-spline degrees (both quintic) |
 | `DT_POS` / `DT_ORI` | 0.05s / 0.05s | Knot spacings |
 | `IMU_MOCAP_OFFSET` | +20 ms | IMU/radar timestamps shifted forward to align with MoCap |
 | `RELINEARIZE_THRESHOLD_DEG` | 10.0° | Re-linearize only when max delta exceeds this |
-| `ACCEL_WARMUP_ITERS` | 3 | First N iters use lambda_accel=0 (radar+gyro only) |
+| `ACCEL_WARMUP_ITERS` | 0 | Disabled (all sensors active from iteration 0) |
 | `ROTATION_EULER_DEG` | [180, 30, 0] | Radar extrinsic rotation (upside-down + 30° tilt) |
 
 ## 11. Implementation Pipeline
@@ -348,11 +341,12 @@ This keeps $\boldsymbol{\delta}$ near zero, which improves numerical conditionin
 
 ### 11.2 SymForce Codegen Pipeline
 
-The SymForce codegen runs separately in Docker (SymForce requires specific dependencies):
+The SymForce codegen runs from the project venv:
 
 ```bash
-docker exec iwr6843-dev /workspace/.venv_docker/bin/python \
-    /workspace/analysis/codegen/derive_jacobians_symforce.py
+cd radar-iwr6843-driver
+source .venv/bin/activate
+python analysis/codegen/derive_jacobians_symforce.py
 ```
 
 This generates `analysis/codegen/generated_jacobians.py` — a pure NumPy file with no SymForce dependency, containing:
@@ -360,29 +354,27 @@ This generates `analysis/codegen/generated_jacobians.py` — a pure NumPy file w
 - Three residual-with-Jacobians functions (radar, accel, gyro)
 - Built-in validation against finite differences (run at generation time)
 
-## 12. Current Results (2026-03-07)
+## 12. Current Results (2026-03-16)
 
-On the **circle** bag (5 seconds, moderate circular flight, `LAMBDA_ACCEL=0.01`, `LOCK_BIASES=False`):
+On the **slow_racing_best_velocity** bag (10 seconds, no yaw flip, correct Doppler sign):
 
 | Metric | Value |
 | :--- | :--- |
-| Position RMSE | 4.10 m |
-| Velocity RMSE | 1.10 m/s |
-| Orientation RMSE | 4.79° |
-| z-velocity mean error | -0.65 m/s |
-| Estimated gyro bias | [0.003, -0.060, 0.342] rad/s |
-| Estimated accel bias | [-0.227, -0.207, 0.031] m/s² |
-| Runtime | ~5 min (30 iterations) |
-| Iteration time | ~10s |
+| Position RMSE | 0.4 m |
+| Velocity RMSE | 0.2 m/s |
+| Angular velocity RMSE | 0.1 rad/s |
+| Acceleration RMSE | 2.9 m/s² |
+| Orientation RMSE | 1.4° |
 
-**Best historical results** (LAMBDA_ACCEL=0.01, no warmup, old boundary weights=100):
+**Historical baseline** (before Doppler sign fix, with yaw flip):
 
-| Metric | circle | circle_fwd |
-| :--- | :--- | :--- |
-| Position RMSE | 3.56 m | 1.76 m |
-| Velocity RMSE | 1.06 m/s | 0.77 m/s |
-| Orientation RMSE | 2.98° | 4.36° |
-| z-velocity mean | -0.53 m/s | -0.17 m/s |
+| Metric | Before fix |
+| :--- | :--- |
+| Position RMSE | 2.0 m |
+| Velocity RMSE | 1.3 m/s |
+| Orientation RMSE | 2.1° |
+
+The ~5× improvement in position/velocity RMSE is attributed to the Doppler sign fix (see FINDINGS.md §11). With the correct sign, radar residuals at MoCap ground truth have RMSE 0.83 m/s with only 4.3% Huber-suppressed (vs 1.1 m/s / 16% before).
 
 ## 13. Future: Sliding Window for Real-Time Estimation
 

@@ -1,7 +1,7 @@
 # Physics Validation & Calibration Findings
 
-**Date:** 2025-02-18 (last updated 2026-03-07)  
-**Script:** `analysis/validate_physics.py`, `analysis/validate_nonlinear_solver.py`, `analysis/diagnose_gyro.py`  
+**Date:** 2025-02-18 (last updated 2026-03-16)
+**Script:** `analysis/validate_physics.py`, `analysis/validate_nonlinear_solver.py`, `analysis/diagnose_gyro.py`, `analysis/diagnostics/diagnose_doppler_sign.py`
 **Status:** Active investigation
 
 ---
@@ -157,65 +157,59 @@ No rotation compensation, no IMU compensation, no gravity compensation. The TF p
 
 ---
 
-## 11. Doppler Sign Convention Issue (RESOLVED — Body Frame Flip)
+## 11. Doppler Sign Convention (RESOLVED — SymForce Sign Error Fixed)
 
-### Root Cause: Agiros Body Frame Differs Between Trajectory Profiles
+### Summary
 
-Different agiros trajectory profiles define the body frame orientation differently. Three of the six bags have the agiros body +x axis rotated 180° in yaw relative to the physical drone body frame. This means:
-- The quaternion in agiros state data encodes an extra 180° yaw rotation
-- `v_body_x` has the opposite physical meaning
-- The radar (physically at body +x) appears at body -x in the flipped frame
+The SymForce radar residual used the wrong sign for `v_pred`, causing the solver to minimize the wrong objective. The fix improved solver results by ~5× (pos RMSE 2.0 → 0.4 m, vel RMSE 1.3 → 0.2 m/s).
 
-**User confirmed**: "different trajectory profiles have different body frames... in a few flights the drone flew backwards, meaning the radar was at the back side of the drone when flying."
+### Two Independent Code Paths
 
-### 180° Yaw Flip Test Results
+The codebase had two Doppler forward model implementations that disagreed:
 
-Applied `R_z(180°)` correction to extrinsics for each bag and compared:
+| Code path | Formula | Used by |
+|---|---|---|
+| `predict_doppler_velocity()` | `v_pred = -dot(u_body, v_ant)` | `validate_physics.py` |
+| `radar_residual_with_jacobians()` (SymForce) | `v_pred = +dot(u_body, v_ant)` | `validate_nonlinear_solver.py` |
 
-| Bag | Normal corr | Normal sign% | Flipped corr | Flipped sign% | Winner |
-|-----|------------|-------------|-------------|--------------|--------|
-| original | **+0.378** | **69.3%** | -0.207 | 33.8% | Normal |
-| circle | **+0.414** | **78.7%** | -0.432 | 23.9% | Normal |
-| circle_fast | **+0.130** | **58.9%** | -0.055 | 46.9% | Normal |
-| circle_fwd | -0.250 | 25.8% | **+0.347** | **78.5%** | **Flipped** |
-| backflips | -0.103 | 45.6% | **+0.161** | **58.6%** | **Flipped** |
-| loopings | -0.257 | 38.1% | **+0.261** | **64.2%** | **Flipped** |
+The SymForce residual was `v_meas - dot(u,v)`. But the TI radar convention is `v_meas = -dot(u,v)` (positive = receding), so at ground truth the residual was `-2·dot(u,v)` instead of zero.
 
-Normal extrinsics: `T=[+0.08,+0.02,-0.01]`, `R_bs = R_x(180°) @ R_y(+30°)` → boresight in body = `[0.866, 0, -0.5]`
-Flipped extrinsics: `T=[-0.08,-0.02,-0.01]`, `R_bs = R_z(180°) @ R_x(180°) @ R_y(+30°)` → boresight in body = `[-0.866, 0, -0.5]`
+### Diagnostic Evidence (`diagnostics/diagnose_doppler_sign.py` on `slow_racing_best_velocity`)
 
-### Body-Frame Flight Direction Analysis
+| Convention | Correlation with v_meas | RMSE | Huber-suppressed |
+|---|---|---|---|
+| `v_pred = -dot(u,v)` (correct), flip=OFF | **+0.85** | **0.83 m/s** | **4.3%** |
+| `v_pred = +dot(u,v)` (SymForce), flip=ON | +0.74 | 1.10 m/s | 16.0% |
+| `v_pred = +dot(u,v)` (SymForce), flip=OFF | −0.85 | 2.92 m/s | 76.4% |
 
-| Bag | mean(v_body_x) | fwd% (>0) | Speed (m/s) | Winner |
-|-----|---------------|-----------|-------------|--------|
-| original | -0.54 | 29.2% | 1.31 | Normal |
-| circle | +2.66 | 93.1% | 3.07 | Normal |
-| circle_fast | +4.11 | 86.3% | 4.69 | Normal |
-| circle_fwd | +2.67 | 92.5% | 2.99 | **Flipped** |
-| backflips | -0.14 | 48.4% | 3.67 | **Flipped** |
-| loopings | +4.21 | 85.8% | 4.70 | **Flipped** |
+### Why the Solver "Worked" Before
 
-**Key insight**: Flight direction alone does NOT determine which extrinsics to use. Both circle (fwd%=93%) and circle_fwd (fwd%=92.5%) fly forward, but use different extrinsics. The difference is in the **agiros body frame definition**, not the physical flight direction.
+With the wrong sign and `flip=ON`, the yaw flip effectively negated the forward direction of travel, partially compensating for the sign error. Correlations were positive (~0.74) and 16% of points were Huber-suppressed — radar was contributing but weakly. The trajectory was steered mostly by IMU with radar providing noisy corrections.
 
-### How to Apply the Fix
+### The Fix
 
-For "Flipped" bags, apply one of:
-1. **Correct the extrinsics**: Use `ROTATION_EULER = [180, +30, 0]` with `R_z(180°)` applied and `T = R_z(180°) @ [0.08, 0.02, -0.01] = [-0.08, -0.02, -0.01]`
-2. **Correct the state**: Apply 180° yaw rotation to all agiros quaternions, negate v_body_x and v_body_y, negate ω_x and ω_y
+`derive_jacobians_symforce.py` changed from:
+```python
+v_pred = u_body.dot(v_ant)          # wrong
+return sf.V1(v_meas - v_pred)
+```
+to:
+```python
+v_pred = -u_body.dot(v_ant)         # TI IWR6843 convention: positive = receding
+return sf.V1(v_meas - v_pred)
+```
 
-### Per-Bag corr(v_body_x, mean_Doppler) — Original Observations
+`generated_jacobians.py` was regenerated. `predict_doppler_velocity()` comment updated (negation was already correct, just undocumented).
 
-| Bag | Correlation | Interpretation |
-|-----|------------|----------------|
-| original | **+0.826** | Normal frame ✅ |
-| circle | **+0.773** | Normal frame ✅ |
-| circle_fast | **-0.208** | Normal frame, but aliasing at high speed |
-| circle_fwd | **-0.793** | Flipped frame (explains negative corr) |
-| backflips | **-0.828** | Flipped frame (explains negative corr) |
-| loopings | **-0.286** | Flipped frame, plus aliasing at high speed |
+### Yaw-Flip Status
 
-### Status
-**Confirmed by user**: Different agiros trajectory profiles define the body frame differently. Three of the six bags have the +x axis rotated 180° in yaw. This is implemented in the solver via `FLIP_BODY_FRAME` and the `FLIPPED_BAGS` set.
+The yaw flip (`FLIP_BODY_FRAME`) was previously applied to `circle_fwd`, `loopings`, `backflips`, `slow_racing_best_velocity`. With the sign fix:
+- `slow_racing_best_velocity` confirmed to work with `--no-flip` (best results yet)
+- The other flipped bags (`circle_fwd`, `loopings`, `backflips`) need re-evaluation — they may also work without the flip now, or the flip may reflect a real physical difference in the agiros body frame convention for those trajectory profiles
+
+### Historical Note: Body Frame Flip Investigation
+
+Earlier investigation found that `validate_physics.py` correlation improved with the flip for those bags. This was because `validate_physics.py` uses `predict_doppler_velocity` (correct `-dot` sign), so `flip=ON` was partially fixing the wrong sign via the extrinsic change — making `+dot` look better than `-dot` when evaluated with the flipped body frame. The real physics always used `-dot`.
 
 ---
 
@@ -280,11 +274,11 @@ The accelerometer forward model `z_pred = R_body_from_world @ (a_world - g)` rel
 
 ---
 
-## Next Steps (Updated 2026-03-07)
+## Next Steps (Updated 2026-03-16)
 
-1. **Calibrate radar extrinsics offline** — use MoCap ground truth to find true $R_{bs}$ and $t_{bs}$ (wait for better velocity resolution bag)
+1. **Re-evaluate flipped bags without yaw flip** — test `circle_fwd`, `loopings`, `backflips` with `--no-flip` now that the sign is fixed; update `config/bags.yaml` `flipped` list accordingly
 2. **Investigate z-velocity bias** — persistent -0.5 to -0.65 m/s error; likely from poor radar elevation diversity (IWR6843 has only 2 TX antennas). Not caused by pitch angle error (2° → only 0.05 m/s).
-3. **Decouple accelerometer from orientation** — zero out $\partial(r_{accel})/\partial(\text{ori CPs})$ so accel only affects position. Would allow increasing LAMBDA_ACCEL for better z-vel without corrupting orientation.
-4. **Collect new data** with better velocity resolution radar config (0.06 m/s bins instead of 0.63 m/s)
-5. **Test on all 6 bags** with correct per-bag extrinsics
+3. **Calibrate radar extrinsics offline** — use MoCap ground truth to find true $R_{bs}$ and $t_{bs}$; with the sign fix the residuals are now well-behaved enough to attempt this
+4. **Decouple accelerometer from orientation** — zero out $\partial(r_{accel})/\partial(\text{ori CPs})$ so accel only affects position. Would allow increasing LAMBDA_ACCEL for better z-vel without corrupting orientation.
+5. **Collect new data** with better velocity resolution radar config (0.06 m/s bins instead of 0.63 m/s)
 6. **Sliding window formulation** for real-time operation

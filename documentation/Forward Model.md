@@ -17,7 +17,7 @@ We define three Cartesian coordinate frames. All frames are Right-Handed.
 2. **Body Frame ($\mathcal{B}$):** The moving frame attached to the drone.
    * **Origin:** The center of the IMU (specifically the Accelerometer).
    * **Orientation:** Aligned with the flight controller's axes — **FLU** (X-Forward, Y-Left, Z-Up).
-   * **Note:** Some bags have a 180° yaw-flipped agiros body frame convention (different trajectory profiles define body +x differently). Handled by `FLIP_BODY_FRAME` toggle, which applies `R_z(180°)` to both the rotation and translation: `R_sensor = R_z(180°) @ R_base`, `t_sensor = R_z(180°) @ t_base`.
+   * **Note:** Some bags (`circle_fwd`, `loopings`, `backflips`, `slow_racing_best_velocity`) were previously believed to require a 180° yaw-flip. This was a workaround for a sign error in the Doppler forward model — see FINDINGS.md §11 for the full investigation. With the sign fix applied, the need for per-bag flipping is under re-evaluation.
 
 3. **Sensor/Radar Frame ($\mathcal{S}$):** The moving frame attached to the Radar.
    * **Origin:** The phase center of the radar antenna array.
@@ -134,22 +134,26 @@ $$
 $$
 
 ### 5.3. The Projection (Doppler Constraint)
-The Doppler measurement $v_D$ is the dot product of the antenna velocity and the ray direction (both now in Body Frame):
+The TI IWR6843 reports Doppler as **positive when the target is receding** (range rate $\dot{r} > 0$). This is the **opposite** of the naive dot-product sign. The forward model is:
 
 $$
-v_{D} = \hat{\mathbf{u}}_{b} \cdot \mathbf{v}_{ant, b} + \epsilon
+v_{D} = -\hat{\mathbf{u}}_{b} \cdot \mathbf{v}_{ant, b} + \epsilon
 $$
 
 Substituting the full terms:
 
 $$
-v_{D} = (\mathbf{R}_{b\gets s} \hat{\mathbf{u}}_s) \cdot \left( \mathbf{R}_{w\gets b}^T \mathbf{v}_w(t) + \boldsymbol{\omega}_b(t) \times \mathbf{T}_{b\gets s} \right) + \epsilon
+v_{D} = -(\mathbf{R}_{b\gets s} \hat{\mathbf{u}}_s) \cdot \left( \mathbf{R}_{w\gets b}^T \mathbf{v}_w(t) + \boldsymbol{\omega}_b(t) \times \mathbf{T}_{b\gets s} \right) + \epsilon
 $$
 
-### Important Note on Sign Convention
-The formula above produces a **positive** value when the sensor moves **towards** the target (closing speed).
-* **Check your Radar:** Many radars (including TI default) report closing speed as **negative** (range rate $\dot{r} < 0$).
-* **Implementation:** If your radar reports negative for closing, you must use $v_D = - (\dots)$ or flip the sign of your measurements during pre-processing.
+### Sign Convention (Confirmed)
+The negation was confirmed experimentally by `diagnostics/diagnose_doppler_sign.py` on the `slow_racing_best_velocity` bag:
+* `corr(v_meas, -dot(u,v)) = +0.85` (correct sign, flip=OFF)
+* `corr(v_meas, +dot(u,v)) = -0.85` (wrong sign)
+* RMSE with correct sign: 0.83 m/s (vs 2.92 m/s with wrong sign)
+* Only 4.3% of points Huber-suppressed with correct sign (vs 76.4% with wrong sign)
+
+This is implemented in `predict_doppler_velocity()` (returns `-dot`) and in the SymForce residual source (`derive_jacobians_symforce.py`: `v_pred = -u_body.dot(v_ant)`).
 
 ## 6. Summary Table: What We Estimate vs. What We Measure
 

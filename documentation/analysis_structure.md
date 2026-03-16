@@ -76,7 +76,7 @@ python codegen/derive_jacobians_symforce.py
 
 **Canonical extrinsics** (confirmed correct):
 - Rotation: `[roll=180°, pitch=30°, yaw=0°]`
-- Translation: `[0.0, +0.02, -0.01]` m in body frame (2 cm left, 1 cm down)
+- Translation: `[0.08, +0.02, -0.01]` m in body frame (8 cm forward, 2 cm left, 1 cm down)
 
 ## Import Convention
 
