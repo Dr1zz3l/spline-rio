@@ -627,12 +627,17 @@ def compute_jacobian_analytical(
             
             u_sensor = p_s / np.linalg.norm(p_s)
             v_meas = frame.velocities[i]
-            
-            # Call generated function with proper argument order
+
+            # Sign fix: TI radar convention is v_meas = -dot(u,v) (positive=receding),
+            # but SymForce computes residual = v_meas - dot(u,v).  Passing -v_meas gives
+            # r = -v_meas - dot = -(v_meas + dot) and unchanged J = -∂dot/∂state.
+            # In normal equations J^T J and J^T r are invariant under (r,J)->(-r,-J),
+            # and this is equivalent since J_correct = -J_sf.  Huber |r| also unchanged.
+            # TODO: regenerate generated_jacobians.py with v_pred = -dot (proper fix)
             res, J_v, J_delta_radar, J_omega_radar, J_Rbs = radar_residual_with_jacobians(
                 v_world, R_nom_quat, delta, omega,
                 u_sensor, sensor_translation, R_bs_quat,
-                v_meas, 1e-10
+                -v_meas, 1e-10
             )
             
             r = res[0]  # scalar residual
@@ -1552,7 +1557,7 @@ def main():
 
     # Regularization weights
     LAMBDA_ACCEL = 0.01     # Accelerometer weight (0.05 causes ori degradation; 0.01 too weak for z-vel)
-    LAMBDA_GYRO = 5.0       # Gyroscope weight: 0.1 caused 10° ori drift, 0.5 keeps it at 3.5°
+    LAMBDA_GYRO = 1.0       # Gyroscope weight: 0.1 caused 10° ori drift, 0.5 keeps it at 3.5°
     LAMBDA_SNAP_POS = 0.0001 # Position smoothness
     LAMBDA_SNAP_ORI = 0.0001   # Orientation smoothness
     LAMBDA_ORI_REG = 0.0       # Orientation regularization: disabled (penalizes delta CPs away from MoCap)
@@ -1571,6 +1576,7 @@ def main():
     LAMBDA_EXTRINSIC_PRIOR = 1.0 # Prior to penalize deviation from ROTATION_EULER_DEG
     RELINEARIZE_THRESHOLD_DEG = 10.0  # Trigger re-linearization sooner to keep delta small
     USE_JACOBI_PRECOND = '--precond' in sys.argv  # Toggle Jacobi preconditioning
+    NO_RADAR = '--no-radar' in sys.argv  # Test 1: disable radar to check if it contributes
 
     # Boundary priors: pin spline state at START to MoCap ground truth (no end priors)
     LAMBDA_BOUNDARY_VEL = 1000.0  # Weight for boundary velocity priors (strong: prevents accel-drag)
@@ -1596,6 +1602,8 @@ def main():
     print(f"Stationary bias: {USE_STATIONARY_BIAS}  |  Lock biases: {LOCK_BIASES}")
     print(f"Extrinsics lock: {LOCK_EXTRINSICS} | Optimize pitch only: {OPTIMIZE_PITCH_ONLY} | Extrinsics prior λ={LAMBDA_EXTRINSIC_PRIOR}")
     print(f"Jacobi preconditioning: {USE_JACOBI_PRECOND}")
+    if NO_RADAR:
+        print(f"*** RADAR DISABLED (--no-radar) — IMU/MoCap-only trajectory ***")
     print(f"Boundary priors (START only): window={BOUNDARY_WINDOW}s")
     print(f"  λ_bnd: vel={LAMBDA_BOUNDARY_VEL} pos={LAMBDA_BOUNDARY_POS} ori={LAMBDA_BOUNDARY_ORI} acc={LAMBDA_BOUNDARY_ACCEL} gyr={LAMBDA_BOUNDARY_GYRO}")
     print(f"  λ_ori_reg: {LAMBDA_ORI_REG}  λ_bias_prior: accel={LAMBDA_BIAS_PRIOR_ACCEL} gyro={LAMBDA_BIAS_PRIOR_GYRO}")
@@ -1962,9 +1970,64 @@ def main():
         v0 = boundary_vel_priors[0][1]
         print(f"    Start vel GT: [{v0[0]:.2f}, {v0[1]:.2f}, {v0[2]:.2f}] m/s (|v|={np.linalg.norm(v0):.2f})")
     
+    # ==================== Test 1: --no-radar flag ====================
+    solver_radar_frames = radar_frames
+    if NO_RADAR:
+        print(f"\n  *** --no-radar: Disabling all {len(radar_frames)} radar frames ***")
+        solver_radar_frames = []
+
+    # ==================== Test 3: Initial residual statistics ====================
+    print(f"\n{'Initial Radar Residual Statistics (at MoCap GT)':=^80}")
+    n_huber_suppressed = 0
+    n_total_pts = 0
+    init_residuals = []
+    for frame in radar_frames:
+        t = frame.timestamp
+        try:
+            v_world = initial_state.get_position(t, derivative=1)
+            t_rel_ori = t - initial_state.ori_bspline.t_ref
+            delta = initial_state.ori_bspline(t_rel_ori, derivative=0)
+            delta_dot = initial_state.ori_bspline(t_rel_ori, derivative=1)
+            omega_nominal = initial_state.get_nominal_angular_velocity(t_rel_ori)
+            omega, _, _ = compute_omega_and_jacobians(omega_nominal, delta, delta_dot)
+            R_nominal = initial_state.get_nominal_rotation(t_rel_ori)
+            R_nom_quat = Rot3.from_rotation_matrix(R_nominal)
+            R_bs_quat = Rot3.from_rotation_matrix(sensor_rotation)
+        except Exception:
+            continue
+
+        for i in range(frame.num_points()):
+            p_s = frame.positions[i]
+            range_val = frame.ranges[i] if frame.ranges is not None else np.linalg.norm(p_s)
+            if range_val < MIN_RANGE:
+                continue
+            u_sensor = p_s / np.linalg.norm(p_s)
+            v_meas = frame.velocities[i]
+
+            # Sign fix: pass -v_meas (TI convention: v_meas = -dot(u,v))
+            res, _, _, _, _ = radar_residual_with_jacobians(
+                v_world, R_nom_quat, delta, omega,
+                u_sensor, TRANSLATION, R_bs_quat,
+                -v_meas, 1e-10
+            )
+            init_residuals.append(res[0])
+            n_total_pts += 1
+            if abs(res[0]) > HUBER_DELTA:
+                n_huber_suppressed += 1
+
+    init_residuals = np.array(init_residuals) if init_residuals else np.array([0.0])
+    print(f"  Total radar points: {n_total_pts}")
+    print(f"  Mean residual:      {init_residuals.mean():+.4f} m/s")
+    print(f"  Std residual:       {init_residuals.std():.4f} m/s")
+    print(f"  Median |residual|:  {np.median(np.abs(init_residuals)):.4f} m/s")
+    print(f"  Max |residual|:     {np.abs(init_residuals).max():.4f} m/s")
+    print(f"  Huber-suppressed:   {n_huber_suppressed}/{n_total_pts} ({100*n_huber_suppressed/max(1,n_total_pts):.1f}%) with |r| > {HUBER_DELTA} m/s")
+    if abs(init_residuals.mean()) > 0.5:
+        print(f"  WARNING: Large mean residual suggests sign convention mismatch!")
+
     optimized_state = solve_trajectory_nonlinear(
         initial_state=initial_state,
-        radar_frames=radar_frames,
+        radar_frames=solver_radar_frames,
         imu_data=imu_data,
         sensor_translation=TRANSLATION,
         sensor_rotation=sensor_rotation,
@@ -2139,124 +2202,182 @@ def main():
     
     # ==================== Plotting ====================
     print(f"\n{'Generating Plots':-^80}")
-    
-    fig, axes = plt.subplots(3, 3, figsize=(18, 15))
-    fig.suptitle('Nonlinear Solver Validation Results', fontsize=14, fontweight='bold')
-    
+
     time_rel = eval_times - eval_times[0]
-    
-    # 1. Trajectory (X-Y)
-    ax = axes[0, 0]
-    ax.plot(mocap_positions_eval[:, 0], mocap_positions_eval[:, 1], 'b-', label='MoCap', linewidth=2)
-    ax.plot(estimated_positions[:, 0], estimated_positions[:, 1], 'r--', label='Estimated', linewidth=2)
-    # ax.scatter(optimized_state.pos_bspline.control_points[:, 0],
-    #            optimized_state.pos_bspline.control_points[:, 1],
-    #            c='orange', marker='x', s=30, label='Control Points')
-    ax.set_xlabel('X (m)')
-    ax.set_ylabel('Y (m)')
-    ax.set_title('Trajectory (X-Y Plane)')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    # # Compute axis limits from the larger of ground truth / estimated trajectory
-    # all_traj = np.vstack([mocap_positions_eval[:, :2], estimated_positions[:, :2]])
-    # x_min, x_max = all_traj[:, 0].min(), all_traj[:, 0].max()
-    # y_min, y_max = all_traj[:, 1].min(), all_traj[:, 1].max()
-    # x_pad = max(0.1, (x_max - x_min) * 0.08)
-    # y_pad = max(0.1, (y_max - y_min) * 0.08)
-    # ax.set_xlim(x_min - x_pad, x_max + x_pad)
-    # ax.set_ylim(y_min - y_pad, y_max + y_pad)
-    ax.axis('equal')
-    
-    # 2. Position error
-    ax = axes[0, 1]
-    ax.plot(time_rel, pos_errors, 'r-', linewidth=2)
-    ax.axhline(pos_errors.mean(), color='b', linestyle='--', label=f'Mean: {pos_errors.mean():.4f}m')
-    ax.set_xlabel('Time (s)')
-    ax.set_ylabel('Position Error (m)')
-    ax.set_title('Position Error')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    # 3. Orientation error
-    ax = axes[0, 2]
-    ax.plot(time_rel, rot_errors, 'g-', linewidth=2)
-    ax.axhline(rot_errors.mean(), color='b', linestyle='--', label=f'Mean: {rot_errors.mean():.4f}°')
-    ax.set_xlabel('Time (s)')
-    ax.set_ylabel('Orientation Error (deg)')
-    ax.set_title('Orientation Error')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    # 4. Velocity comparison
-    ax = axes[1, 0]
-    mocap_speeds = np.linalg.norm(mocap_velocities, axis=1)
-    est_speeds = np.linalg.norm(estimated_velocities, axis=1)
-    ax.plot(time_rel, mocap_speeds, 'b-', label='MoCap |v|', linewidth=2, alpha=0.7)
-    ax.plot(time_rel, est_speeds, 'r--', label='Est |v|', linewidth=2, alpha=0.7)
-    # Per-axis velocity comparison (thin lines)
-    for dim, (lbl, color) in enumerate(zip(['x', 'y', 'z'], ['tab:blue', 'tab:green', 'tab:purple'])):
-        ax.plot(time_rel, mocap_velocities[:, dim], color=color, linewidth=0.8, alpha=0.5, label=f'MoCap v_{lbl}')
-        ax.plot(time_rel, estimated_velocities[:, dim], color=color, linewidth=0.8, alpha=0.5, linestyle='--')
-    ax.set_xlabel('Time (s)')
-    ax.set_ylabel('Velocity (m/s)')
-    ax.set_title('Velocity: |v| + per-axis')
-    ax.legend(fontsize=6, ncol=2)
-    ax.grid(True, alpha=0.3)
-    
-    # 5. Velocity error
-    ax = axes[1, 1]
-    ax.plot(time_rel, vel_errors, 'r-', linewidth=2)
-    ax.axhline(vel_errors.mean(), color='b', linestyle='--', label=f'Mean: {vel_errors.mean():.4f}m/s')
-    ax.set_xlabel('Time (s)')
-    ax.set_ylabel('Velocity Error (m/s)')
-    ax.set_title('Velocity Error')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    # 6. Acceleration comparison
-    ax = axes[1, 2]
+
+    # --- Derived quantities for new plots ---
+    pos_diff = estimated_positions - mocap_positions_eval
+    accel_diff = estimated_accelerations - mocap_accelerations
+    accel_errors_per_axis = accel_diff  # alias for clarity
+
+    mocap_euler = np.degrees(Rotation.from_matrix(mocap_rotations_eval).as_euler('xyz'))
+    est_euler = np.degrees(Rotation.from_matrix(estimated_rotations).as_euler('xyz'))
+    euler_diff = ((est_euler - mocap_euler) + 180) % 360 - 180  # wrap to [-180, 180]
+
+    mocap_rot_mag = np.degrees(np.linalg.norm(
+        Rotation.from_matrix(mocap_rotations_eval).as_rotvec(), axis=1))
+    est_rot_mag = np.degrees(np.linalg.norm(
+        Rotation.from_matrix(estimated_rotations).as_rotvec(), axis=1))
+
+    mocap_ang_vel = np.array([s.angular_velocity for s in agiros_eval])
+    est_ang_vel = np.array([optimized_state.get_angular_velocity(t) for t in eval_times])
+    ang_vel_diff = est_ang_vel - mocap_ang_vel
+    ang_vel_abs_error = np.linalg.norm(ang_vel_diff, axis=1)
+    mocap_ang_speed = np.linalg.norm(mocap_ang_vel, axis=1)
+    est_ang_speed = np.linalg.norm(est_ang_vel, axis=1)
+
+    mocap_speed = np.linalg.norm(mocap_velocities, axis=1)
+    est_speed = np.linalg.norm(estimated_velocities, axis=1)
     mocap_accel_norm = np.linalg.norm(mocap_accelerations, axis=1)
     est_accel_norm = np.linalg.norm(estimated_accelerations, axis=1)
-    ax.plot(time_rel, mocap_accel_norm, 'b-', label='MoCap', linewidth=1, alpha=0.7)
-    ax.plot(time_rel, est_accel_norm, 'r--', label='Estimated', linewidth=1, alpha=0.7)
-    ax.set_xlabel('Time (s)')
-    ax.set_ylabel('Acceleration (m/s²)')
-    ax.set_title('Acceleration Magnitude (post-fit vs diff(MoCap vel))')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    # 7. Acceleration error
-    ax = axes[2, 0]
-    ax.plot(time_rel, accel_errors, 'r-', linewidth=1)
-    ax.axhline(accel_errors.mean(), color='b', linestyle='--', label=f'Mean: {accel_errors.mean():.4f}m/s²')
-    ax.set_xlabel('Time (s)')
-    ax.set_ylabel('Acceleration Error (m/s²)')
-    ax.set_title('Acceleration Error (vs diff(MoCap vel))')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    # 8. Acceleration per-axis comparison
-    ax = axes[2, 1]
-    labels = ['X', 'Y', 'Z']
-    colors = ['r', 'g', 'b']
-    for i, (lbl, clr) in enumerate(zip(labels, colors)):
-        ax.plot(time_rel, mocap_accelerations[:, i], f'{clr}-', alpha=0.5, linewidth=1, label=f'MoCap {lbl}')
-        ax.plot(time_rel, estimated_accelerations[:, i], f'{clr}--', alpha=0.7, linewidth=1, label=f'Est {lbl}')
-    ax.set_xlabel('Time (s)')
-    ax.set_ylabel('Acceleration (m/s²)')
-    ax.set_title('Acceleration per Axis (vs diff(MoCap vel))')
-    ax.legend(fontsize=7, ncol=2)
-    ax.grid(True, alpha=0.3)
-    
-    # 9. Error summary + hyperparameters (for reproducibility)
-    accel_rmse = np.sqrt(np.mean(accel_errors**2))
-    ax = axes[2, 2]
+    accel_abs_error = np.linalg.norm(accel_diff, axis=1)
+    accel_rmse = np.sqrt(np.mean(accel_abs_error**2))
+    ang_vel_rmse = np.sqrt(np.mean(ang_vel_abs_error**2))
+
+    axis_labels = ['x', 'y', 'z']
+    euler_names = ['roll', 'pitch', 'yaw']
+
+    # Style constants
+    AXIS_COLORS = ['#c85050', '#4e9e4e', '#4878c8']  # muted r/g/b for x/y/z per-axis
+    C_MOCAP = 'royalblue'    # absolute ground truth
+    C_EST   = 'crimson'      # absolute estimated
+    LW_AXIS = 0.9            # per-axis line width
+    LW_ABS  = 2.0            # absolute curve line width
+    A_AXIS  = 0.7            # per-axis alpha
+
+    def _comparison(a, t, mocap_data, est_data, mocap_abs, est_abs,
+                    axis_labels, ylabel, abs_label_pair):
+        """Plot per-axis (thin, muted) + absolute (thick, blue/red) comparison."""
+        for i, lbl in enumerate(axis_labels):
+            a.plot(t, mocap_data[:, i], color=AXIS_COLORS[i], linewidth=LW_AXIS,
+                   alpha=A_AXIS, label=f'MoCap {lbl}')
+            a.plot(t, est_data[:, i], color=AXIS_COLORS[i], linewidth=LW_AXIS,
+                   alpha=A_AXIS, linestyle='--')
+        a.plot(t, mocap_abs, color=C_MOCAP, linewidth=LW_ABS, label=f'MoCap {abs_label_pair}')
+        a.plot(t, est_abs,   color=C_EST,   linewidth=LW_ABS, linestyle='--',
+               label=f'Est {abs_label_pair}')
+        a.set_ylabel(ylabel); a.legend(fontsize=6, ncol=2); a.grid(True, alpha=0.3)
+
+    def _error(a, t, per_axis_diff, abs_error, rmse, axis_labels, ylabel, abs_label):
+        """Plot per-axis errors (thin, muted) + absolute error (thick black) + RMSE line."""
+        for i, lbl in enumerate(axis_labels):
+            a.plot(t, per_axis_diff[:, i], color=AXIS_COLORS[i], linewidth=LW_AXIS,
+                   alpha=A_AXIS, label=f'Δ{lbl}')
+        a.plot(t, abs_error, color='k', linewidth=LW_ABS, label=f'|{abs_label}|')
+        a.axhline(rmse, color='royalblue', linewidth=1.5, linestyle='--',
+                  label=f'RMSE: {rmse:.4f}')
+        a.axhline(0, color='gray', linewidth=0.5, linestyle=':')
+        a.set_ylabel(ylabel); a.legend(fontsize=7); a.grid(True, alpha=0.3)
+
+    # --- Figure layout: 5 rows x 3 cols, rows 1-4 col 2 merged for summary ---
+    fig = plt.figure(figsize=(21, 28))
+    fig.suptitle(f'Nonlinear Solver Validation — {bag_key}', fontsize=14, fontweight='bold')
+    gs = fig.add_gridspec(5, 3, hspace=0.45, wspace=0.35)
+
+    axd = {}
+    for row in range(5):
+        for col in range(2):
+            axd[(row, col)] = fig.add_subplot(gs[row, col])
+    axd[(0, 2)] = fig.add_subplot(gs[0, 2])
+    ax_summary = fig.add_subplot(gs[1:, 2])
+
+    pos_rmse  = np.sqrt(np.mean(pos_errors**2))
+    vel_rmse  = np.sqrt(np.mean(vel_errors**2))
+    ori_rmse  = np.sqrt(np.mean(rot_errors**2))
+
+    # --- Row 0: Position ---
+    # [0,0] X-Y trajectory
+    a = axd[(0, 0)]
+    a.plot(mocap_positions_eval[:, 0], mocap_positions_eval[:, 1],
+           color=C_MOCAP, linewidth=LW_ABS, label='MoCap')
+    a.plot(estimated_positions[:, 0], estimated_positions[:, 1],
+           color=C_EST, linewidth=LW_ABS, linestyle='--', label='Estimate')
+    a.set_xlabel('X (m)'); a.set_ylabel('Y (m)')
+    a.set_title('Trajectory (X-Y)')
+    a.legend(fontsize=8); a.grid(True, alpha=0.3); a.axis('equal')
+
+    # [0,1] X, Y, Z positions over time
+    a = axd[(0, 1)]
+    _comparison(a, time_rel, mocap_positions_eval, estimated_positions,
+                np.linalg.norm(mocap_positions_eval, axis=1),
+                np.linalg.norm(estimated_positions, axis=1),
+                axis_labels, 'Position (m)', '|pos|')
+    a.set_xlabel('Time (s)'); a.set_title('Position vs Time')
+
+    # [0,2] Per-axis position error + absolute + RMSE
+    a = axd[(0, 2)]
+    _error(a, time_rel, pos_diff, pos_errors, pos_rmse, axis_labels, 'Error (m)', 'err')
+    a.set_xlabel('Time (s)'); a.set_title('Position Error per Axis + Abs')
+
+    # --- Row 1: Orientation ---
+    # [1,0] Euler angles (roll/pitch/yaw) estimate + MoCap; rotation magnitude on twin axis
+    a = axd[(1, 0)]
+    for i, lbl in enumerate(euler_names):
+        a.plot(time_rel, mocap_euler[:, i], color=AXIS_COLORS[i], linewidth=LW_AXIS,
+               alpha=A_AXIS, label=f'MoCap {lbl}')
+        a.plot(time_rel, est_euler[:, i], color=AXIS_COLORS[i], linewidth=LW_AXIS,
+               alpha=A_AXIS, linestyle='--')
+    a2 = a.twinx()
+    a2.plot(time_rel, mocap_rot_mag, color=C_MOCAP, linewidth=LW_ABS,
+            linestyle='--', alpha=0.8, label='|R| MoCap')
+    a2.plot(time_rel, est_rot_mag,   color=C_EST,   linewidth=LW_ABS,
+            linestyle='--', alpha=0.8, label='|R| Est')
+    a2.set_ylabel('Rotation magnitude (deg)', fontsize=7)
+    a2.legend(fontsize=6, loc='lower right')
+    a.set_xlabel('Time (s)'); a.set_ylabel('Euler angle (deg)')
+    a.set_title('Orientation (Euler xyz) + Abs Magnitude')
+    a.legend(fontsize=6, ncol=2); a.grid(True, alpha=0.3)
+
+    # [1,1] Per-axis euler error + absolute orientation error + RMSE
+    a = axd[(1, 1)]
+    _error(a, time_rel, euler_diff, rot_errors, ori_rmse, euler_names, 'Error (deg)', 'Δori')
+    a.set_xlabel('Time (s)'); a.set_title('Orientation Error per Axis + Abs')
+
+    # --- Row 2: Linear Velocity ---
+    # [2,0] Per-axis + absolute velocity comparison
+    a = axd[(2, 0)]
+    _comparison(a, time_rel, mocap_velocities, estimated_velocities,
+                mocap_speed, est_speed, axis_labels, 'Velocity (m/s)', '|v|')
+    a.set_xlabel('Time (s)'); a.set_title('Linear Velocity Comparison')
+
+    # [2,1] Per-axis velocity error + absolute + RMSE
+    a = axd[(2, 1)]
+    _error(a, time_rel, vel_diff, vel_errors, vel_rmse, axis_labels, 'Error (m/s)', 'Δv')
+    a.set_xlabel('Time (s)'); a.set_title('Linear Velocity Error per Axis + Abs')
+
+    # --- Row 3: Angular Velocity ---
+    # [3,0] Per-axis + absolute angular velocity comparison
+    a = axd[(3, 0)]
+    _comparison(a, time_rel, mocap_ang_vel, est_ang_vel,
+                mocap_ang_speed, est_ang_speed, axis_labels, 'Angular vel (rad/s)', '|ω|')
+    a.set_xlabel('Time (s)'); a.set_title('Angular Velocity Comparison')
+
+    # [3,1] Per-axis angular velocity error + absolute + RMSE
+    a = axd[(3, 1)]
+    _error(a, time_rel, ang_vel_diff, ang_vel_abs_error, ang_vel_rmse,
+           axis_labels, 'Error (rad/s)', 'Δω')
+    a.set_xlabel('Time (s)'); a.set_title('Angular Velocity Error per Axis + Abs')
+
+    # --- Row 4: Linear Acceleration ---
+    # [4,0] Per-axis + absolute acceleration comparison
+    a = axd[(4, 0)]
+    _comparison(a, time_rel, mocap_accelerations, estimated_accelerations,
+                mocap_accel_norm, est_accel_norm, axis_labels, 'Accel (m/s²)', '|a|')
+    a.set_xlabel('Time (s)'); a.set_title('Acceleration Comparison (vs diff(MoCap vel))')
+
+    # [4,1] Per-axis acceleration error + absolute + RMSE
+    a = axd[(4, 1)]
+    _error(a, time_rel, accel_diff, accel_abs_error, accel_rmse,
+           axis_labels, 'Error (m/s²)', 'Δa')
+    a.set_xlabel('Time (s)'); a.set_title('Acceleration Error per Axis + Abs')
+
+    # --- Summary & Config (merged rows 1-4, col 2) ---
     summary_lines = [
         f"RESULTS",
         f"  Pos  RMSE: {np.sqrt(np.mean(pos_errors**2)):.4f} m",
         f"  Vel  RMSE: {np.sqrt(np.mean(vel_errors**2)):.4f} m/s",
+        f"  AngV RMSE: {ang_vel_rmse:.4f} rad/s",
         f"  Acc  RMSE: {accel_rmse:.4f} m/s² (vs diff(MoCap vel))",
-        f"  Accel fit: IMU specific force residual",
         f"  Ori  RMSE: {np.sqrt(np.mean(rot_errors**2)):.4f}°",
         f"",
         f"INIT BIASES",
@@ -2281,17 +2402,16 @@ def main():
         f"  relin_thr={RELINEARIZE_THRESHOLD_DEG}°  imu_offset={IMU_MOCAP_OFFSET*1000:.0f}ms  radar_offset={radar_total_offset*1000:.0f}ms",
         f"  λ_ori_reg={LAMBDA_ORI_REG}  λ_bp_a={LAMBDA_BIAS_PRIOR_ACCEL}  λ_bp_g={LAMBDA_BIAS_PRIOR_GYRO}",
     ]
-    summary_text = "\n".join(summary_lines)
-    ax.text(0.02, 0.98, summary_text, transform=ax.transAxes,
-            fontsize=8, fontfamily='monospace', verticalalignment='top')
-    ax.axis('off')
-    ax.set_title('Summary & Config')
-    
-    plt.tight_layout()
+    ax_summary.text(0.02, 0.98, "\n".join(summary_lines),
+                    transform=ax_summary.transAxes,
+                    fontsize=8, fontfamily='monospace', verticalalignment='top')
+    ax_summary.axis('off')
+    ax_summary.set_title('Summary & Config')
+
     plots_dir = Path(f'plots/{bag_key}/validation')
     plots_dir.mkdir(parents=True, exist_ok=True)
     output_filename = plots_dir / f'nonlinear_solver_validation_{bag_key}_{timestamp_str}.png'
-    plt.savefig(output_filename, dpi=150, bbox_inches='tight')
+    fig.savefig(output_filename, dpi=150, bbox_inches='tight')
     print(f"Saved: {output_filename}")
 
     # ==================== Multi-View Trajectory Plot ====================

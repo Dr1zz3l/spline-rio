@@ -884,7 +884,9 @@ def predict_doppler_velocity(
     # Compute Doppler as dot product
     predicted_dopplers = np.sum(u_body * v_ant_body, axis=1)
     
-    return predicted_dopplers
+    # TI IWR6843 convention: v_meas = -dot(u, v) (positive = receding target)
+    # Confirmed by diagnose_doppler_sign.py: corr(v_meas, -dot) = +0.85 with flip=OFF
+    return -predicted_dopplers
 
 
 def compute_doppler_residuals(

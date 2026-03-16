@@ -70,7 +70,8 @@ def radar_residual(
     u_body = R_body_sensor * u_sensor
 
     # Predicted Doppler velocity
-    v_pred = u_body.dot(v_ant)
+    # TI IWR6843 convention: v_meas = -dot(u, v) (positive = receding target)
+    v_pred = -u_body.dot(v_ant)
 
     return sf.V1(v_meas - v_pred)
 
@@ -447,11 +448,12 @@ class Rot3:
           f"J_v={result[1].shape}, J_delta={result[2].shape}, "
           f"J_omega={result[3].shape}, J_Rbs={result[4].shape}")
 
-    # Verify: v_world=[1,0,0], R=I, u=[1,0,0] => v_pred=1.0, residual=0.5-1.0=-0.5
-    assert abs(result[0][0] - (-0.5)) < 1e-6, f"Radar residual sanity check failed: {result[0]}"
+    # Verify: v_world=[1,0,0], R=I, u=[1,0,0] => v_pred=-dot=-1.0, residual=0.5-(-1.0)=1.5
+    assert abs(result[0][0] - 1.5) < 1e-6, f"Radar residual sanity check failed: {result[0]}"
 
-    # Verify J_v_world: ∂r/∂v_world should be -u_body^T R^T (with R=I, u=[1,0,0] => [-1,0,0])
-    assert abs(result[1][0] - (-1.0)) < 1e-6, f"J_v_world[0] should be -1: {result[1]}"
+    # Verify J_v_world: ∂r/∂v_world = +u_body^T R^T (with R=I, u=[1,0,0] => [+1,0,0])
+    # (negated v_pred means ∂r/∂v = +∂dot/∂v = u_body^T R^T)
+    assert abs(result[1][0] - 1.0) < 1e-6, f"J_v_world[0] should be +1: {result[1]}"
 
     # Test accel
     result_accel = mod.accel_residual_with_jacobians(

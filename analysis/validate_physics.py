@@ -226,7 +226,7 @@ def run_physics_diagnostics():
                     v_pred = ((v_pred + V_MAX_UNAMBIGUOUS) % (2 * V_MAX_UNAMBIGUOUS)) - V_MAX_UNAMBIGUOUS
                 preds.append(v_pred)
                 meas.append(frame.velocities[i])
-        preds, meas = np.array(preds), np.array(meas)
+        preds, meas = np.array(preds), np.array(meas) #!!!
         if len(preds) < 10:
             return 0.0, preds, meas, meas - preds
         corr = np.corrcoef(meas, preds)[0, 1]

@@ -1,6 +1,6 @@
 huber_delta: 1.0
 lambda_accel: 0.01
-lambda_gyro: 1.0
+lambda_gyro: 0.01
 lambda_snap: 1.0e-6
 bspline_degree: 5
 n_control_points: 20

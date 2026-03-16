@@ -1,0 +1,31 @@
+# Rosbags (large binary files)
+rosbags/
+
+# Plot outputs
+plots/
+
+# Python virtualenv
+analysis/.venv/
+**/.venv/
+
+# Python cache
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+# Docker build artifacts
+docker/
+
+# ROS build artifacts
+mmwave_ti_ros/ros1_driver/build/
+mmwave_ti_ros/ros1_driver/devel/
+mmwave_ti_ros/ros1_driver/install/
+**/*.o
+**/*.a
+
+# Large generated files
+analysis/codegen/generated_jacobians.py
+
+# Temporary/scratch files
+**/*.png
+**/*.log

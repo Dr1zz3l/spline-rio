@@ -15,7 +15,8 @@ flipped:
   - circle_fwd
   - loopings
   - backflips
-  - slow_racing_best_velocity
+  # - slow_racing_best_velocity
+  # - fast_racing_best_velocity
 
 # (start_offset_sec, duration_sec) for each named flight window
 timing:
@@ -28,4 +29,4 @@ timing:
   circle_best_velocity:                 [22.2, 8.4]
   fast_racing_1_velocity_no_clustering: [16.9, 18.1]
   fast_racing_best_velocity:            [19.1, 18.0]
-  slow_racing_best_velocity:            [19.1, 25.8]
+  slow_racing_best_velocity:            [19.1, 10]# 25.8]
