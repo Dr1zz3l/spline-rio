@@ -6,7 +6,7 @@ dt_ori: 0.05               # Knot spacing for orientation spline (seconds)
 # Radar
 huber_delta: 1.0           # Huber threshold (m/s); must be >= 0.63 m/s Doppler bin size
 min_range: 0.2             # Minimum range filter (m)
-v_max: 4.99                # ±m/s velocity unambiguity (6843AOP_3d.cfg; use 3.84 for best_velocity bags)
+# v_max moved to config/bags.yaml radar_config (per-bag: 4.99 for default, 3.84 for best_velocity bags)
 
 # IMU weights
 lambda_accel: 0.01
@@ -35,7 +35,7 @@ lambda_boundary_gyro: 1000.0
 
 # Optimizer
 max_iterations: 20
-relinearize_threshold_deg: 10.0   # Re-linearize SO(3) spline when max|delta| exceeds this
+relinearize_threshold_deg: 1.0   # Re-linearize SO(3) spline when max|delta| exceeds this
 use_phase2_init: false             # Initialize position from Phase 2 linear solver
 
 # Extrinsics (radar-to-body)

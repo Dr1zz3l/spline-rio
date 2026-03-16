@@ -558,6 +558,7 @@ def compute_jacobian_analytical(
     lock_extrinsics: bool = False,
     optimize_pitch_only: bool = True,
     lambda_extrinsic_prior: float = 0.0,
+    v_max: float = None,
 ) -> Tuple[sparse.csr_matrix, np.ndarray]:
     """
     Compute Jacobian and residual vector analytically using SymForce-generated functions.
@@ -637,6 +638,16 @@ def compute_jacobian_analytical(
             )
             
             r = res[0]  # scalar residual
+
+            # Doppler unwrapping: shift r by k * 2*v_max if the predicted velocity
+            # aliases outside the unambiguous range. Jacobians are unchanged since
+            # the offset k * 2*v_max is constant w.r.t. state variables.
+            if v_max is not None:
+                v_pred = v_meas - r  # r = v_meas - v_pred → v_pred = v_meas - r
+                k = round((v_pred - v_meas) / (2.0 * v_max))
+                if k != 0:
+                    r += k * 2.0 * v_max
+
             w = huber_weight(r, delta=huber_delta)
             sqrt_w = np.sqrt(w)
             
@@ -1106,6 +1117,7 @@ def solve_trajectory_nonlinear(
     lock_extrinsics: bool = False,
     optimize_pitch_only: bool = True,
     lambda_extrinsic_prior: float = 0.0,
+    v_max: float = None,
 ) -> TrajectoryState:
     """
     Solve for optimal trajectory using Levenberg-Marquardt.
@@ -1126,6 +1138,10 @@ def solve_trajectory_nonlinear(
         print(f"Max iterations: {max_iterations} (re-linearize when delta > {relinearize_threshold_deg}°)")
         print(f"Huber delta (radar): {huber_delta}")
         print(f"Huber delta (accel): {huber_delta_accel if huber_delta_accel > 0 else 'OFF (L2)'}")
+        if v_max is not None:
+            print(f"Doppler unwrapping: ON (v_max={v_max:.2f} m/s)")
+        else:
+            print(f"Doppler unwrapping: OFF")
         print(f"Lambda accel: {lambda_accel}")
         print(f"Lambda gyro: {lambda_gyro}")
         print(f"Lambda snap pos: {lambda_snap_pos}")
@@ -1204,8 +1220,9 @@ def solve_trajectory_nonlinear(
             lock_extrinsics=lock_extrinsics,
             optimize_pitch_only=optimize_pitch_only,
             lambda_extrinsic_prior=lambda_extrinsic_prior,
+            v_max=v_max,
         )
-    
+
     lambda_lm = 1e-3
     prev_cost = None
     
@@ -1489,6 +1506,7 @@ _cfg = load_config()
 BAGS = _cfg['bags']['bags']
 FLIPPED_BAGS = set(_cfg['bags']['flipped'])
 _BAG_TIMING_CFG = _cfg['bags']['timing']
+_RADAR_CFG = _cfg['bags'].get('radar_config', {})
 _EXTRINSICS_CFG = _cfg['extrinsics']
 _SOLVER_CFG = _cfg['solver']
 del _cfg
@@ -1574,6 +1592,8 @@ def main():
     RELINEARIZE_THRESHOLD_DEG = _SOLVER_CFG['relinearize_threshold_deg']
     USE_JACOBI_PRECOND = '--precond' in sys.argv  # CLI override
     NO_RADAR = '--no-radar' in sys.argv  # CLI override
+    NO_UNWRAP = '--no-unwrap' in sys.argv  # CLI override: disable Doppler unwrapping
+    USE_UNWRAP = not NO_UNWRAP
 
     # Boundary priors: pin spline state at START to MoCap ground truth (no end priors)
     LAMBDA_BOUNDARY_VEL = _SOLVER_CFG['lambda_boundary_vel']
@@ -1649,7 +1669,9 @@ def main():
         return
     
     # Aliasing risk check (uses MoCap ground truth to detect wrapped Doppler)
-    V_MAX = _SOLVER_CFG['v_max']  # ±m/s unambiguous velocity (from config/solver.yaml)
+    # Per-bag v_max: bags with "best_velocity" in name use 3.84 m/s config
+    _rc = _RADAR_CFG.get('best_velocity' if 'best_velocity' in bag_key else 'default', {})
+    V_MAX = _rc.get('v_max', 4.99)  # ±m/s unambiguous velocity (from config/bags.yaml)
     aliasing_info = compute_aliasing_summary(
         agiros_states, radar_frames,
         TRANSLATION, SENSOR_ROTATION,
@@ -2058,6 +2080,7 @@ def main():
         lock_extrinsics=LOCK_EXTRINSICS,
         optimize_pitch_only=OPTIMIZE_PITCH_ONLY,
         lambda_extrinsic_prior=LAMBDA_EXTRINSIC_PRIOR,
+        v_max=V_MAX if USE_UNWRAP else None,
     )
     
     # ==================== Evaluate Results ====================

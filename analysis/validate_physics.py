@@ -25,6 +25,7 @@ from rosbag_loader.loader import load_bag_topics
 from radar_velocity_utils import (
     rotation_matrix_from_euler,
     predict_doppler_velocity,
+    unwrap_doppler,
 )
 from config_loader import load_config
 
@@ -100,7 +101,13 @@ def run_physics_diagnostics():
 
     solver_cfg = cfg['solver']
     MIN_RANGE = solver_cfg['min_range']
-    V_MAX_UNAMBIGUOUS = solver_cfg['v_max']
+    # Per-bag v_max: bags with "best_velocity" in their name use 3.84 m/s config
+    radar_cfg = cfg['bags'].get('radar_config', {})
+    if 'best_velocity' in bag_key:
+        _rc = radar_cfg.get('best_velocity', {})
+    else:
+        _rc = radar_cfg.get('default', {})
+    V_MAX_UNAMBIGUOUS = _rc.get('v_max', 4.99)
     g_world = np.array([0, 0, -9.81])
 
     # ==================== Load Data ====================
@@ -202,9 +209,14 @@ def run_physics_diagnostics():
     # ==================== RADAR DOPPLER CHECK (with time-offset sweep) ==========
     print("\n--- Radar Doppler Check ---")
 
-    def radar_correlation(dt_offset, wrap_alias=False):
+    def radar_correlation(dt_offset, wrap_alias=False, unwrap=False):
         """Compute correlation between measured and predicted Doppler with a time offset.
-        If wrap_alias=True, wrap predicted values to [-V_MAX, +V_MAX] to simulate aliasing."""
+
+        Modes:
+          wrap_alias=False, unwrap=False: raw v_pred vs raw v_meas
+          wrap_alias=True:                wrap v_pred to [-V_MAX,+V_MAX] vs v_meas
+          unwrap=True:                    unwrap v_meas toward raw v_pred vs raw v_pred
+        """
         preds, meas = [], []
         for frame in radar_frames:
             t = frame.timestamp + dt_offset
@@ -219,50 +231,74 @@ def run_physics_diagnostics():
                 r = frame.ranges[i] if frame.ranges is not None else np.linalg.norm(p_s)
                 if r < MIN_RANGE:
                     continue
-                v_pred = predict_doppler_velocity( 
+                v_pred = predict_doppler_velocity(
                     v_world, omega_body, R_wb,
                     p_s.reshape(1, 3), sensor_translation, sensor_rotation
                 )[0]
+                v_meas_i = frame.velocities[i]
                 if wrap_alias:
                     v_pred = ((v_pred + V_MAX_UNAMBIGUOUS) % (2 * V_MAX_UNAMBIGUOUS)) - V_MAX_UNAMBIGUOUS
                 preds.append(v_pred)
-                meas.append(frame.velocities[i])
-        preds, meas = np.array(preds), np.array(meas) #!!!
+                meas.append(v_meas_i)
+        preds = np.array(preds)
+        meas  = np.array(meas)
         if len(preds) < 10:
             return 0.0, preds, meas, meas - preds
+        if unwrap:
+            meas = unwrap_doppler(meas, preds, V_MAX_UNAMBIGUOUS)
         corr = np.corrcoef(meas, preds)[0, 1]
         return corr, preds, meas, meas - preds
 
-    # Sweep time offsets to find best alignment — try both raw and alias-wrapped
+    # Sweep time offsets to find best alignment — try raw, alias-wrapped, and unwrapped
     offsets = np.linspace(-0.4, 0.4, 61)
     corrs_raw = []
     corrs_alias = []
+    corrs_unwrap = []
     for dt in offsets:
-        c_raw, _, _, _ = radar_correlation(dt, wrap_alias=False)
-        c_alias, _, _, _ = radar_correlation(dt, wrap_alias=True)
+        c_raw,    _, _, _ = radar_correlation(dt, wrap_alias=False, unwrap=False)
+        c_alias,  _, _, _ = radar_correlation(dt, wrap_alias=True,  unwrap=False)
+        c_unwrap, _, _, _ = radar_correlation(dt, wrap_alias=False, unwrap=True)
         corrs_raw.append(c_raw)
         corrs_alias.append(c_alias)
-    corrs_raw = np.array(corrs_raw)
+        corrs_unwrap.append(c_unwrap)
+    corrs_raw   = np.array(corrs_raw)
     corrs_alias = np.array(corrs_alias)
+    corrs_unwrap = np.array(corrs_unwrap)
 
-    best_idx_raw = np.argmax(corrs_raw)
+    best_idx_raw   = np.argmax(corrs_raw)
     best_idx_alias = np.argmax(corrs_alias)
-    print(f"  Time-offset sweep (raw):     best offset = {offsets[best_idx_raw]*1000:.1f} ms  (corr = {corrs_raw[best_idx_raw]:.4f})")
-    print(f"  Time-offset sweep (aliased): best offset = {offsets[best_idx_alias]*1000:.1f} ms  (corr = {corrs_alias[best_idx_alias]:.4f})")
-    print(f"  V_MAX_UNAMBIGUOUS = {V_MAX_UNAMBIGUOUS:.2f} m/s (from radar config)")
+    best_idx_unwrap = np.argmax(corrs_unwrap)
+    print(f"  V_MAX_UNAMBIGUOUS = {V_MAX_UNAMBIGUOUS:.2f} m/s (from radar config, bag_key='{bag_key}')")
+    print(f"  Time-offset sweep (raw):      best offset = {offsets[best_idx_raw]*1000:.1f} ms  (corr = {corrs_raw[best_idx_raw]:.4f})")
+    print(f"  Time-offset sweep (aliased):  best offset = {offsets[best_idx_alias]*1000:.1f} ms  (corr = {corrs_alias[best_idx_alias]:.4f})")
+    print(f"  Time-offset sweep (unwrapped):best offset = {offsets[best_idx_unwrap]*1000:.1f} ms  (corr = {corrs_unwrap[best_idx_unwrap]:.4f})")
 
-    # Pick whichever method gives better correlation
-    if corrs_alias[best_idx_alias] > corrs_raw[best_idx_raw]:
+    # Pick whichever method gives better correlation (unwrap takes priority over alias if tied)
+    best_corrs = {
+        'raw':    corrs_raw[best_idx_raw],
+        'alias':  corrs_alias[best_idx_alias],
+        'unwrap': corrs_unwrap[best_idx_unwrap],
+    }
+    best_mode = max(best_corrs, key=best_corrs.get)
+    if best_mode == 'alias':
         best_offset = offsets[best_idx_alias]
         use_alias = True
-        print(f"  → Using ALIASED predictions (best corr = {corrs_alias[best_idx_alias]:.4f})")
+        use_unwrap = False
+        print(f"  → Using ALIASED predictions (best corr = {best_corrs['alias']:.4f})")
+    elif best_mode == 'unwrap':
+        best_offset = offsets[best_idx_unwrap]
+        use_alias = False
+        use_unwrap = True
+        print(f"  → Using UNWRAPPED measurements (best corr = {best_corrs['unwrap']:.4f})")
     else:
         best_offset = offsets[best_idx_raw]
         use_alias = False
-        print(f"  → Using RAW predictions (best corr = {corrs_raw[best_idx_raw]:.4f})")
+        use_unwrap = False
+        print(f"  → Using RAW predictions (best corr = {best_corrs['raw']:.4f})")
 
     # Re-evaluate at best offset
-    corr, pred_dopplers, meas_dopplers, residuals_radar = radar_correlation(best_offset, wrap_alias=use_alias)
+    corr, pred_dopplers, meas_dopplers, residuals_radar = radar_correlation(
+        best_offset, wrap_alias=use_alias, unwrap=use_unwrap)
     radar_times_rel = []
     for frame in radar_frames:
         t = frame.timestamp + best_offset
@@ -307,6 +343,28 @@ def run_physics_diagnostics():
         print(f"    RMSE (safe subset): {rmse_safe:.4f} m/s")
     n_aliased = np.sum(np.abs(pred_raw) > V_MAX_UNAMBIGUOUS)
     print(f"    Points with |v_pred| > {V_MAX_UNAMBIGUOUS:.1f}: {n_aliased}/{len(pred_raw)} ({100*n_aliased/len(pred_raw):.0f}%)")
+
+    # Unwrap diagnostic: compare all three modes at best_offset
+    print(f"\n  Unwrap diagnostic (at best_offset={best_offset*1000:.0f}ms):")
+    _c_raw,    _p_raw,    _m_raw,    _ = radar_correlation(best_offset, wrap_alias=False, unwrap=False)
+    _c_alias,  _p_alias,  _m_alias,  _ = radar_correlation(best_offset, wrap_alias=True,  unwrap=False)
+    _c_unwrap, _p_unwrap, _m_unwrap, _ = radar_correlation(best_offset, wrap_alias=False, unwrap=True)
+    _rmse_raw    = np.sqrt(np.mean((_m_raw    - _p_raw)**2))
+    _rmse_alias  = np.sqrt(np.mean((_m_alias  - _p_alias)**2))
+    _rmse_unwrap = np.sqrt(np.mean((_m_unwrap - _p_unwrap)**2))
+    print(f"    raw:      corr={_c_raw:.4f}  RMSE={_rmse_raw:.4f} m/s")
+    print(f"    aliased:  corr={_c_alias:.4f}  RMSE={_rmse_alias:.4f} m/s")
+    print(f"    unwrapped:corr={_c_unwrap:.4f}  RMSE={_rmse_unwrap:.4f} m/s")
+    # Count unwrapped points (k != 0) and show k distribution
+    _two_vmax = 2.0 * V_MAX_UNAMBIGUOUS
+    _k = np.round((_p_raw - _m_raw) / _two_vmax).astype(int)
+    _k_nonzero = np.sum(_k != 0)
+    if _k_nonzero > 0:
+        _k_vals, _k_counts = np.unique(_k[_k != 0], return_counts=True)
+        _k_str = ', '.join(f'k={v}: {c}' for v, c in zip(_k_vals, _k_counts))
+        print(f"    Unwrapped {_k_nonzero}/{len(_k)} points ({100*_k_nonzero/len(_k):.0f}%): {_k_str}")
+    else:
+        print(f"    No aliased points detected (all k=0)")
 
     # ==================== ACCELEROMETER CHECK ====================
     print("\n--- Accelerometer Check ---")
@@ -557,7 +615,7 @@ def run_physics_diagnostics():
     # Re-evaluate radar with combined time correction
     print(f"\n  Radar after time correction (radar offset = {best_offset*1000:.0f}ms + IMU corr = {imu_mocap_offset*1000:.0f}ms):")
     corr_radar_corrected, _, _, res_radar_corrected = radar_correlation(
-        best_offset + imu_mocap_offset, wrap_alias=use_alias)
+        best_offset + imu_mocap_offset, wrap_alias=use_alias, unwrap=use_unwrap)
     print(f"    Correlation: {corr_radar_corrected:.4f} (was {corr:.4f})")
     print(f"    RMSE: {np.sqrt(np.mean(res_radar_corrected**2)):.4f} m/s")
     print("\n--- Generating Plots ---")
@@ -591,8 +649,9 @@ def run_physics_diagnostics():
 
     # --- Plot 3: Time-Offset Sweep ---
     ax = axes[0, 2]
-    ax.plot(offsets * 1000, corrs_raw, 'b-', linewidth=2, label='Raw')
-    ax.plot(offsets * 1000, corrs_alias, 'r-', linewidth=2, label='Alias-wrapped')
+    ax.plot(offsets * 1000, corrs_raw,    'b-',  linewidth=2, label='Raw')
+    ax.plot(offsets * 1000, corrs_alias,  'r-',  linewidth=2, label='Alias-wrapped')
+    ax.plot(offsets * 1000, corrs_unwrap, 'g--', linewidth=2, label='Unwrapped meas')
     ax.axvline(best_offset * 1000, color='k', linestyle='--', label=f'Best: {best_offset*1000:.1f}ms')
     ax.set_xlabel('Time Offset (ms)'); ax.set_ylabel('Correlation')
     ax.set_title('Radar Correlation vs Time Offset'); ax.legend(fontsize=8); ax.grid(True, alpha=0.3)

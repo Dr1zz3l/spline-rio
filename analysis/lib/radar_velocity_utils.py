@@ -1174,6 +1174,27 @@ def calibrate_radar_extrinsics_and_timing(
     }
 
 
+def unwrap_doppler(v_meas: np.ndarray, v_pred: np.ndarray, v_max: float) -> np.ndarray:
+    """Unwrap aliased Doppler measurement to the alias closest to v_pred.
+
+    The radar wraps Doppler into [-v_max, +v_max].  Given a ground-truth
+    prediction v_pred, this recovers the alias k such that
+        v_unwrapped = v_meas + k * 2*v_max
+    is closest to v_pred.
+
+    Args:
+        v_meas:  Measured (possibly aliased) Doppler, shape (N,) or scalar.
+        v_pred:  Ground-truth predicted Doppler, same shape as v_meas.
+        v_max:   Maximum unambiguous radial velocity (m/s).
+
+    Returns:
+        v_unwrapped: Unwrapped measurements, same shape as v_meas.
+    """
+    two_vmax = 2.0 * v_max
+    k = np.round((v_pred - v_meas) / two_vmax)
+    return v_meas + k * two_vmax
+
+
 def compute_aliasing_summary(
     agiros_states,
     radar_frames,
