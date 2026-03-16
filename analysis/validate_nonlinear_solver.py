@@ -16,6 +16,7 @@ import numpy as np
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / 'lib'))
 import matplotlib.pyplot as plt
+import matplotlib.transforms as mtransforms
 from typing import Tuple, Optional
 from scipy import sparse
 from scipy.sparse.linalg import spsolve
@@ -2426,6 +2427,18 @@ def main():
                     fontsize=8, fontfamily='monospace', verticalalignment='top')
     ax_summary.axis('off')
     ax_summary.set_title('Summary & Config')
+
+    # --- Radar frame tick marks on all time-based subplots ---
+    # Draw small light-yellow ticks at the bottom of each time axis to show
+    # when radar frames contributed (sparse near stationary segments).
+    radar_tick_times = np.array([f.timestamp for f in solver_radar_frames]) - eval_times[0]
+    radar_tick_counts = np.array([f.num_points() for f in solver_radar_frames], dtype=float)
+    radar_tick_heights = 0.04 * radar_tick_counts / 13.5  # normalised to avg ~13.5 returns/frame
+    _time_axes = [axd[(r, c)] for r in range(5) for c in range(2) if (r, c) != (0, 0)] + [axd[(0, 2)]]
+    for _ax in _time_axes:
+        _trans = mtransforms.blended_transform_factory(_ax.transData, _ax.transAxes)
+        _ax.vlines(radar_tick_times, 0, radar_tick_heights, transform=_trans,
+                   color='#ffe566', linewidth=0.8, alpha=0.85, zorder=0)
 
     plots_dir = Path(f'plots/{bag_key}/validation')
     plots_dir.mkdir(parents=True, exist_ok=True)
