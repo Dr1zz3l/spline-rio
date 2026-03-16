@@ -35,6 +35,7 @@ from radar_velocity_utils import (
     quat_to_rotation_matrix,
     rotation_matrix_from_euler
 )
+from config_loader import load_config
 from bspline_utils import (
     UniformBSpline,
     create_uniform_bspline_from_times,
@@ -454,18 +455,13 @@ def solve_trajectory_linear(
     return x
 
 
-# Available bags
-BAGS = {
-    "original":     "rosbags/2025-12-17-16-02-22.bag",
-    "circle":       "rosbags/circle_2025-12-17-17-21-37.bag",
-    "circle_fast":  "rosbags/circle_fast_2025-12-17-17-25-34.bag",
-    "circle_fwd":   "rosbags/circle_forward_2025-12-17-17-37-38.bag",
-    "loopings":     "rosbags/circle_fast_forward_2025-12-17-17-39-49.bag",
-    "backflips":    "rosbags/backflips_2025-12-17-17-41-24.bag",
-}
-
-# Bags where the agiros body frame is rotated 180 deg in yaw
-FLIPPED_BAGS = {"circle_fwd", "backflips", "loopings"}
+_cfg = load_config()
+BAGS = _cfg['bags']['bags']
+FLIPPED_BAGS = set(_cfg['bags']['flipped'])
+_BAG_TIMING_CFG = _cfg['bags']['timing']
+_EXTRINSICS_CFG = _cfg['extrinsics']
+_SOLVER_CFG = _cfg['solver']
+del _cfg
 
 
 def main():
@@ -481,47 +477,43 @@ def main():
     else:
         BAG_PATH = bag_key
     
-    START_TIME_OFFSET = 5.0   # Skip initial hover
-    DURATION = 120.0          # Full bag
-    
-    # Extrinsics (validated in physics checks)
-    ROTATION_EULER_DEG = np.array([0.0, 30.0, 0.0])  # roll, pitch, yaw in degrees
-    
-    # Body frame flip for certain trajectory profiles
+    if bag_key in _BAG_TIMING_CFG:
+        START_TIME_OFFSET, DURATION = _BAG_TIMING_CFG[bag_key]
+    else:
+        START_TIME_OFFSET = 5.0
+        DURATION = 120.0
+
+    ROTATION_EULER_DEG = np.array(_EXTRINSICS_CFG['rotation_euler_deg'])
+    _t_base = np.array(_EXTRINSICS_CFG['translation_body_m'])
+    TIME_OFFSET = _EXTRINSICS_CFG['imu_mocap_offset_sec']
+
     FLIP_BODY_FRAME = bag_key in FLIPPED_BAGS
     if "--flip" in sys.argv:
         FLIP_BODY_FRAME = True
     if "--no-flip" in sys.argv:
         FLIP_BODY_FRAME = False
-    
+
+    R_base = rotation_matrix_from_euler(
+        np.radians(ROTATION_EULER_DEG[0]),
+        np.radians(ROTATION_EULER_DEG[1]),
+        np.radians(ROTATION_EULER_DEG[2]),
+    )
+    R_yaw_flip = rotation_matrix_from_euler(0.0, 0.0, np.pi)
     if FLIP_BODY_FRAME:
-        TRANSLATION = np.array([-0.07, 0.0, 0.0])
-        R_yaw_flip = rotation_matrix_from_euler(0.0, 0.0, np.pi)
-        R_body_from_sensor = R_yaw_flip @ rotation_matrix_from_euler(
-            np.radians(ROTATION_EULER_DEG[0]),
-            np.radians(ROTATION_EULER_DEG[1]),
-            np.radians(ROTATION_EULER_DEG[2]),
-        )
+        TRANSLATION = R_yaw_flip @ _t_base
+        R_body_from_sensor = R_yaw_flip @ R_base
         print(f"  Body frame FLIPPED (R_z(180 deg) applied) for bag '{bag_key}'")
     else:
-        TRANSLATION = np.array([0.07, 0.0, 0.0])
-        R_body_from_sensor = rotation_matrix_from_euler(
-            np.radians(ROTATION_EULER_DEG[0]),
-            np.radians(ROTATION_EULER_DEG[1]),
-            np.radians(ROTATION_EULER_DEG[2]),
-        )
-    
-    TIME_OFFSET = -0.020  # IMU-MoCap offset: -20ms
-    
-    # B-spline parameters
-    BSPLINE_DEGREE = 7  # Quintic for continuous snap
-    
-    # Regularization weights
-    LAMBDA_ACCEL = 0.001     # Balance between noise and damping
-    LAMBDA_SNAP = 0.0       # Disable snap regularization  
-    LAMBDA_POSITION = 0.0  # Position anchor to limit drift
-    
-    MIN_RANGE = 0.2
+        TRANSLATION = _t_base.copy()
+        R_body_from_sensor = R_base
+
+    BSPLINE_DEGREE = _SOLVER_CFG['bspline_degree']
+    MIN_RANGE = _SOLVER_CFG['min_range']
+
+    # Linear solver-specific regularization (separate from nonlinear solver weights)
+    LAMBDA_ACCEL = 0.001
+    LAMBDA_SNAP = 0.0
+    LAMBDA_POSITION = 0.0
     
     print(f"\n{'Configuration':-^80}")
     print(f"Bag: {bag_key} -> {BAG_PATH}")

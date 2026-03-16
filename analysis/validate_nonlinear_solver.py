@@ -1490,6 +1490,7 @@ BAGS = _cfg['bags']['bags']
 FLIPPED_BAGS = set(_cfg['bags']['flipped'])
 _BAG_TIMING_CFG = _cfg['bags']['timing']
 _EXTRINSICS_CFG = _cfg['extrinsics']
+_SOLVER_CFG = _cfg['solver']
 del _cfg
 
 # ==================== Main Validation ====================
@@ -1547,40 +1548,40 @@ def main():
         TRANSLATION = _t_base.copy()
         SENSOR_ROTATION = R_base
 
-    BSPLINE_DEGREE = 5  # Quintic for continuous snap
-    DT_POS = 0.05   # Fixed knot spacing for position spline (seconds)
-    DT_ORI = 0.05   # Fixed knot spacing for orientation spline (seconds)
+    BSPLINE_DEGREE = _SOLVER_CFG['bspline_degree']
+    DT_POS = _SOLVER_CFG['dt_pos']
+    DT_ORI = _SOLVER_CFG['dt_ori']
 
-    # Regularization weights
-    LAMBDA_ACCEL = 0.01     # Accelerometer weight (0.05 causes ori degradation; 0.01 too weak for z-vel)
-    LAMBDA_GYRO = 1.0       # Gyroscope weight: 0.1 caused 10° ori drift, 0.5 keeps it at 3.5°
-    LAMBDA_SNAP_POS = 0.0001 # Position smoothness
-    LAMBDA_SNAP_ORI = 0.0001   # Orientation smoothness
-    LAMBDA_ORI_REG = 0.0       # Orientation regularization: disabled (penalizes delta CPs away from MoCap)
-    LAMBDA_BIAS_PRIOR = 1.0    # Fallback (overridden by per-sensor values below)
-    LAMBDA_BIAS_PRIOR_ACCEL = 1000.0  # Weak
-    LAMBDA_BIAS_PRIOR_GYRO = 10000.0    # Very Strong
-    HUBER_DELTA = 1.0  # meters/second (Huber threshold for radar; >= 0.63 m/s quantization bin)
-    HUBER_DELTA_ACCEL = 2.0  # m/s^2 (Huber threshold for accelerometer — clips spikes linearly)
-    MIN_RANGE = 0.2
-    MAX_ITERATIONS = 20  # LM iterations (need more for bias convergence + warmup)
-    USE_PHASE2_INIT = False  # Initialize position from Phase 2 linear solver
-    USE_STATIONARY_BIAS = True  # Use variance-based stationary detection for bias init
-    LOCK_BIASES = False  # Lock biases to initial values (stationary-detected or zero)
-    LOCK_EXTRINSICS = True # Lock radar extrinsics to ROTATION_EULER_DEG (don't optimize)
-    OPTIMIZE_PITCH_ONLY = True # Unobservable roll/yaw cause massive drift. Lock them.
-    LAMBDA_EXTRINSIC_PRIOR = 1.0 # Prior to penalize deviation from ROTATION_EULER_DEG
-    RELINEARIZE_THRESHOLD_DEG = 10.0  # Trigger re-linearization sooner to keep delta small
-    USE_JACOBI_PRECOND = '--precond' in sys.argv  # Toggle Jacobi preconditioning
-    NO_RADAR = '--no-radar' in sys.argv  # Test 1: disable radar to check if it contributes
+    # Regularization weights (from config/solver.yaml)
+    LAMBDA_ACCEL = _SOLVER_CFG['lambda_accel']
+    LAMBDA_GYRO = _SOLVER_CFG['lambda_gyro']
+    LAMBDA_SNAP_POS = _SOLVER_CFG['lambda_snap_pos']
+    LAMBDA_SNAP_ORI = _SOLVER_CFG['lambda_snap_ori']
+    LAMBDA_ORI_REG = _SOLVER_CFG['lambda_ori_reg']
+    LAMBDA_BIAS_PRIOR = _SOLVER_CFG['lambda_bias_prior']
+    LAMBDA_BIAS_PRIOR_ACCEL = _SOLVER_CFG['lambda_bias_prior_accel']
+    LAMBDA_BIAS_PRIOR_GYRO = _SOLVER_CFG['lambda_bias_prior_gyro']
+    HUBER_DELTA = _SOLVER_CFG['huber_delta']
+    HUBER_DELTA_ACCEL = _SOLVER_CFG['huber_delta_accel']
+    MIN_RANGE = _SOLVER_CFG['min_range']
+    MAX_ITERATIONS = _SOLVER_CFG['max_iterations']
+    USE_PHASE2_INIT = _SOLVER_CFG['use_phase2_init']
+    USE_STATIONARY_BIAS = _SOLVER_CFG['use_stationary_bias']
+    LOCK_BIASES = _SOLVER_CFG['lock_biases']
+    LOCK_EXTRINSICS = _SOLVER_CFG['lock_extrinsics']
+    OPTIMIZE_PITCH_ONLY = _SOLVER_CFG['optimize_pitch_only']
+    LAMBDA_EXTRINSIC_PRIOR = _SOLVER_CFG['lambda_extrinsic_prior']
+    RELINEARIZE_THRESHOLD_DEG = _SOLVER_CFG['relinearize_threshold_deg']
+    USE_JACOBI_PRECOND = '--precond' in sys.argv  # CLI override
+    NO_RADAR = '--no-radar' in sys.argv  # CLI override
 
     # Boundary priors: pin spline state at START to MoCap ground truth (no end priors)
-    LAMBDA_BOUNDARY_VEL = 1000.0  # Weight for boundary velocity priors (strong: prevents accel-drag)
-    LAMBDA_BOUNDARY_POS = 1000.0  # Weight for boundary position priors (strong: prevents drift from start)
-    LAMBDA_BOUNDARY_ORI = 10000.0   # Weight for boundary orientation priors (delta=0)
-    LAMBDA_BOUNDARY_ACCEL = 0.001  # Weight for boundary acceleration priors
-    LAMBDA_BOUNDARY_GYRO = 1000.0  # Weight for boundary angular velocity priors (delta_dot=0)
-    BOUNDARY_WINDOW = 1         # Seconds near start boundary to apply priors
+    LAMBDA_BOUNDARY_VEL = _SOLVER_CFG['lambda_boundary_vel']
+    LAMBDA_BOUNDARY_POS = _SOLVER_CFG['lambda_boundary_pos']
+    LAMBDA_BOUNDARY_ORI = _SOLVER_CFG['lambda_boundary_ori']
+    LAMBDA_BOUNDARY_ACCEL = _SOLVER_CFG['lambda_boundary_accel']
+    LAMBDA_BOUNDARY_GYRO = _SOLVER_CFG['lambda_boundary_gyro']
+    BOUNDARY_WINDOW = _SOLVER_CFG['boundary_window']
     
     print(f"\n{'Configuration':-^80}")
     print(f"Bag: {bag_key} -> {BAG_PATH}")
@@ -1648,7 +1649,7 @@ def main():
         return
     
     # Aliasing risk check (uses MoCap ground truth to detect wrapped Doppler)
-    V_MAX = 4.99  # ±m/s, from 6843AOP_3d.cfg (change to 3.84 for best_velocity config)
+    V_MAX = _SOLVER_CFG['v_max']  # ±m/s unambiguous velocity (from config/solver.yaml)
     aliasing_info = compute_aliasing_summary(
         agiros_states, radar_frames,
         TRANSLATION, SENSOR_ROTATION,

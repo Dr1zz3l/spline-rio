@@ -98,9 +98,10 @@ def run_physics_diagnostics():
         sensor_rotation = R_base
         sensor_translation = TRANSLATION.copy()
 
-    MIN_RANGE = 0.2
+    solver_cfg = cfg['solver']
+    MIN_RANGE = solver_cfg['min_range']
+    V_MAX_UNAMBIGUOUS = solver_cfg['v_max']
     g_world = np.array([0, 0, -9.81])
-    V_MAX_UNAMBIGUOUS = 4.99  # From 6843AOP_3d.cfg: "Maximum Radial Velocity(m/s):4.99"
 
     # ==================== Load Data ====================
     print(f"\nLoading {BAG_PATH}...")

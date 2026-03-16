@@ -30,6 +30,7 @@ from radar_velocity_utils import (
     compute_doppler_residuals,
     calibrate_radar_extrinsics_and_timing
 )
+from config_loader import load_config
 
 
 def plot_residual_analysis(result: Dict[str, Any], title_prefix: str = ""):
@@ -129,17 +130,29 @@ def main():
     print("=" * 80)
     
     # ==================== Configuration ====================
-    BAG_PATH = r"C:\Users\luchs\MyData\Education\Master_TUM\25WS\Guided Research\radar-iwr6843-driver\rosbags\2025-12-17-16-02-22.bag"
-    START_TIME_OFFSET = 31.5  # Skip first N seconds
-    DURATION = 15.0           # Analyze this many seconds
-    
-    # Initial extrinsics from documentation
-    # "The radar is mounted tilting downwards 30deg from horizontal, about 7cm forward in x-axis"
-    INITIAL_TRANSLATION = np.array([0.07, 0.0, 0.0])  # 7cm forward in body frame
-    INITIAL_ROTATION_EULER = np.array([0.0, -30.0 * np.pi/180, 0.0])  # 30deg pitch down
-    INITIAL_TIME_OFFSET = -0.018879  # From previous analysis
-    
-    MIN_RANGE = 0.2  # Minimum range for filtering radar points (meters)
+    _cfg = load_config()
+    _bags_cfg = _cfg['bags']
+    _ext = _cfg['extrinsics']
+    _solver = _cfg['solver']
+
+    bag_key = sys.argv[1] if len(sys.argv) > 1 else "original"
+    bags = _bags_cfg.get('bags', {})
+    BAG_PATH = bags[bag_key] if bag_key in bags else bag_key
+
+    timing = _bags_cfg.get('timing', {})
+    if bag_key in timing:
+        START_TIME_OFFSET, DURATION = timing[bag_key]
+    else:
+        START_TIME_OFFSET = 5.0
+        DURATION = 120.0
+
+    # Initial extrinsics seeded from config/extrinsics.yaml (current best-known values)
+    INITIAL_TRANSLATION = np.array(_ext['translation_body_m'])
+    _rot_deg = np.array(_ext['rotation_euler_deg'])
+    INITIAL_ROTATION_EULER = np.radians(_rot_deg)
+    INITIAL_TIME_OFFSET = _ext['imu_mocap_offset_sec']
+
+    MIN_RANGE = _solver['min_range']
     
     print(f"\n{'Dataset Configuration':-^80}")
     print(f"Bag file: {Path(BAG_PATH).name}")
