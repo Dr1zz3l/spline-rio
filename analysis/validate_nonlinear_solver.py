@@ -628,16 +628,12 @@ def compute_jacobian_analytical(
             u_sensor = p_s / np.linalg.norm(p_s)
             v_meas = frame.velocities[i]
 
-            # Sign fix: TI radar convention is v_meas = -dot(u,v) (positive=receding),
-            # but SymForce computes residual = v_meas - dot(u,v).  Passing -v_meas gives
-            # r = -v_meas - dot = -(v_meas + dot) and unchanged J = -∂dot/∂state.
-            # In normal equations J^T J and J^T r are invariant under (r,J)->(-r,-J),
-            # and this is equivalent since J_correct = -J_sf.  Huber |r| also unchanged.
-            # TODO: regenerate generated_jacobians.py with v_pred = -dot (proper fix)
+            # SymForce residual: v_meas - v_pred where v_pred = -dot(u,v)
+            # (TI IWR6843 convention: positive Doppler = receding target)
             res, J_v, J_delta_radar, J_omega_radar, J_Rbs = radar_residual_with_jacobians(
                 v_world, R_nom_quat, delta, omega,
                 u_sensor, sensor_translation, R_bs_quat,
-                -v_meas, 1e-10
+                v_meas, 1e-10
             )
             
             r = res[0]  # scalar residual
@@ -2004,11 +2000,10 @@ def main():
             u_sensor = p_s / np.linalg.norm(p_s)
             v_meas = frame.velocities[i]
 
-            # Sign fix: pass -v_meas (TI convention: v_meas = -dot(u,v))
             res, _, _, _, _ = radar_residual_with_jacobians(
                 v_world, R_nom_quat, delta, omega,
                 u_sensor, TRANSLATION, R_bs_quat,
-                -v_meas, 1e-10
+                v_meas, 1e-10
             )
             init_residuals.append(res[0])
             n_total_pts += 1
