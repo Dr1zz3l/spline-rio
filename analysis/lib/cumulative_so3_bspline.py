@@ -239,10 +239,10 @@ class CumulativeSO3BSpline:
         return R, omega, J_R_list, J_omega_list, active
 
     def evaluate_full_jacobians(
-        self, t_rel: float
+        self, t_rel: float, base_window: int = 0
     ) -> Tuple[np.ndarray, np.ndarray, List[np.ndarray], List[np.ndarray], List[int]]:
         """
-        Like evaluate_with_jacobians, but also includes Jacobians for all base knots j < k-2.
+        Like evaluate_with_jacobians, but also includes Jacobians for base knots j < k-2.
 
         The cumulative B-spline has a left-triangular Jacobian structure:
           R(t) = R_base[k-3] @ R_part[0] @ R_part[1] @ R_part[2]
@@ -252,12 +252,18 @@ class CumulativeSO3BSpline:
           J_R_base_j  = R_full^T @ _base_rotations[j] @ Jr(Ω_j)
           J_omega_j   = 0  (base knots do NOT affect angular velocity)
 
+        Args:
+            t_rel      : relative time (seconds)
+            base_window: max number of base knots to include (counting back from k-3).
+                         0 = full left-triangular (all base knots, exact but dense).
+                         N > 0 = only the last N base knots (sliding-window approximation).
+
         Returns:
             R              : (3,3) rotation matrix
             omega          : (3,)  body angular velocity
-            J_R_all        : list of (k+1) (3,3) matrices — ∂(right tangent)/∂Ωⱼ for j=0..k
-            J_omega_all    : list of (k+1) (3,3) matrices — ∂ω/∂Ωⱼ for j=0..k
-            all_indices    : list of (k+1) absolute knot indices [0, 1, ..., k]
+            J_R_all        : list of (3,3) matrices — ∂(right tangent)/∂Ωⱼ
+            J_omega_all    : list of (3,3) matrices — ∂ω/∂Ωⱼ
+            all_indices    : list of absolute knot indices
         """
         R, omega, J_R_span, J_omega_span, active = self.evaluate_with_jacobians(t_rel)
         k = active[2]  # highest active knot index = knot span k
@@ -265,7 +271,11 @@ class CumulativeSO3BSpline:
         # --- Base knot Jacobians: j in {0, ..., k-3} ---
         J_R_base = []
         J_omega_base = []
-        base_indices = list(range(0, k - 2))  # j = 0, 1, ..., k-3
+        all_base = list(range(0, k - 2))  # j = 0, 1, ..., k-3
+        if base_window > 0:
+            base_indices = all_base[-base_window:]  # most-recent W base knots
+        else:
+            base_indices = all_base               # full left-triangular
 
         for j in base_indices:
             R_base_j = self._base_rotations[j]  # exp(Ω_0) @ ... @ exp(Ω_j)

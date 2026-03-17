@@ -450,6 +450,7 @@ def compute_jacobian_analytical(
     optimize_pitch_only: bool = True,
     lambda_extrinsic_prior: float = 0.0,
     v_max: float = None,
+    base_window: int = 0,
 ) -> Tuple[sparse.csr_matrix, np.ndarray]:
     """
     Compute Jacobian and residual vector analytically using SymForce-generated functions.
@@ -499,7 +500,7 @@ def compute_jacobian_analytical(
         # Cumulative SO(3) spline: full Jacobians (base + active span).
         # Base knots j <= k-3 affect R via R_base; active span knots affect R and omega.
         R_full, omega, J_R_list, J_omega_list, active_ori = \
-            state.ori_spline.evaluate_full_jacobians(t_rel_ori)
+            state.ori_spline.evaluate_full_jacobians(t_rel_ori, base_window=base_window)
         R_nom_quat = Rot3.from_rotation_matrix(R_full)
 
         n_points = frame.num_points()
@@ -584,7 +585,7 @@ def compute_jacobian_analytical(
         # Cumulative spline: full Jacobians for accel (R-dependent, not omega-dependent).
         # Base knots j <= k-3 also contribute via R_base.
         R_full, _, J_R_list, _, active_ori = \
-            state.ori_spline.evaluate_full_jacobians(t_rel_ori)
+            state.ori_spline.evaluate_full_jacobians(t_rel_ori, base_window=base_window)
         R_nom_quat = Rot3.from_rotation_matrix(R_full)
 
         z_acc = imu_msg.linear_acceleration
@@ -740,7 +741,7 @@ def compute_jacobian_analytical(
 
             t_rel_ori = t_abs - state.ori_spline.t_ref
             R_est, _, J_R_list, _, active_ori = \
-                state.ori_spline.evaluate_full_jacobians(t_rel_ori)
+                state.ori_spline.evaluate_full_jacobians(t_rel_ori, base_window=base_window)
             r_ori = _so3_log_cs(R_target.T @ R_est)  # (3,)
 
             for k in range(3):
@@ -946,6 +947,7 @@ def solve_trajectory_nonlinear(
     optimize_pitch_only: bool = True,
     lambda_extrinsic_prior: float = 0.0,
     v_max: float = None,
+    ori_base_jacobian_window: int = 0,
 ) -> TrajectoryState:
     """
     Solve for optimal trajectory using Levenberg-Marquardt.
@@ -978,6 +980,7 @@ def solve_trajectory_nonlinear(
             print(f"*** BIASES LOCKED TO INITIAL VALUES ***")
         if lock_extrinsics:
             print(f"*** EXTRINSICS LOCKED TO INITIAL VALUES ***")
+        print(f"Ori base Jacobian window: {'full left-triangular' if ori_base_jacobian_window == 0 else ori_base_jacobian_window}")
         if optimize_pitch_only:
             print(f"*** EXTRINSICS: OPTIMIZING PITCH ONLY ***")
         if lambda_extrinsic_prior > 0:
@@ -1047,6 +1050,7 @@ def solve_trajectory_nonlinear(
             optimize_pitch_only=optimize_pitch_only,
             lambda_extrinsic_prior=lambda_extrinsic_prior,
             v_max=v_max,
+            base_window=ori_base_jacobian_window,
         )
 
     lambda_lm = 1e-3
@@ -1426,6 +1430,7 @@ def main():
     OPTIMIZE_PITCH_ONLY = _SOLVER_CFG['optimize_pitch_only']
     LAMBDA_EXTRINSIC_PRIOR = _SOLVER_CFG['lambda_extrinsic_prior']
     RELINEARIZE_THRESHOLD_DEG = _SOLVER_CFG['relinearize_threshold_deg']
+    ORI_BASE_JACOBIAN_WINDOW = _SOLVER_CFG.get('ori_base_jacobian_window', 0)
     USE_JACOBI_PRECOND = '--precond' in sys.argv  # CLI override
     NO_RADAR = '--no-radar' in sys.argv  # CLI override
     NO_UNWRAP = '--no-unwrap' in sys.argv  # CLI override: disable Doppler unwrapping
@@ -1912,6 +1917,7 @@ def main():
         optimize_pitch_only=OPTIMIZE_PITCH_ONLY,
         lambda_extrinsic_prior=LAMBDA_EXTRINSIC_PRIOR,
         v_max=V_MAX if USE_UNWRAP else None,
+        ori_base_jacobian_window=ORI_BASE_JACOBIAN_WINDOW,
     )
     
     # ==================== Evaluate Results ====================

@@ -43,6 +43,10 @@ lambda_boundary_gyro: 1000.0
 max_iterations: 20
 relinearize_threshold_deg: 1.0   # Legacy (unused with cumulative SO3 spline; kept for config compat)
 use_phase2_init: false             # Initialize position from Phase 2 linear solver
+ori_base_jacobian_window: 20      # Max base knots to include per measurement for orientation Jacobian.
+                                  # Full left-triangular (window=0) is exact but O(N) per measurement.
+                                  # Window=20 (~1s at 0.05s/knot) approximates sliding-window LM,
+                                  # recovering ~90% sparsity with minimal accuracy loss.
 
 # Extrinsics (radar-to-body)
 lock_extrinsics: false      # Lock radar extrinsics to config/extrinsics.yaml values
