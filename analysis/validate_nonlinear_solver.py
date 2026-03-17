@@ -2429,6 +2429,13 @@ def main():
         f"  max_iter={MAX_ITERATIONS}  precond={USE_JACOBI_PRECOND}",
         f"  relin_thr={RELINEARIZE_THRESHOLD_DEG}°  imu_offset={IMU_MOCAP_OFFSET*1000:.0f}ms  radar_offset={radar_total_offset*1000:.0f}ms",
         f"  λ_ori_reg={LAMBDA_ORI_REG}  λ_bp_a={LAMBDA_BIAS_PRIOR_ACCEL}  λ_bp_g={LAMBDA_BIAS_PRIOR_GYRO}",
+        f"",
+        f"EXTRINSICS (rotation [roll,pitch,yaw] deg)",
+        f"  lock={LOCK_EXTRINSICS}  pitch_only={OPTIMIZE_PITCH_ONLY}  λ_prior={LAMBDA_EXTRINSIC_PRIOR}",
+        f"  Init:  [{ROTATION_EULER_DEG[0]:.2f}, {ROTATION_EULER_DEG[1]:.2f}, {ROTATION_EULER_DEG[2]:.2f}]",
+        f"  Δ:     [{delta_deg[0]:+.3f}, {delta_deg[1]:+.3f}, {delta_deg[2]:+.3f}]",
+        f"  Final: [{calibrated_euler[0]:.2f}, {calibrated_euler[1]:.2f}, {calibrated_euler[2]:.2f}]",
+        f"  Trans: [{TRANSLATION[0]:.3f}, {TRANSLATION[1]:.3f}, {TRANSLATION[2]:.3f}] m",
     ]
     ax_summary.text(0.02, 0.98, "\n".join(summary_lines),
                     transform=ax_summary.transAxes,
