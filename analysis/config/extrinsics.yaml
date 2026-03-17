@@ -6,4 +6,4 @@ translation_body_m: [0.08, 0.02, -0.01]   # 2 cm left (+y), 1 cm down (-z) (conf
 
 # Time offsets
 imu_mocap_offset_sec: 0.020
-radar_imu_offset_sec: 0.147
+radar_imu_offset_sec: 0.140   # → radar_total_offset = imu_mocap(0.020) - this = -0.120 s = -120 ms

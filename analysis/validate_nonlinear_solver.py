@@ -1300,7 +1300,7 @@ def solve_trajectory_nonlinear(
         # Build normal equations with LM damping
         H = J.T @ J + lambda_lm * sparse.eye(n_total) + R_snap
         b = J.T @ r_total
-        
+
         # Solve (optionally with Jacobi preconditioning)
         try:
             if use_jacobi_precond:
@@ -1316,13 +1316,21 @@ def solve_trajectory_nonlinear(
                 delta_x = spsolve(H, -b)
         except Exception:
             if verbose:
-                print("[WARN] Solver failed, increasing damping...")
+                print("[WARN] Solver raised exception, increasing damping...")
             lambda_lm *= 10
             continue
-        
+
+        # spsolve returns NaN for singular H without raising an Exception (MatrixRankWarning).
+        # Catch it here before NaN can corrupt the state.
+        if not np.isfinite(delta_x).all():
+            if verbose:
+                print(f"[WARN] Solver returned NaN/Inf (singular H, damping={lambda_lm:.2e}), increasing damping...")
+            lambda_lm = max(lambda_lm * 100, 1e-4)
+            continue
+
         # Try update
         x_current = state.to_vector()
-        
+
         # Zero out updates for locked components
         if lock_biases:
             delta_x[n_pos + n_ori : n_pos + n_ori + 6] = 0.0
@@ -1342,7 +1350,7 @@ def solve_trajectory_nonlinear(
         
         # LM acceptance: accept only if cost decreased
         if new_cost < cost_total:
-            lambda_lm = max(1e-15, lambda_lm * 0.1)  # Aggressive: snap to Gauss-Newton mode
+            lambda_lm = max(1e-6, lambda_lm * 0.1)  # Floor at 1e-6: prevents near-singular H after re-linearization
             prev_cost = new_cost
             max_delta_deg = np.degrees(
                 np.linalg.norm(state.ori_bspline.control_points, axis=1).max())
@@ -1645,7 +1653,7 @@ def main():
         for d in imu_data:
             d.timestamp += IMU_MOCAP_OFFSET
         print(f"  Applied IMU-MoCap time offset: {IMU_MOCAP_OFFSET*1000:.0f} ms to {len(imu_data)} IMU samples")
-    radar_total_offset = IMU_MOCAP_OFFSET - RADAR_IMU_OFFSET  # +0.020 - (-0.019) = +0.039
+    radar_total_offset = IMU_MOCAP_OFFSET - RADAR_IMU_OFFSET  # 0.020 - 0.140 = -0.120 s (USB radar latency)
     for f in radar_frames:
         f.timestamp += radar_total_offset
     print(f"  Applied radar time offset: {radar_total_offset*1000:.0f} ms to {len(radar_frames)} radar samples (IMU:{IMU_MOCAP_OFFSET*1000:.0f} + radar-IMU:{-RADAR_IMU_OFFSET*1000:.0f})")

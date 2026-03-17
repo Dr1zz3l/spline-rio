@@ -216,8 +216,11 @@ def run_physics_diagnostics():
           wrap_alias=False, unwrap=False: raw v_pred vs raw v_meas
           wrap_alias=True:                wrap v_pred to [-V_MAX,+V_MAX] vs v_meas
           unwrap=True:                    unwrap v_meas toward raw v_pred vs raw v_pred
+
+        Returns: (corr, preds, meas, residuals, k_unwrap)
+          k_unwrap: integer array, 0 = non-aliased, ±1/±2 = unwrapped by that many periods
         """
-        preds, meas = [], []
+        preds, meas_raw_list = [], []
         for frame in radar_frames:
             t = frame.timestamp + dt_offset
             if t < mocap_times[0] or t > mocap_times[-1]:
@@ -239,15 +242,19 @@ def run_physics_diagnostics():
                 if wrap_alias:
                     v_pred = ((v_pred + V_MAX_UNAMBIGUOUS) % (2 * V_MAX_UNAMBIGUOUS)) - V_MAX_UNAMBIGUOUS
                 preds.append(v_pred)
-                meas.append(v_meas_i)
-        preds = np.array(preds)
-        meas  = np.array(meas)
+                meas_raw_list.append(v_meas_i)
+        preds    = np.array(preds)
+        meas_raw = np.array(meas_raw_list)
+        meas     = meas_raw.copy()
         if len(preds) < 10:
-            return 0.0, preds, meas, meas - preds
+            k_empty = np.zeros(len(preds), dtype=int)
+            return 0.0, preds, meas, meas - preds, k_empty
+        # k_unwrap: how many 2*V_MAX periods would be added to align meas_raw with pred
+        k_unwrap = np.round((preds - meas_raw) / (2.0 * V_MAX_UNAMBIGUOUS)).astype(int)
         if unwrap:
             meas = unwrap_doppler(meas, preds, V_MAX_UNAMBIGUOUS)
         corr = np.corrcoef(meas, preds)[0, 1]
-        return corr, preds, meas, meas - preds
+        return corr, preds, meas, meas - preds, k_unwrap
 
     # Sweep time offsets to find best alignment — try raw, alias-wrapped, and unwrapped
     offsets = np.linspace(-0.4, 0.4, 61)
@@ -255,9 +262,9 @@ def run_physics_diagnostics():
     corrs_alias = []
     corrs_unwrap = []
     for dt in offsets:
-        c_raw,    _, _, _ = radar_correlation(dt, wrap_alias=False, unwrap=False)
-        c_alias,  _, _, _ = radar_correlation(dt, wrap_alias=True,  unwrap=False)
-        c_unwrap, _, _, _ = radar_correlation(dt, wrap_alias=False, unwrap=True)
+        c_raw,    _, _, _, _ = radar_correlation(dt, wrap_alias=False, unwrap=False)
+        c_alias,  _, _, _, _ = radar_correlation(dt, wrap_alias=True,  unwrap=False)
+        c_unwrap, _, _, _, _ = radar_correlation(dt, wrap_alias=False, unwrap=True)
         corrs_raw.append(c_raw)
         corrs_alias.append(c_alias)
         corrs_unwrap.append(c_unwrap)
@@ -297,7 +304,7 @@ def run_physics_diagnostics():
         print(f"  → Using RAW predictions (best corr = {best_corrs['raw']:.4f})")
 
     # Re-evaluate at best offset
-    corr, pred_dopplers, meas_dopplers, residuals_radar = radar_correlation(
+    corr, pred_dopplers, meas_dopplers, residuals_radar, k_unwrap = radar_correlation(
         best_offset, wrap_alias=use_alias, unwrap=use_unwrap)
     radar_times_rel = []
     for frame in radar_frames:
@@ -319,6 +326,21 @@ def run_physics_diagnostics():
     print(f"  Residual RMSE: {np.sqrt(np.mean(residuals_radar**2)):.4f} m/s")
     print(f"  Correlation: {corr:.4f}  (1.0=perfect, -1.0=sign error)")
 
+    # Per-category residual stats (aliased vs non-aliased)
+    _mask_non_aliased = k_unwrap == 0
+    _mask_aliased     = k_unwrap != 0
+    _mask_hi_noalias  = (np.abs(pred_dopplers) > 0.7 * V_MAX_UNAMBIGUOUS) & _mask_non_aliased
+    print(f"\n  Residual breakdown by aliasing status:")
+    for _label, _mask in [
+        (f"Non-aliased (k=0)", _mask_non_aliased),
+        (f"Aliased (k≠0)", _mask_aliased),
+        (f"High-speed non-aliased (|v_pred|>0.7*v_max, k=0)", _mask_hi_noalias),
+    ]:
+        _n = np.sum(_mask)
+        if _n > 0:
+            _r = residuals_radar[_mask]
+            print(f"    {_label}: mean={_r.mean():+.4f} m/s  RMSE={np.sqrt(np.mean(_r**2)):.4f} m/s  N={_n}")
+
     # Quantization diagnostic
     unique_meas = np.unique(np.round(meas_dopplers, 3))
     if len(unique_meas) > 2:
@@ -331,7 +353,7 @@ def run_physics_diagnostics():
     print(f"  Correlation (negated meas): {corr_neg:.4f}  (high → sign error in measurement)")
 
     # Check subset of points that should NOT be aliased (|v_pred_raw| < 0.8 * V_MAX)
-    corr_raw_full, pred_raw, _, _ = radar_correlation(best_offset, wrap_alias=False)
+    corr_raw_full, pred_raw, _, _, _ = radar_correlation(best_offset, wrap_alias=False)
     safe_mask = np.abs(pred_raw) < 0.8 * V_MAX_UNAMBIGUOUS
     n_safe = np.sum(safe_mask)
     print(f"\n  Aliasing analysis:")
@@ -346,9 +368,9 @@ def run_physics_diagnostics():
 
     # Unwrap diagnostic: compare all three modes at best_offset
     print(f"\n  Unwrap diagnostic (at best_offset={best_offset*1000:.0f}ms):")
-    _c_raw,    _p_raw,    _m_raw,    _ = radar_correlation(best_offset, wrap_alias=False, unwrap=False)
-    _c_alias,  _p_alias,  _m_alias,  _ = radar_correlation(best_offset, wrap_alias=True,  unwrap=False)
-    _c_unwrap, _p_unwrap, _m_unwrap, _ = radar_correlation(best_offset, wrap_alias=False, unwrap=True)
+    _c_raw,    _p_raw,    _m_raw,    _, _ = radar_correlation(best_offset, wrap_alias=False, unwrap=False)
+    _c_alias,  _p_alias,  _m_alias,  _, _ = radar_correlation(best_offset, wrap_alias=True,  unwrap=False)
+    _c_unwrap, _p_unwrap, _m_unwrap, _, _ = radar_correlation(best_offset, wrap_alias=False, unwrap=True)
     _rmse_raw    = np.sqrt(np.mean((_m_raw    - _p_raw)**2))
     _rmse_alias  = np.sqrt(np.mean((_m_alias  - _p_alias)**2))
     _rmse_unwrap = np.sqrt(np.mean((_m_unwrap - _p_unwrap)**2))
@@ -365,6 +387,61 @@ def run_physics_diagnostics():
         print(f"    Unwrapped {_k_nonzero}/{len(_k)} points ({100*_k_nonzero/len(_k):.0f}%): {_k_str}")
     else:
         print(f"    No aliased points detected (all k=0)")
+
+    # ==================== V_MAX SWEEP ====================
+    # Recover raw (wrapped) measurements from the already-unwrapped meas_dopplers + k_unwrap.
+    # Then for each trial V_MAX, re-run unwrapping and evaluate RMSE on the aliased subset.
+    print(f"\n--- V_MAX Sweep (Scenario A: aliasing-boundary calibration) ---")
+    _meas_raw_recovered = meas_dopplers - k_unwrap * 2.0 * V_MAX_UNAMBIGUOUS
+    _vmax_sweep = np.sort(np.unique(np.concatenate([np.arange(2.8, 4.8, 0.05), np.arange(2.90, 3.30, 0.01)])))
+    _sweep_results = []  # (vmax, rmse_aliased, rmse_all, n_aliased)
+    for _vmax_t in _vmax_sweep:
+        _k_t = np.round((pred_dopplers - _meas_raw_recovered) / (2.0 * _vmax_t)).astype(int)
+        _meas_t = _meas_raw_recovered + _k_t * 2.0 * _vmax_t
+        _res_t  = _meas_t - pred_dopplers
+        _aliased_t = _k_t != 0
+        _n_al = _aliased_t.sum()
+        _rmse_all = np.sqrt(np.mean(_res_t**2))
+        if _n_al > 5:
+            _rmse_al = np.sqrt(np.mean(_res_t[_aliased_t]**2))
+        else:
+            _rmse_al = np.nan
+        _sweep_results.append((_vmax_t, _rmse_al, _rmse_all, _n_al))
+
+    _sweep_arr = np.array([(r[0], r[1], r[2], r[3]) for r in _sweep_results])
+    _valid = np.isfinite(_sweep_arr[:, 1])
+    if _valid.sum() > 0:
+        _best_al_idx = np.nanargmin(_sweep_arr[:, 1])
+        _best_all_idx = np.nanargmin(_sweep_arr[:, 2])
+        # Quantization-derived V_MAX estimate: bin_width × N_bins/2
+        _unique_raw = np.unique(np.round(_meas_raw_recovered, 3))
+        if len(_unique_raw) > 2:
+            _raw_bin = np.median(np.diff(np.sort(_unique_raw)))
+            _vmax_quant = _raw_bin * 64  # 128-point FFT, bin_width = 2*V_MAX/128
+            print(f"  Quantization-derived V_MAX: {_raw_bin:.4f} m/s/bin × 64 = {_vmax_quant:.3f} m/s")
+        _nom_idx = np.searchsorted(_vmax_sweep, V_MAX_UNAMBIGUOUS)
+        _nom_idx = min(_nom_idx, len(_sweep_arr) - 1)
+        print(f"  Nominal V_MAX = {V_MAX_UNAMBIGUOUS:.2f} m/s → "
+              f"RMSE(aliased)={_sweep_arr[_nom_idx, 1]:.4f} m/s  "
+              f"RMSE(all)={_sweep_arr[_nom_idx, 2]:.4f} m/s")
+        print(f"  Best V_MAX (min RMSE aliased) = {_sweep_arr[_best_al_idx, 0]:.3f} m/s → "
+              f"RMSE(aliased)={_sweep_arr[_best_al_idx, 1]:.4f} m/s  "
+              f"N_aliased={int(_sweep_arr[_best_al_idx, 3])}")
+        print(f"  Best V_MAX (min RMSE all)     = {_sweep_arr[_best_all_idx, 0]:.3f} m/s → "
+              f"RMSE(all)={_sweep_arr[_best_all_idx, 2]:.4f} m/s")
+        _delta = V_MAX_UNAMBIGUOUS - _sweep_arr[_best_al_idx, 0]
+        print(f"  Implied ΔV_MAX = {_delta:+.3f} m/s  "
+              f"(expected residual per k=±1 point = {2*_delta:+.3f} m/s)")
+        # Show fine-sweep curve around the optimum (±0.30 m/s)
+        _opt_vmax = _sweep_arr[_best_al_idx, 0]
+        _fine_mask = np.abs(_sweep_arr[:, 0] - _opt_vmax) <= 0.20
+        if _fine_mask.sum() > 1:
+            print(f"  Fine sweep (±0.20 m/s around optimum):")
+            for _row in _sweep_arr[_fine_mask]:
+                _marker = " ← best" if abs(_row[0] - _opt_vmax) < 1e-6 else ""
+                print(f"    V_MAX={_row[0]:.3f}: RMSE(al)={_row[1]:.4f}  RMSE(all)={_row[2]:.4f}{_marker}")
+    else:
+        print("  No aliased points — sweep not meaningful at this speed.")
 
     # ==================== ACCELEROMETER CHECK ====================
     print("\n--- Accelerometer Check ---")
@@ -614,13 +691,13 @@ def run_physics_diagnostics():
 
     # Re-evaluate radar with combined time correction
     print(f"\n  Radar after time correction (radar offset = {best_offset*1000:.0f}ms + IMU corr = {imu_mocap_offset*1000:.0f}ms):")
-    corr_radar_corrected, _, _, res_radar_corrected = radar_correlation(
+    corr_radar_corrected, _, _, res_radar_corrected, _ = radar_correlation(
         best_offset + imu_mocap_offset, wrap_alias=use_alias, unwrap=use_unwrap)
     print(f"    Correlation: {corr_radar_corrected:.4f} (was {corr:.4f})")
     print(f"    RMSE: {np.sqrt(np.mean(res_radar_corrected**2)):.4f} m/s")
     print("\n--- Generating Plots ---")
 
-    fig, axes = plt.subplots(3, 3, figsize=(20, 14))
+    fig, axes = plt.subplots(4, 3, figsize=(20, 19))
     fig.suptitle(f'Physics Unit Test v2: {bag_key}', fontsize=14, fontweight='bold')
 
     # --- Plot 1: Radar Doppler Scatter ---
@@ -698,6 +775,70 @@ def run_physics_diagnostics():
     ax.plot(gyro_times, gyro_pred[:, 2], 'r--', alpha=0.8, linewidth=1, label='MoCap Z')
     ax.set_xlabel('Time (s)'); ax.set_ylabel('ω_z (rad/s)')
     ax.set_title('Gyro Z'); ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+
+    # --- Plot 10: Residual vs v_pred (signed) — aliasing diagnostic ---
+    ax = axes[3, 0]
+    _non_al = k_unwrap == 0
+    _aliased = k_unwrap != 0
+    ax.scatter(pred_dopplers[_non_al], residuals_radar[_non_al],
+               alpha=0.15, s=3, c='steelblue', label=f'k=0 (N={_non_al.sum()})')
+    if _aliased.sum() > 0:
+        ax.scatter(pred_dopplers[_aliased], residuals_radar[_aliased],
+                   alpha=0.3, s=5, c='tomato', label=f'k≠0 (N={_aliased.sum()})')
+    ax.axhline(0, color='k', linestyle='--', linewidth=1)
+    ax.axhline(residuals_radar.mean(), color='orange', linestyle='-', linewidth=1.5,
+               label=f'mean={residuals_radar.mean():.3f} m/s')
+    ax.axvline( V_MAX_UNAMBIGUOUS, color='gray', linestyle=':', linewidth=1.5,
+                label=f'±v_max={V_MAX_UNAMBIGUOUS:.2f}')
+    ax.axvline(-V_MAX_UNAMBIGUOUS, color='gray', linestyle=':', linewidth=1.5)
+    ax.set_xlabel('v_pred (m/s)')
+    ax.set_ylabel('Residual: v_meas − v_pred (m/s)')
+    ax.set_title('Residual vs v_pred (signed) — aliasing diagnostic')
+    ax.legend(fontsize=7); ax.grid(True, alpha=0.3)
+
+    # --- Plot 11: Residual vs |v_pred| — velocity-dependent bias ---
+    ax = axes[3, 1]
+    _vpred_abs = np.abs(pred_dopplers)
+    ax.scatter(_vpred_abs[_non_al], residuals_radar[_non_al],
+               alpha=0.15, s=3, c='steelblue', label='k=0')
+    if _aliased.sum() > 0:
+        ax.scatter(_vpred_abs[_aliased], residuals_radar[_aliased],
+                   alpha=0.3, s=5, c='tomato', label='k≠0')
+    ax.axhline(0, color='k', linestyle='--', linewidth=1)
+    ax.axvline(V_MAX_UNAMBIGUOUS, color='gray', linestyle=':', linewidth=1.5,
+               label=f'v_max={V_MAX_UNAMBIGUOUS:.2f}')
+    # Running mean to visualize trend
+    _bin_edges = np.linspace(0, _vpred_abs.max(), 20)
+    _bin_means_x, _bin_means_y = [], []
+    for _lo, _hi in zip(_bin_edges[:-1], _bin_edges[1:]):
+        _in_bin = (_vpred_abs >= _lo) & (_vpred_abs < _hi)
+        if _in_bin.sum() > 5:
+            _bin_means_x.append(0.5 * (_lo + _hi))
+            _bin_means_y.append(residuals_radar[_in_bin].mean())
+    if _bin_means_x:
+        ax.plot(_bin_means_x, _bin_means_y, 'k-', linewidth=2, label='bin mean')
+    ax.set_xlabel('|v_pred| (m/s)')
+    ax.set_ylabel('Residual: v_meas − v_pred (m/s)')
+    ax.set_title('Residual vs |v_pred| — velocity-dependent bias')
+    ax.legend(fontsize=7); ax.grid(True, alpha=0.3)
+
+    # --- Plot 12: Measured vs Predicted scatter (color-coded by aliasing) ---
+    ax = axes[3, 2]
+    ax.scatter(meas_dopplers[_non_al], pred_dopplers[_non_al],
+               alpha=0.15, s=3, c='steelblue', label='k=0')
+    if _aliased.sum() > 0:
+        ax.scatter(meas_dopplers[_aliased], pred_dopplers[_aliased],
+                   alpha=0.3, s=5, c='tomato', label='k≠0 (unwrapped)')
+    _lims2 = [min(meas_dopplers.min(), pred_dopplers.min()) - 0.5,
+              max(meas_dopplers.max(), pred_dopplers.max()) + 0.5]
+    ax.plot(_lims2, _lims2, 'r--', linewidth=1.5, label='y=x')
+    ax.axvline( V_MAX_UNAMBIGUOUS, color='gray', linestyle=':', linewidth=1)
+    ax.axvline(-V_MAX_UNAMBIGUOUS, color='gray', linestyle=':', linewidth=1)
+    ax.set_xlabel('Measured Doppler (m/s)')
+    ax.set_ylabel('Predicted Doppler (m/s)')
+    ax.set_title('Meas vs Pred (aliasing color-coded)')
+    ax.legend(fontsize=7); ax.grid(True, alpha=0.3)
+    ax.set_aspect('equal'); ax.set_xlim(_lims2); ax.set_ylim(_lims2)
 
     plt.tight_layout()
     outname = f'physics_check_{bag_key}.png'

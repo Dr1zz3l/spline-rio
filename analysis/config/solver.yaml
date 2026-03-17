@@ -6,7 +6,13 @@ dt_ori: 0.05               # Knot spacing for orientation spline (seconds)
 # Radar
 huber_delta: 1.0           # Huber threshold (m/s); must be >= 0.63 m/s Doppler bin size
 min_range: 0.2             # Minimum range filter (m)
-# v_max moved to config/bags.yaml radar_config (per-bag: 4.99 for default, 3.84 for best_velocity bags)
+# v_max moved to config/bags.yaml radar_config (per-bag: 4.99 for default, 3.00 for best_velocity bags)
+# Timing offsets (apply to radar/IMU timestamps before MoCap lookup)
+# radar_mocap_offset: -0.120  # seconds; radar USB pipeline latency on Jetson
+#   Empirically found: -133ms (fast_racing, V_MAX=3.84 wrong) → -120ms (fast_racing, V_MAX=3.00 correct)
+#   Also -120ms on slow_racing_best_velocity → -120ms is the true USB+ROS driver latency.
+#   Distinct from imu_mocap_offset (-15ms); IMU is on a fast SPI/I2C bus.
+# NOTE: not yet plumbed into validate_nonlinear_solver.py — add when integrating radar factor timing.
 
 # IMU weights
 lambda_accel: 0.01
@@ -39,6 +45,6 @@ relinearize_threshold_deg: 1.0   # Re-linearize SO(3) spline when max|delta| exc
 use_phase2_init: false             # Initialize position from Phase 2 linear solver
 
 # Extrinsics (radar-to-body)
-lock_extrinsics: true      # Lock radar extrinsics to config/extrinsics.yaml values
+lock_extrinsics: false      # Lock radar extrinsics to config/extrinsics.yaml values
 optimize_pitch_only: true  # Only optimize pitch extrinsic; roll/yaw unobservable
 lambda_extrinsic_prior: 1.0

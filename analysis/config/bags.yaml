@@ -16,8 +16,14 @@ radar_config:
     v_max: 4.99
     doppler_resolution: 0.63
   best_velocity:
-    v_max: 3.84
-    doppler_resolution: 0.06
+    # Visualizer cfg comment says 3.84 m/s but that is wrong.
+    # Empirically confirmed: V_MAX = 3.00 m/s
+    #   - Aliased cluster mean collapses to +0.05 m/s (from +0.46 m/s at V_MAX=3.84)
+    #   - Fine sweep flat below 3.00 — noise-limited, not calibration-limited
+    #   - Quantization bin 0.049 m/s (Doppler resolution confirmed; N_bins may be asymmetric)
+    #   - cfarFovCfg ±3.20 m/s: consistent with sensor output within [-3.00, +3.00]
+    v_max: 3.136
+    doppler_resolution: 0.049
 
 flipped:
   # - circle_fwd
@@ -35,6 +41,6 @@ timing:
   backflips:                                [26.5, 5.0]
   backflips_best_velocity:                  [15.6, 10.0]
   circle_best_velocity:                     [22.2, 8.4]
-  fast_racing_best_velocity_no_clustering:  [16.9, 18.1]
+  fast_racing_best_velocity_no_clustering:  [16.9, 10.0]
   fast_racing_best_velocity:                [19.1, 18.0]
-  slow_racing_best_velocity:                [19.1, 10]# 25.8]
+  slow_racing_best_velocity:                [19.1, 25.8]# 25.8]
