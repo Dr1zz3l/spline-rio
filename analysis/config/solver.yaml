@@ -21,8 +21,8 @@ huber_delta_accel: 2.0     # Huber threshold for accelerometer (m/s²); clips sp
 
 # Regularization
 lambda_snap_pos: 0.0001    # Position minimum-snap weight
-lambda_snap_ori: 0.0001    # Orientation minimum-snap weight
-lambda_ori_reg: 0.0        # Orientation regularization (penalizes delta CPs away from MoCap); disabled
+lambda_snap_ori: 0.0001    # Orientation snap weight (passed to solver for logging; not applied to cumulative spline)
+lambda_ori_reg: 0.001      # Orientation increment regularization (penalizes ||Omega_j||^2 per knot)
 
 # Bias priors
 lambda_bias_prior: 1.0     # Fallback (overridden by per-sensor values below)
@@ -41,7 +41,7 @@ lambda_boundary_gyro: 1000.0
 
 # Optimizer
 max_iterations: 20
-relinearize_threshold_deg: 1.0   # Re-linearize SO(3) spline when max|delta| exceeds this
+relinearize_threshold_deg: 1.0   # Legacy (unused with cumulative SO3 spline; kept for config compat)
 use_phase2_init: false             # Initialize position from Phase 2 linear solver
 
 # Extrinsics (radar-to-body)

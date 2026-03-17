@@ -36,6 +36,11 @@ from bspline_utils import (
     create_uniform_bspline_from_times,
     build_minimum_snap_regularization
 )
+from cumulative_so3_bspline import (
+    CumulativeSO3BSpline,
+    so3_exp as _so3_exp_cs,
+    so3_log as _so3_log_cs,
+)
 from codegen.generated_jacobians import (
     radar_residual_with_jacobians,
     accel_residual_with_jacobians,
@@ -145,198 +150,83 @@ def quaternion_multiply(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
 class TrajectoryState:
     """
     Complete trajectory state for non-linear optimization.
-    
+
+    Orientation uses cumulative B-splines on SO(3):
+        R(t) = R_base[k-3] · ∏ exp(B̃_j(t) · Ω_{k-2+j})
+    No nominal trajectory or relinearization needed.
+
     State variables:
-    - Position control points (N_pos x 3)
-    - Orientation control points (N_ori x 3) in tangent space around nominal
+    - Position control points (N_pos × 3)
+    - SO(3) increment knots (N_ori × 3) inside CumulativeSO3BSpline
     - Accelerometer bias (3,)
     - Gyroscope bias (3,)
+    - Radar extrinsic delta (3,)
     """
-    
+
     def __init__(
         self,
         pos_bspline: UniformBSpline,
-        ori_bspline: UniformBSpline,  # Stores tangent vectors
-        nominal_rotations: np.ndarray,  # Reference rotations for tangent space
+        ori_spline: CumulativeSO3BSpline,
         acc_bias: np.ndarray = None,
         gyr_bias: np.ndarray = None,
         radar_extrinsic_delta: np.ndarray = None,
-        mocap_slerp = None,  # scipy Slerp for dense nominal rotation interpolation
-        mocap_omega_interp = None,  # interp1d for nominal angular velocity
     ):
         self.pos_bspline = pos_bspline
-        self.ori_bspline = ori_bspline
-        self.nominal_rotations = nominal_rotations  # (N_ori, 3, 3)
-        
+        self.ori_spline = ori_spline
+
         self.acc_bias = acc_bias if acc_bias is not None else np.zeros(3)
         self.gyr_bias = gyr_bias if gyr_bias is not None else np.zeros(3)
-        
-        # 3D tangent vector perturbation on top of the nominal SENSOR_ROTATION
-        self.radar_extrinsic_delta = radar_extrinsic_delta if radar_extrinsic_delta is not None else np.zeros(3)
-        
-        # Dense interpolation objects (from MoCap)
-        self.mocap_slerp = mocap_slerp
-        self.mocap_omega_interp = mocap_omega_interp
-    
-    def get_nominal_rotation(self, t_rel: float) -> np.ndarray:
-        """Get the nominal rotation at relative time t_rel using SLERP."""
-        if self.mocap_slerp is not None:
-            # Clamp to valid range
-            t_clamped = np.clip(t_rel, self.mocap_slerp.times[0], self.mocap_slerp.times[-1])
-            return self.mocap_slerp(t_clamped).as_matrix()
-        else:
-            # Fallback: nearest-neighbor from control point array
-            ori_ctrl_times = np.linspace(self.ori_bspline.t_start, self.ori_bspline.t_end, 
-                                         len(self.nominal_rotations))
-            idx = np.argmin(np.abs(ori_ctrl_times - t_rel))
-            idx = max(0, min(idx, len(self.nominal_rotations) - 1))
-            return self.nominal_rotations[idx]
-    
-    def get_nominal_angular_velocity(self, t_rel: float) -> np.ndarray:
-        """Get the nominal (MoCap) angular velocity at relative time t_rel."""
-        if self.mocap_omega_interp is not None:
-            t_clamped = np.clip(t_rel, 
-                               self.mocap_omega_interp.x[0], 
-                               self.mocap_omega_interp.x[-1])
-            return self.mocap_omega_interp(t_clamped)
-        else:
-            return np.zeros(3)
-    
+        self.radar_extrinsic_delta = (radar_extrinsic_delta
+                                      if radar_extrinsic_delta is not None
+                                      else np.zeros(3))
+
     def get_position(self, t: float, derivative: int = 0) -> np.ndarray:
-        """Get position (or velocity/acceleration) at time t."""
+        """Get position (or velocity/acceleration) at absolute time t."""
         t_rel = t - self.pos_bspline.t_ref
         return self.pos_bspline(t_rel, derivative=derivative)
-    
+
     def get_rotation(self, t: float) -> np.ndarray:
-        """
-        Get rotation matrix at time t.
-        
-        Uses tangent space parameterization:
-        R(t) = R_nominal(t) * exp(delta(t))
-        """
-        t_rel = t - self.ori_bspline.t_ref
-        
-        # Get tangent vector from spline
-        delta_omega = self.ori_bspline(t_rel, derivative=0)
-        
-        # Interpolate nominal rotation using SLERP
-        R_nominal = self.get_nominal_rotation(t_rel)
-        
-        # Apply perturbation
-        R_delta = so3_exp(delta_omega)
-        return R_nominal @ R_delta
-    
+        """Return 3×3 rotation matrix at absolute time t."""
+        t_rel = t - self.ori_spline.t_ref
+        return self.ori_spline.evaluate(t_rel)
+
     def get_angular_velocity(self, t: float) -> np.ndarray:
-        """
-        Get angular velocity at time t using SymForce-generated nonlinear model.
-        
-        omega_body = exp(-[delta]_x) * omega_nominal + J_r(delta) * delta_dot
-        
-        Computed via gyro_residual_with_jacobians (exact, no manual math).
-        """
-        t_rel = t - self.ori_bspline.t_ref
-        omega_nominal = self.get_nominal_angular_velocity(t_rel)
-        delta = self.ori_bspline(t_rel, derivative=0)
-        delta_dot = self.ori_bspline(t_rel, derivative=1)
-        omega, _, _ = compute_omega_and_jacobians(omega_nominal, delta, delta_dot)
+        """Return body-frame angular velocity at absolute time t."""
+        t_rel = t - self.ori_spline.t_ref
+        _, omega, _, _, _ = self.ori_spline.evaluate_with_jacobians(t_rel)
         return omega
-    
+
     def to_vector(self) -> np.ndarray:
         """
         Flatten state to optimization vector.
-        
-        Returns:
-            [pos_control_points (N_pos*3),
-             ori_control_points (N_ori*3),
-             acc_bias (3),
-             gyr_bias (3),
-             radar_extrinsic_delta (3)]
+
+        Layout:
+          [pos_control_points (N_pos*3),
+           ori_omega_knots (N_ori*3),
+           acc_bias (3),
+           gyr_bias (3),
+           radar_extrinsic_delta (3)]
         """
         pos_flat = self.pos_bspline.control_points.flatten()
-        ori_flat = self.ori_bspline.control_points.flatten()
-        
-        return np.concatenate([pos_flat, ori_flat, self.acc_bias, self.gyr_bias, self.radar_extrinsic_delta])
-    
+        ori_flat = self.ori_spline.omega_knots.flatten()
+        return np.concatenate([pos_flat, ori_flat,
+                                self.acc_bias, self.gyr_bias,
+                                self.radar_extrinsic_delta])
+
     def from_vector(self, x: np.ndarray):
-        """Update state from optimization vector."""
+        """Update state from optimization vector (recomputes base rotations)."""
         n_pos = self.pos_bspline.n_points * 3
-        n_ori = self.ori_bspline.n_points * 3
-        
+        n_ori = self.ori_spline.n_knots * 3
+
         self.pos_bspline.control_points = x[:n_pos].reshape(-1, 3)
-        self.ori_bspline.control_points = x[n_pos:n_pos+n_ori].reshape(-1, 3)
-        self.acc_bias = x[n_pos+n_ori:n_pos+n_ori+3]
-        self.gyr_bias = x[n_pos+n_ori+3:n_pos+n_ori+6]
-        self.radar_extrinsic_delta = x[n_pos+n_ori+6:n_pos+n_ori+9]
-    
+        self.ori_spline.from_flat(x[n_pos:n_pos + n_ori])  # also calls recompute_base_rotations
+        self.acc_bias = x[n_pos + n_ori:n_pos + n_ori + 3].copy()
+        self.gyr_bias = x[n_pos + n_ori + 3:n_pos + n_ori + 6].copy()
+        self.radar_extrinsic_delta = x[n_pos + n_ori + 6:n_pos + n_ori + 9].copy()
+
     def get_state_size(self) -> int:
         """Total number of optimization variables."""
-        return self.pos_bspline.n_points * 3 + self.ori_bspline.n_points * 3 + 9
-    
-    def relinearize(self):
-        """
-        Absorb current delta perturbations into the nominal rotations and reset delta to zero.
-        
-        This keeps the tangent-space linearization valid by ensuring delta stays small.
-        
-        Key: sample R(t) = R_nominal(t) @ exp(delta_spline(t)) at a DENSE grid,
-        then rebuild SLERP from those samples. This avoids interpolation mismatch
-        between B-spline delta and SLERP nominal.
-        
-        For angular velocity: compute analytically from the B-spline BEFORE resetting
-        delta, using the full nonlinear formula:
-            omega = R_delta^T @ omega_nominal + J_r(delta) @ delta_dot
-        """
-        n_cp = self.ori_bspline.n_points
-        
-        # Dense sampling to minimize interpolation error between B-spline and SLERP
-        # Need very high density so that SLERP and cubic interp1d reproduce the
-        # original B-spline composition with negligible error.
-        n_dense = max(5000, n_cp * 50)  # ~5000+ samples over the trajectory
-        t_start = self.ori_bspline.t_start
-        t_end = self.ori_bspline.t_end
-        dense_times = np.linspace(t_start, t_end, n_dense)
-        
-        # Evaluate full rotation AND angular velocity at each dense time point
-        # BEFORE resetting delta (using current B-spline state)
-        dense_rots = []
-        dense_omegas = []
-        for t_rel in dense_times:
-            R_nom = self.get_nominal_rotation(t_rel)
-            delta = self.ori_bspline(t_rel, derivative=0)
-            delta_dot = self.ori_bspline(t_rel, derivative=1)
-            omega_nominal = self.get_nominal_angular_velocity(t_rel)
-            
-            # Full rotation
-            R_full = R_nom @ so3_exp(delta)
-            dense_rots.append(R_full)
-            
-            # Full angular velocity via SymForce-generated code (exact)
-            omega_full, _, _ = compute_omega_and_jacobians(
-                omega_nominal, delta, delta_dot
-            )
-            dense_omegas.append(omega_full)
-        
-        dense_omegas = np.array(dense_omegas)
-        
-        # Rebuild SLERP from dense samples
-        scipy_rots = Rotation.from_matrix(np.array(dense_rots))
-        self.mocap_slerp = Slerp(dense_times, scipy_rots)
-        
-        # Update nominal_rotations array at CP times for fallback
-        cp_times = np.linspace(t_start, t_end, n_cp)
-        self.nominal_rotations = np.array([
-            self.mocap_slerp(t).as_matrix() for t in cp_times
-        ])
-        
-        # Use analytically computed angular velocity (NOT numerical differentiation)
-        # Cubic interpolation is essential: linear interp introduces piecewise-constant
-        # derivative, which causes cost leaks when relinearization replaces the smooth
-        # B-spline delta composition with a lookup table.
-        self.mocap_omega_interp = interp1d(dense_times, dense_omegas, axis=0,
-                                            kind='cubic', fill_value='extrapolate')
-        
-        # Reset delta control points to zero
-        self.ori_bspline.control_points = np.zeros((n_cp, 3))
+        return self.pos_bspline.n_points * 3 + self.ori_spline.n_knots * 3 + 9
 
 
 # ==================== Residual Functions ====================
@@ -563,293 +453,220 @@ def compute_jacobian_analytical(
 ) -> Tuple[sparse.csr_matrix, np.ndarray]:
     """
     Compute Jacobian and residual vector analytically using SymForce-generated functions.
-    
-    Chain rule (all Jacobians from SymForce):
+
+    Chain rule (cumulative SO(3) B-spline):
     - Position CPs affect v_world via N_i'(t) and a_world via N_i''(t)
-    - Orientation CPs affect delta via M_j(t) and delta_dot via M_j'(t)
-    - omega depends on BOTH delta and delta_dot:
-        ∂omega/∂cp = ∂omega/∂delta * M_j(t) + ∂omega/∂delta_dot * M_j'(t)
+    - Orientation knots Ω_j: evaluate_with_jacobians() returns J_R_list, J_omega_list
+      ∂r/∂Ω_j = J_R_res @ J_R_list[j] + J_omega_res @ J_omega_list[j]
     - Biases affect residuals directly
-    
+
+    Key trick: SymForce residuals are called with R_full as R_nominal and delta=0.
+    At delta=0, J_delta from SymForce equals the right-tangent Jacobian at R_full,
+    which is exactly what J_R_list expects.
+
     Returns:
         J: Sparse Jacobian matrix (N_residuals, N_variables)
         r: Residual vector (N_residuals,)
     """
+    _zeros3 = np.zeros(3)
     n_pos = state.pos_bspline.n_points * 3
-    n_ori = state.ori_bspline.n_points * 3
+    n_ori = state.ori_spline.n_knots * 3
     n_total = state.get_state_size()
-    
+
     # Pre-compute sensor rotation quaternion with extrinsic perturbation
-    # sensor_rotation already contains the base Euler and flip logic from __main__
     R_bs_nominal = sensor_rotation
     R_bs_delta_matrix = so3_exp(state.radar_extrinsic_delta)
     R_bs_quat = Rot3.from_rotation_matrix(R_bs_nominal @ R_bs_delta_matrix)
-    
+
     # Collect Jacobian entries
     rows = []
     cols = []
     vals = []
     all_residuals = []
     row_idx = 0
-    
+
     # ==================== Radar residuals ====================
     for frame in radar_frames:
         t = frame.timestamp
         t_rel_pos = t - state.pos_bspline.t_ref
-        t_rel_ori = t - state.ori_bspline.t_ref
-        
-        # Get basis functions for position spline (velocity = 1st derivative)
-        pos_vel_coeffs, pos_vel_indices = state.pos_bspline.get_basis_coefficients(t_rel_pos, derivative=1)
-        
-        # Get basis functions for orientation spline (value and 1st derivative)
-        ori_val_coeffs, ori_val_indices = state.ori_bspline.get_basis_coefficients(t_rel_ori, derivative=0)
-        ori_vel_coeffs, ori_vel_indices = state.ori_bspline.get_basis_coefficients(t_rel_ori, derivative=1)
-        
-        # Get current state values
+        t_rel_ori = t - state.ori_spline.t_ref
+
+        pos_vel_coeffs, pos_vel_indices = state.pos_bspline.get_basis_coefficients(
+            t_rel_pos, derivative=1)
+
         v_world = state.get_position(t, derivative=1)
-        delta = state.ori_bspline(t_rel_ori, derivative=0)
-        delta_dot = state.ori_bspline(t_rel_ori, derivative=1)
-        omega_nominal = state.get_nominal_angular_velocity(t_rel_ori)
-        
-        # Compute omega and its Jacobians w.r.t. delta, delta_dot (SymForce)
-        omega, J_omega_wrt_delta, J_omega_wrt_delta_dot = compute_omega_and_jacobians(
-            omega_nominal, delta, delta_dot
-        )
-        
-        # Get nominal rotation at this time (SLERP interpolated)
-        R_nominal = state.get_nominal_rotation(t_rel_ori)
-        R_nom_quat = Rot3.from_rotation_matrix(R_nominal)
-        
+
+        # Cumulative SO(3) spline: full Jacobians (base + active span).
+        # Base knots j <= k-3 affect R via R_base; active span knots affect R and omega.
+        R_full, omega, J_R_list, J_omega_list, active_ori = \
+            state.ori_spline.evaluate_full_jacobians(t_rel_ori)
+        R_nom_quat = Rot3.from_rotation_matrix(R_full)
+
         n_points = frame.num_points()
         for i in range(n_points):
             p_s = frame.positions[i]
             range_val = frame.ranges[i] if frame.ranges is not None else np.linalg.norm(p_s)
             if range_val < min_range:
                 continue
-            
+
             u_sensor = p_s / np.linalg.norm(p_s)
             v_meas = frame.velocities[i]
 
-            # SymForce residual: v_meas - v_pred where v_pred = -dot(u,v)
-            # (TI IWR6843 convention: positive Doppler = receding target)
+            # Use SymForce residual with R_full as R_nominal and delta=0.
+            # At delta=0, J_delta equals the right-tangent Jacobian at R_full.
             res, J_v, J_delta_radar, J_omega_radar, J_Rbs = radar_residual_with_jacobians(
-                v_world, R_nom_quat, delta, omega,
+                v_world, R_nom_quat, _zeros3, omega,
                 u_sensor, sensor_translation, R_bs_quat,
                 v_meas, 1e-10
             )
-            
-            r = res[0]  # scalar residual
 
-            # Doppler unwrapping: shift r by k * 2*v_max if the predicted velocity
-            # aliases outside the unambiguous range. Jacobians are unchanged since
-            # the offset k * 2*v_max is constant w.r.t. state variables.
+            r = res[0]
+
+            # Doppler unwrapping
             if v_max is not None:
-                v_pred = v_meas - r  # r = v_meas - v_pred → v_pred = v_meas - r
-                k = round((v_pred - v_meas) / (2.0 * v_max))
-                if k != 0:
-                    r += k * 2.0 * v_max
+                v_pred = v_meas - r
+                k_alias = round((v_pred - v_meas) / (2.0 * v_max))
+                if k_alias != 0:
+                    r += k_alias * 2.0 * v_max
 
             w = huber_weight(r, delta=huber_delta)
             sqrt_w = np.sqrt(w)
-            
-            # Weighted residual
             all_residuals.append(r * sqrt_w)
-            
-            # Chain rule: ∂r/∂pos_cp_i = J_v * N_i'(t) (scaled by Huber weight)
+
+            # ∂r/∂pos_cp_i
             for ci, cp_idx in enumerate(pos_vel_indices):
                 basis_val = pos_vel_coeffs[ci]
                 for dim in range(3):
                     col = cp_idx * 3 + dim
                     val = sqrt_w * J_v[dim] * basis_val
                     if abs(val) > 1e-15:
-                        rows.append(row_idx)
-                        cols.append(col)
-                        vals.append(val)
-            
-            # Full chain rule: ∂r/∂ori_cp_j = (∂r/∂delta + ∂r/∂omega @ ∂omega/∂delta) * M_j(t)
-            #                               + (∂r/∂omega @ ∂omega/∂delta_dot) * M_j'(t)
-            # J_omega_radar is (3,) row, J_omega_wrt_delta is (3,3)
-            J_eff_val = J_delta_radar + J_omega_radar @ J_omega_wrt_delta      # (3,)
-            J_eff_dot = J_omega_radar @ J_omega_wrt_delta_dot                  # (3,)
-            
-            # Value (delta) contribution
-            for ci, cp_idx in enumerate(ori_val_indices):
-                basis_val = ori_val_coeffs[ci]
+                        rows.append(row_idx); cols.append(col); vals.append(val)
+
+            # ∂r/∂Ω_j  (chain through cumulative spline Jacobians)
+            for jj, knot_idx in enumerate(active_ori):
+                # (3,) @ (3,3) + (3,) @ (3,3) → (3,)
+                J_wrt = J_delta_radar @ J_R_list[jj] + J_omega_radar @ J_omega_list[jj]
                 for dim in range(3):
-                    col = n_pos + cp_idx * 3 + dim
-                    val = sqrt_w * J_eff_val[dim] * basis_val
+                    col = n_pos + knot_idx * 3 + dim
+                    val = sqrt_w * J_wrt[dim]
                     if abs(val) > 1e-15:
-                        rows.append(row_idx)
-                        cols.append(col)
-                        vals.append(val)
-            
-            # Derivative (delta_dot) contribution
-            for ci, cp_idx in enumerate(ori_vel_indices):
-                basis_val = ori_vel_coeffs[ci]
-                for dim in range(3):
-                    col = n_pos + cp_idx * 3 + dim
-                    val = sqrt_w * J_eff_dot[dim] * basis_val
-                    if abs(val) > 1e-15:
-                        rows.append(row_idx)
-                        cols.append(col)
-                        vals.append(val)
-            
-            # Jacobian w.r.t Extrinsic Radar Rotation (radar_extrinsic_delta)
+                        rows.append(row_idx); cols.append(col); vals.append(val)
+
+            # ∂r/∂radar_extrinsic_delta
             if not lock_extrinsics:
                 for dim in range(3):
                     if optimize_pitch_only and dim != 1:
-                        continue # Roll (0) and Yaw (2) locked
+                        continue
                     col = n_pos + n_ori + 6 + dim
                     val = sqrt_w * J_Rbs[dim]
                     if abs(val) > 1e-15:
-                        rows.append(row_idx)
-                        cols.append(col)
-                        vals.append(val)
-            
+                        rows.append(row_idx); cols.append(col); vals.append(val)
+
             row_idx += 1
-    
+
     n_radar = row_idx
     
     # ==================== Accelerometer residuals ====================
     sqrt_lambda_accel = np.sqrt(lambda_accel)
     use_huber_accel = huber_delta_accel > 0
-    
+    g_world = np.array([0, 0, -9.81])
+
     for imu_msg in imu_data:
         t = imu_msg.timestamp
-        
         t_rel_pos = t - state.pos_bspline.t_ref
-        t_rel_ori = t - state.ori_bspline.t_ref
-        
-        # Basis functions
-        pos_acc_coeffs, pos_acc_indices = state.pos_bspline.get_basis_coefficients(t_rel_pos, derivative=2)
-        ori_val_coeffs, ori_val_indices = state.ori_bspline.get_basis_coefficients(t_rel_ori, derivative=0)
-        
-        # Current state
+        t_rel_ori = t - state.ori_spline.t_ref
+
+        pos_acc_coeffs, pos_acc_indices = state.pos_bspline.get_basis_coefficients(
+            t_rel_pos, derivative=2)
+
         a_world = state.get_position(t, derivative=2)
-        delta = state.ori_bspline(t_rel_ori, derivative=0)
-        
-        # Nominal rotation (SLERP interpolated)
-        R_nominal = state.get_nominal_rotation(t_rel_ori)
-        R_nom_quat = Rot3.from_rotation_matrix(R_nominal)
-        
-        # Raw IMU accelerometer reading (body frame, includes gravity)
+
+        # Cumulative spline: full Jacobians for accel (R-dependent, not omega-dependent).
+        # Base knots j <= k-3 also contribute via R_base.
+        R_full, _, J_R_list, _, active_ori = \
+            state.ori_spline.evaluate_full_jacobians(t_rel_ori)
+        R_nom_quat = Rot3.from_rotation_matrix(R_full)
+
         z_acc = imu_msg.linear_acceleration
-        g_world = np.array([0, 0, -9.81])
-        
-        # Call generated function
+
+        # delta=0: J_delta_3x3 is right-tangent Jacobian at R_full
         res_3, J_a, J_delta_3x3, J_ba = accel_residual_with_jacobians(
-            a_world, R_nom_quat, delta, g_world, z_acc, state.acc_bias, 1e-10
+            a_world, R_nom_quat, _zeros3, g_world, z_acc, state.acc_bias, 1e-10
         )
-        
-        # Huber weight based on norm of the 3D residual (before lambda scaling)
+
         if use_huber_accel:
             accel_res_norm = np.linalg.norm(res_3)
-            w_accel = huber_weight(accel_res_norm, delta=huber_delta_accel)
-            sqrt_w_accel = np.sqrt(w_accel)
+            sqrt_w_accel = np.sqrt(huber_weight(accel_res_norm, delta=huber_delta_accel))
         else:
             sqrt_w_accel = 1.0
-        
+
         scale = sqrt_lambda_accel * sqrt_w_accel
-        
-        # 3 rows for this measurement
+
         for k in range(3):
             all_residuals.append(scale * res_3[k])
-            
-            # ∂r_accel/∂pos_cp_i = J_a[k,:] * N_i''(t)
+
+            # ∂r_accel/∂pos_cp_i
             for ci, cp_idx in enumerate(pos_acc_indices):
                 basis_val = pos_acc_coeffs[ci]
                 for dim in range(3):
                     col = cp_idx * 3 + dim
                     val = scale * J_a[k, dim] * basis_val
                     if abs(val) > 1e-15:
-                        rows.append(row_idx)
-                        cols.append(col)
-                        vals.append(val)
-            
-            # ∂r_accel/∂ori_cp_j = J_delta_3x3[k,:] * M_j(t)
-            for ci, cp_idx in enumerate(ori_val_indices):
-                basis_val = ori_val_coeffs[ci]
+                        rows.append(row_idx); cols.append(col); vals.append(val)
+
+            # ∂r_accel/∂Ω_j = J_delta_3x3[k,:] @ J_R_list[j]
+            for jj, knot_idx in enumerate(active_ori):
+                J_wrt = J_delta_3x3[k, :] @ J_R_list[jj]  # (3,)
                 for dim in range(3):
-                    col = n_pos + cp_idx * 3 + dim
-                    val = scale * J_delta_3x3[k, dim] * basis_val
+                    col = n_pos + knot_idx * 3 + dim
+                    val = scale * J_wrt[dim]
                     if abs(val) > 1e-15:
-                        rows.append(row_idx)
-                        cols.append(col)
-                        vals.append(val)
-            
-            # ∂r_accel/∂b_a = J_ba[k,:] = -I[k,:]
+                        rows.append(row_idx); cols.append(col); vals.append(val)
+
+            # ∂r_accel/∂b_a
             for dim in range(3):
-                col = n_pos + n_ori + dim  # acc bias index
+                col = n_pos + n_ori + dim
                 val = scale * J_ba[k, dim]
                 if abs(val) > 1e-15:
-                    rows.append(row_idx)
-                    cols.append(col)
-                    vals.append(val)
-            
+                    rows.append(row_idx); cols.append(col); vals.append(val)
+
             row_idx += 1
-    
+
     n_accel_rows = row_idx - n_radar
     
     # ==================== Gyroscope residuals ====================
+    # Cumulative spline: r = z_gyro - omega(t) - b_g
+    # J_omega = -I  (trivial), J_bg = -I
     sqrt_lambda_gyro = np.sqrt(lambda_gyro)
-    
+
     for imu_msg in imu_data:
         t = imu_msg.timestamp
-        
-        t_rel_ori = t - state.ori_bspline.t_ref
-        
-        # Basis functions for orientation (value AND derivative)
-        ori_val_coeffs, ori_val_indices = state.ori_bspline.get_basis_coefficients(t_rel_ori, derivative=0)
-        ori_vel_coeffs, ori_vel_indices = state.ori_bspline.get_basis_coefficients(t_rel_ori, derivative=1)
-        
-        # Current state values
-        delta = state.ori_bspline(t_rel_ori, derivative=0)
-        delta_dot = state.ori_bspline(t_rel_ori, derivative=1)
-        omega_nominal = state.get_nominal_angular_velocity(t_rel_ori)
-        
-        # Raw gyroscope reading (body frame)
+        t_rel_ori = t - state.ori_spline.t_ref
+
         z_gyro = imu_msg.angular_velocity
-        
-        # Call SymForce-generated function (returns residual + Jacobians)
-        res_gyro_3, J_delta_gyro, J_delta_dot_gyro, J_bg = gyro_residual_with_jacobians(
-            omega_nominal, delta, delta_dot, z_gyro, state.gyr_bias, 1e-10
-        )
-        
+
+        _, omega, _, J_omega_list, active_ori = \
+            state.ori_spline.evaluate_with_jacobians(t_rel_ori)
+
+        res_gyro_3 = z_gyro - omega - state.gyr_bias  # (3,)
+
         for k in range(3):
             all_residuals.append(sqrt_lambda_gyro * res_gyro_3[k])
-            
-            # ∂r_gyro/∂ori_cp_j = J_delta[k,:] * M_j(t) + J_delta_dot[k,:] * M_j'(t)
-            # Delta contribution (from orientation value)
-            for ci, cp_idx in enumerate(ori_val_indices):
-                basis_val = ori_val_coeffs[ci]
+
+            # ∂r_gyro/∂Ω_j = -J_omega_list[j][k,:]
+            for jj, knot_idx in enumerate(active_ori):
+                J_wrt = -J_omega_list[jj][k, :]  # (3,)
                 for dim in range(3):
-                    col = n_pos + cp_idx * 3 + dim
-                    val = sqrt_lambda_gyro * J_delta_gyro[k, dim] * basis_val
+                    col = n_pos + knot_idx * 3 + dim
+                    val = sqrt_lambda_gyro * J_wrt[dim]
                     if abs(val) > 1e-15:
-                        rows.append(row_idx)
-                        cols.append(col)
-                        vals.append(val)
-            
-            # Delta_dot contribution (from orientation derivative)
-            for ci, cp_idx in enumerate(ori_vel_indices):
-                basis_val = ori_vel_coeffs[ci]
-                for dim in range(3):
-                    col = n_pos + cp_idx * 3 + dim
-                    val = sqrt_lambda_gyro * J_delta_dot_gyro[k, dim] * basis_val
-                    if abs(val) > 1e-15:
-                        rows.append(row_idx)
-                        cols.append(col)
-                        vals.append(val)
-            
-            # ∂r_gyro/∂b_g
-            for dim in range(3):
-                col = n_pos + n_ori + 3 + dim  # gyro bias index
-                val = sqrt_lambda_gyro * J_bg[k, dim]
-                if abs(val) > 1e-15:
-                    rows.append(row_idx)
-                    cols.append(col)
-                    vals.append(val)
-            
+                        rows.append(row_idx); cols.append(col); vals.append(val)
+
+            # ∂r_gyro/∂b_g = -I[k,:]
+            col = n_pos + n_ori + 3 + k
+            val = -sqrt_lambda_gyro
+            rows.append(row_idx); cols.append(col); vals.append(val)
+
             row_idx += 1
     
     # ==================== Boundary velocity priors ====================
@@ -906,28 +723,36 @@ def compute_jacobian_analytical(
                 row_idx += 1
                 n_boundary_pos_rows += 1
     
-    # ==================== Boundary orientation priors (delta=0) ====================
+    # ==================== Boundary orientation priors ====================
+    # Residual: so3_log(R_target^T @ R_est) penalizes rotation error.
+    # Jacobian: ∂r/∂(right tangent) ≈ J_r(phi)^{-1} ≈ I (valid when prior is tight).
     n_boundary_ori_rows = 0
     if boundary_ori_priors and lambda_boundary_ori > 0:
         sqrt_lbo = np.sqrt(lambda_boundary_ori)
-        for t_abs in boundary_ori_priors:
-            t_rel_ori = t_abs - state.ori_bspline.t_ref
-            # Get basis functions for orientation (0th derivative)
-            ori_val_coeffs, ori_val_indices = state.ori_bspline.get_basis_coefficients(
-                t_rel_ori, derivative=0)
-            # Residual: delta(t) should be zero (nominal = MoCap)
-            delta_est = state.ori_bspline(t_rel_ori, derivative=0)
-            
+        for entry in boundary_ori_priors:
+            # Support both old format (t_abs,) and new format (t_abs, R_target)
+            if isinstance(entry, (tuple, list)):
+                t_abs, R_target = entry
+            else:
+                # Legacy: entry is just t_abs; R_target comes from MoCap interpolation
+                # stored externally — skip if not provided
+                continue
+
+            t_rel_ori = t_abs - state.ori_spline.t_ref
+            R_est, _, J_R_list, _, active_ori = \
+                state.ori_spline.evaluate_full_jacobians(t_rel_ori)
+            r_ori = _so3_log_cs(R_target.T @ R_est)  # (3,)
+
             for k in range(3):
-                all_residuals.append(sqrt_lbo * delta_est[k])
-                for ci, cp_idx in enumerate(ori_val_indices):
-                    basis_val = ori_val_coeffs[ci]
-                    col = n_pos + cp_idx * 3 + k
-                    val = sqrt_lbo * basis_val
-                    if abs(val) > 1e-15:
-                        rows.append(row_idx)
-                        cols.append(col)
-                        vals.append(val)
+                all_residuals.append(sqrt_lbo * r_ori[k])
+                # ∂r/∂Ω_j ≈ J_R_list[j][k,:]  (J_r^{-1} ≈ I for small residual)
+                for jj, knot_idx in enumerate(active_ori):
+                    J_wrt = J_R_list[jj][k, :]  # (3,)
+                    for dim in range(3):
+                        col = n_pos + knot_idx * 3 + dim
+                        val = sqrt_lbo * J_wrt[dim]
+                        if abs(val) > 1e-15:
+                            rows.append(row_idx); cols.append(col); vals.append(val)
                 row_idx += 1
                 n_boundary_ori_rows += 1
     
@@ -955,45 +780,47 @@ def compute_jacobian_analytical(
                 row_idx += 1
                 n_boundary_accel_rows += 1
     
-    # ==================== Boundary angular velocity priors (delta_dot=0) ====================
+    # ==================== Boundary angular velocity priors ====================
+    # Residual: omega_est - omega_target (anchors angular velocity at trajectory start).
     n_boundary_gyro_rows = 0
     if boundary_gyro_priors and lambda_boundary_gyro > 0:
         sqrt_lbg = np.sqrt(lambda_boundary_gyro)
-        for t_abs in boundary_gyro_priors:
-            t_rel_ori = t_abs - state.ori_bspline.t_ref
-            ori_vel_coeffs, ori_vel_indices = state.ori_bspline.get_basis_coefficients(
-                t_rel_ori, derivative=1)
-            # Residual: delta_dot(t) should be zero (omega = omega_nominal)
-            delta_dot_est = state.ori_bspline(t_rel_ori, derivative=1)
-            
+        for entry in boundary_gyro_priors:
+            if isinstance(entry, (tuple, list)):
+                t_abs, omega_target = entry
+            else:
+                # Legacy: entry is just t_abs with implicit omega_target=0
+                t_abs = entry
+                omega_target = np.zeros(3)
+
+            t_rel_ori = t_abs - state.ori_spline.t_ref
+            _, omega_est, _, J_omega_list, active_ori = \
+                state.ori_spline.evaluate_with_jacobians(t_rel_ori)
+            r_gyro_bnd = omega_est - omega_target  # (3,)
+
             for k in range(3):
-                all_residuals.append(sqrt_lbg * delta_dot_est[k])
-                for ci, cp_idx in enumerate(ori_vel_indices):
-                    basis_val = ori_vel_coeffs[ci]
-                    col = n_pos + cp_idx * 3 + k
-                    val = sqrt_lbg * basis_val
-                    if abs(val) > 1e-15:
-                        rows.append(row_idx)
-                        cols.append(col)
-                        vals.append(val)
+                all_residuals.append(sqrt_lbg * r_gyro_bnd[k])
+                for jj, knot_idx in enumerate(active_ori):
+                    J_wrt = J_omega_list[jj][k, :]  # (3,)
+                    for dim in range(3):
+                        col = n_pos + knot_idx * 3 + dim
+                        val = sqrt_lbg * J_wrt[dim]
+                        if abs(val) > 1e-15:
+                            rows.append(row_idx); cols.append(col); vals.append(val)
                 row_idx += 1
                 n_boundary_gyro_rows += 1
     
-    # ==================== Orientation regularization (penalize delta CPs ≠ 0) ====================
-    # Prevents systematic orientation drift from MoCap nominal.
-    # Each ori CP has 3 components; residual = sqrt(lambda) * delta_cp_k
+    # ==================== Orientation increment regularization (penalize ||Ω_j||²) ====================
+    # Encourages small relative rotations between consecutive virtual keyframes.
     n_ori_reg_rows = 0
     if lambda_ori_reg > 0:
         sqrt_lor = np.sqrt(lambda_ori_reg)
-        n_ori_cp = state.ori_bspline.n_points
-        for cp_idx in range(n_ori_cp):
-            delta_cp = state.ori_bspline.control_points[cp_idx]  # (3,)
+        for knot_idx in range(state.ori_spline.n_knots):
+            omega_j = state.ori_spline.omega_knots[knot_idx]
             for k in range(3):
-                all_residuals.append(sqrt_lor * delta_cp[k])
-                col = n_pos + cp_idx * 3 + k
-                rows.append(row_idx)
-                cols.append(col)
-                vals.append(sqrt_lor)  # ∂r/∂cp_k = sqrt(lambda)
+                all_residuals.append(sqrt_lor * omega_j[k])
+                col = n_pos + knot_idx * 3 + k
+                rows.append(row_idx); cols.append(col); vals.append(sqrt_lor)
                 row_idx += 1
                 n_ori_reg_rows += 1
     
@@ -1176,17 +1003,15 @@ def solve_trajectory_nonlinear(
     if verbose:
         print("\nBuilding regularization matrices...")
     R_snap_pos = build_minimum_snap_regularization(state.pos_bspline, n_samples=100)
-    R_snap_ori = build_minimum_snap_regularization(state.ori_bspline, n_samples=50)
-    
+
     # Separate regularization matrices for position and orientation blocks
     n_pos = state.pos_bspline.n_points * 3
-    n_ori = state.ori_bspline.n_points * 3
+    n_ori = state.ori_spline.n_knots * 3
     n_total = state.get_state_size()
-    
-    # Create block-diagonal regularization matrix
+
+    # Position minimum-snap only; orientation uses increment regularization via lambda_ori_reg
     R_snap = sparse.lil_matrix((n_total, n_total))
     R_snap[:n_pos, :n_pos] = lambda_snap_pos * (R_snap_pos.T @ R_snap_pos)
-    R_snap[n_pos:n_pos+n_ori, n_pos:n_pos+n_ori] = lambda_snap_ori * (R_snap_ori.T @ R_snap_ori)
     R_snap = R_snap.tocsr()
     
     # Helper: build Jacobian with all params
@@ -1226,12 +1051,15 @@ def solve_trajectory_nonlinear(
 
     lambda_lm = 1e-3
     prev_cost = None
-    
+    n_consecutive_rejects = 0
+    MAX_CONSECUTIVE_REJECTS = 3
+
     for iteration in range(max_iterations):
         # Reset LM state when transitioning from warmup to full accel
         if iteration == ACCEL_WARMUP_ITERS:
             prev_cost = None
             lambda_lm = 1e-3
+            n_consecutive_rejects = 0
             if verbose:
                 print(f"\n  >>> Accel warm-up complete. Enabling accelerometer (lambda_accel={lambda_accel})")
         
@@ -1240,8 +1068,8 @@ def solve_trajectory_nonlinear(
             # Track orientation RMSE per iteration
             if mocap_times_abs is not None and mocap_rotations is not None:
                 ori_rmse = compute_orientation_rmse(state, mocap_times_abs, mocap_rotations)
-                delta_norms = np.linalg.norm(state.ori_bspline.control_points, axis=1)
-                print(f"Orientation RMSE: {ori_rmse:.1f} deg | delta max: {np.degrees(delta_norms.max()):.2f}° mean: {np.degrees(delta_norms.mean()):.2f}°")
+                omega_norms = np.linalg.norm(state.ori_spline.omega_knots, axis=1)
+                print(f"Orientation RMSE: {ori_rmse:.1f} deg | |Ω| max: {np.degrees(omega_norms.max()):.2f}° mean: {np.degrees(omega_norms.mean()):.2f}°")
                 print(f"Acc bias: [{state.acc_bias[0]:.3f}, {state.acc_bias[1]:.3f}, {state.acc_bias[2]:.3f}]"
                       f"  Gyr bias: [{state.gyr_bias[0]:.3f}, {state.gyr_bias[1]:.3f}, {state.gyr_bias[2]:.3f}]")
         
@@ -1350,24 +1178,18 @@ def solve_trajectory_nonlinear(
         
         # LM acceptance: accept only if cost decreased
         if new_cost < cost_total:
-            lambda_lm = max(1e-6, lambda_lm * 0.1)  # Floor at 1e-6: prevents near-singular H after re-linearization
+            lambda_lm = max(1e-6, lambda_lm * 0.1)
             prev_cost = new_cost
-            max_delta_deg = np.degrees(
-                np.linalg.norm(state.ori_bspline.control_points, axis=1).max())
+            n_consecutive_rejects = 0
             if verbose:
-                print(f"  Accepted: cost {cost_total:.1f} -> {new_cost:.1f} (max |delta|={max_delta_deg:.1f}°)")
-            # Re-linearize only when delta is large enough to warrant it
-            if max_delta_deg >= relinearize_threshold_deg:
-                state.relinearize()
-                if verbose:
-                    print(f"  Re-linearized: absorbed max |delta|={max_delta_deg:.1f}° into nominal")
-            else:
-                if verbose:
-                    print(f"  Skipped re-linearization (max |delta|={max_delta_deg:.1f}° < {relinearize_threshold_deg:.1f}° threshold)")
+                omega_norms = np.linalg.norm(state.ori_spline.omega_knots, axis=1)
+                print(f"  Accepted: cost {cost_total:.1f} -> {new_cost:.1f} "
+                      f"(max |Ω|={np.degrees(omega_norms.max()):.1f}°)")
         else:
             # Reject and increase damping
             state.from_vector(x_current)
             lambda_lm *= 10.0  # Strong punishment for bad step
+            n_consecutive_rejects += 1
             if verbose:
                 print(f"  [WARN] Cost increased ({new_cost:.2f} > {cost_total:.2f}), rejecting step")
         
@@ -1380,7 +1202,12 @@ def solve_trajectory_nonlinear(
         
         if delta_norm < 1e-4:
             if verbose:
-                print("\n[OK] Converged!")
+                print("\n[OK] Converged (delta_norm < 1e-4)!")
+            break
+
+        if n_consecutive_rejects >= MAX_CONSECUTIVE_REJECTS:
+            if verbose:
+                print(f"\n[OK] Early stop: {MAX_CONSECUTIVE_REJECTS} consecutive rejected steps.")
             break
     
     if verbose:
@@ -1840,17 +1667,7 @@ def main():
     n_interior_ori = int(np.ceil(DURATION / DT_ORI)) + 1
     n_ori_points = max(ori_degree + 2, n_interior_ori + 2 * BOUNDARY_ORDER)
     
-    # Initialize with dummy control points (will be overwritten)
-    ori_bspline = UniformBSpline(np.zeros((n_ori_points, 3)), ori_degree, DT_ORI)
-    ori_bspline.t_ref = t_ref
-    
-    # Initialize with zero perturbations (identity in tangent space)
-    ori_bspline.control_points = np.zeros((n_ori_points, 3))
-    
     # Enforce quaternion hemisphere consistency BEFORE any interpolation.
-    # q and -q represent the same rotation; if consecutive quaternions lie in
-    # opposite hemispheres, SLERP takes the long (wrong) path.  This is
-    # critical for backflips where the drone rotates 360° around pitch.
     n_flips = 0
     for i in range(1, len(mocap_orientations)):
         if np.dot(mocap_orientations[i], mocap_orientations[i - 1]) < 0:
@@ -1858,25 +1675,32 @@ def main():
             n_flips += 1
     if n_flips > 0:
         print(f"  Fixed {n_flips} quaternion sign flips for hemisphere consistency")
-    
-    # Create dense SLERP interpolation from MoCap (much better than nearest-neighbor)
+
+    # Create dense SLERP interpolation from MoCap
     mocap_rots_scipy = Rotation.from_quat(mocap_orientations)  # [qx, qy, qz, qw]
     mocap_slerp = Slerp(mocap_times_rel, mocap_rots_scipy)
-    
-    # Sample nominal rotations at control point times using SLERP (not linear quat interp)
-    nominal_times = np.linspace(ori_bspline.t_start, ori_bspline.t_end, n_ori_points)
-    nominal_times_clamped = np.clip(nominal_times, mocap_times_rel[0], mocap_times_rel[-1])
-    nominal_rotations = np.array([
-        mocap_slerp(t).as_matrix() for t in nominal_times_clamped
-    ])
-    
-    # Create angular velocity interpolation from MoCap
+
+    # Sample rotations at control knot times for cumulative spline initialization
+    knot_times = np.linspace(0.0, (n_ori_points - 1) * DT_ORI, n_ori_points)
+    # A temporary dummy spline to get the valid t_start
+    _dummy_bspline = UniformBSpline(np.zeros((n_ori_points, 3)), ori_degree, DT_ORI)
+    knot_times_abs_rel = knot_times  # relative to B-spline t=0
+
+    # Sample MoCap rotations at knot times (clamped to MoCap data range)
+    # The B-spline time axis starts at 0; t_ref maps to absolute time.
+    mocap_sample_times = np.clip(knot_times_abs_rel, mocap_times_rel[0], mocap_times_rel[-1])
+    R_knot_samples = np.array([mocap_slerp(t).as_matrix() for t in mocap_sample_times])
+
+    # Initialize cumulative SO(3) spline from MoCap rotation samples
+    ori_spline = CumulativeSO3BSpline.from_rotation_samples(R_knot_samples, dt=DT_ORI, t_ref=t_ref)
+
+    # Also keep mocap_slerp for bias fallback and boundary prior construction
     mocap_angular_velocities = np.array([s.angular_velocity for s in agiros_states])
     mocap_omega_interp = interp1d(mocap_times_rel, mocap_angular_velocities, axis=0,
                                    kind='cubic', fill_value='extrapolate')
-    
-    print(f"Orientation spline: {n_ori_points} control points, dt={ori_bspline.dt:.4f}s")
-    print(f"  SLERP from {len(mocap_times_rel)} MoCap samples ({1.0/(mocap_times_rel[1]-mocap_times_rel[0]):.0f} Hz)")
+
+    print(f"Orientation spline (cumulative SO3): {n_ori_points} knots, dt={DT_ORI:.4f}s")
+    print(f"  Initialized from {len(mocap_times_rel)} MoCap samples ({1.0/(mocap_times_rel[1]-mocap_times_rel[0]):.0f} Hz)")
     
     # ==================== Bias Initialization ====================
     # Use variance-based stationary detection on the FULL bag IMU data
@@ -1912,7 +1736,8 @@ def main():
                 R_mocap = mocap_slerp(np.clip(t_rel, mocap_times_rel[0], mocap_times_rel[-1])).as_matrix()
                 pred_imu = R_mocap.T @ (a_world - g_world)
                 accel_residuals_init.append(imu_msg.linear_acceleration - pred_imu)
-                omega_mocap = mocap_omega_interp(np.clip(t_rel, mocap_times_rel[0], mocap_times_rel[-1]))
+                t_clamped = np.clip(t_rel, mocap_times_rel[0], mocap_times_rel[-1])
+                omega_mocap = mocap_omega_interp(t_clamped)
                 gyro_residuals_init.append(imu_msg.angular_velocity - omega_mocap)
             except Exception:
                 pass
@@ -1931,18 +1756,15 @@ def main():
     # Create initial state
     initial_state = TrajectoryState(
         pos_bspline=pos_bspline,
-        ori_bspline=ori_bspline,
-        nominal_rotations=nominal_rotations,
+        ori_spline=ori_spline,
         acc_bias=acc_bias,
         gyr_bias=gyr_bias,
         radar_extrinsic_delta=np.zeros(3),
-        mocap_slerp=mocap_slerp,
-        mocap_omega_interp=mocap_omega_interp
     )
     
     print(f"Total state variables: {initial_state.get_state_size()}")
     print(f"  Position: {n_pos_points * 3}")
-    print(f"  Orientation: {n_ori_points * 3}")
+    print(f"  Orientation (Ω knots): {ori_spline.n_knots * 3}")
     print(f"  Biases: 6")
     
     # ==================== Optimize ====================
@@ -1958,9 +1780,9 @@ def main():
     
     boundary_vel_priors = []
     boundary_pos_priors = []
-    boundary_ori_priors = []    # list of t_abs (delta=0 target)
+    boundary_ori_priors = []    # list of (t_abs, R_target)
     boundary_accel_priors = []  # list of (t_abs, a_target)
-    boundary_gyro_priors = []   # list of t_abs (delta_dot=0 target)
+    boundary_gyro_priors = []   # list of (t_abs, omega_target)
     # Clip to intersection of B-spline domain and MoCap data range
     t_spline_start = max(pos_bspline.t_start, mocap_times_rel[0])
     t_spline_end = min(pos_bspline.t_end, mocap_times_rel[-1])
@@ -1984,13 +1806,16 @@ def main():
         # Position prior
         p_gt = pos_interp(t_rel)
         boundary_pos_priors.append((t_abs, p_gt))
-        # Orientation prior: delta(t) = 0 (nominal IS MoCap SLERP)
-        boundary_ori_priors.append(t_abs)
+        # Orientation prior: R_est should match MoCap
+        t_clamped = np.clip(t_rel, mocap_times_rel[0], mocap_times_rel[-1])
+        R_gt = mocap_slerp(t_clamped).as_matrix()
+        boundary_ori_priors.append((t_abs, R_gt))
         # Acceleration prior
         a_gt = mocap_accel_interp(t_rel)
         boundary_accel_priors.append((t_abs, a_gt))
-        # Angular velocity prior: delta_dot(t) = 0 (omega = omega_nominal)
-        boundary_gyro_priors.append(t_abs)
+        # Angular velocity prior: omega_est should match MoCap omega
+        omega_gt = mocap_omega_interp(t_clamped)
+        boundary_gyro_priors.append((t_abs, omega_gt))
     
     print(f"\n  Boundary priors (START only): {n_boundary_samples} sample points")
     print(f"    vel: {len(boundary_vel_priors)}, pos: {len(boundary_pos_priors)}, ori: {len(boundary_ori_priors)}, acc: {len(boundary_accel_priors)}, gyr: {len(boundary_gyro_priors)}")
@@ -2009,17 +1834,14 @@ def main():
     n_huber_suppressed = 0
     n_total_pts = 0
     init_residuals = []
+    _zeros3_init = np.zeros(3)
     for frame in radar_frames:
         t = frame.timestamp
         try:
             v_world = initial_state.get_position(t, derivative=1)
-            t_rel_ori = t - initial_state.ori_bspline.t_ref
-            delta = initial_state.ori_bspline(t_rel_ori, derivative=0)
-            delta_dot = initial_state.ori_bspline(t_rel_ori, derivative=1)
-            omega_nominal = initial_state.get_nominal_angular_velocity(t_rel_ori)
-            omega, _, _ = compute_omega_and_jacobians(omega_nominal, delta, delta_dot)
-            R_nominal = initial_state.get_nominal_rotation(t_rel_ori)
-            R_nom_quat = Rot3.from_rotation_matrix(R_nominal)
+            t_rel_ori = t - initial_state.ori_spline.t_ref
+            R_full, omega, _, _, _ = initial_state.ori_spline.evaluate_with_jacobians(t_rel_ori)
+            R_nom_quat = Rot3.from_rotation_matrix(R_full)
             R_bs_quat = Rot3.from_rotation_matrix(sensor_rotation)
         except Exception:
             continue
@@ -2033,7 +1855,7 @@ def main():
             v_meas = frame.velocities[i]
 
             res, _, _, _, _ = radar_residual_with_jacobians(
-                v_world, R_nom_quat, delta, omega,
+                v_world, R_nom_quat, _zeros3_init, omega,
                 u_sensor, TRANSLATION, R_bs_quat,
                 v_meas, 1e-10
             )
