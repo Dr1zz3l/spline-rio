@@ -26,6 +26,7 @@ radar_config:
     doppler_resolution: 0.049
 
 flipped:
+  - circle
   # - circle_fwd
   - loopings
   # - backflips

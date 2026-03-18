@@ -68,7 +68,7 @@ python analysis/codegen/derive_jacobians_symforce.py   # Overwrites analysis/cod
 
 **Phase 3 — Nonlinear Solver** (`validate_nonlinear_solver.py`): Full Levenberg-Marquardt with sparse Cholesky. Jointly optimizes:
 - Position trajectory (quintic B-spline control points)
-- Orientation trajectory (SO(3) B-spline as tangent-space perturbations `δ(t)` around MoCap nominal `R_nom(t)`)
+- Orientation trajectory (cumulative SO(3) B-spline on Lie groups with incremental rotation control points Ω_j)
 - Constant accelerometer and gyroscope biases
 
 Flags: `--no-flip` (override per-bag yaw flip), `--flip` (force flip on), `--no-radar` (disable radar, IMU-only), `--precond` (Jacobi preconditioning)
@@ -79,6 +79,7 @@ Flags: `--no-flip` (override per-bag yaw flip), `--flip` (force flip on), `--no-
 |------|------|
 | `lib/radar_velocity_utils.py` | Forward model, WLS ego-velocity solver, Huber loss, extrinsic calibration |
 | `lib/bspline_utils.py` | Uniform B-splines (Cox-de Boor), derivatives, min-snap regularization |
+| `lib/cumulative_so3_bspline.py` | Cumulative SO(3) B-spline on Lie groups: evaluate R(t), body-rate ω(t), Jacobians, initialization from rotation samples |
 | `codegen/generated_jacobians.py` | SymForce-generated residuals + Jacobians for radar, accel, gyro factors |
 | `codegen/derive_jacobians_symforce.py` | Source for regenerating `generated_jacobians.py` |
 | `lib/rosbag_loader/loader.py` | Unified API to load 7 ROS topics into typed dataclasses |
@@ -92,11 +93,13 @@ Flags: `--no-flip` (override per-bag yaw flip), `--flip` (force flip on), `--no-
 
 ```
 Position:     Quintic B-spline (degree 5) with control points P_i, knot spacing 0.05s
-Orientation:  R(t) = R_nom(t) · exp(δ(t))
-              R_nom = SLERP of MoCap quaternions (re-linearized when max|δ| > 10°)
-              δ(t) = Quintic B-spline in so(3) tangent space, knot spacing 0.05s
+Orientation:  R(t) = R_base[k-3] · ∏ exp(B̃_j(t) · Ω_j)   (cumulative product over j=k-3..k)
+              Ω_j ∈ so(3): incremental rotation control points, initialized from MoCap SLERP
+              R_base[k-3]: left anchor rotation for the active spline segment
+              (no relinearization needed — exact on-manifold representation)
 Biases:       Constant b_a (accel), b_g (gyro)
-Regularization: minimum-snap (∫||P⁴(t)||² dt)
+Regularization: position: minimum-snap (∫||P⁴(t)||² dt)
+                orientation: per-knot increment penalty (λ · ∑||Ω_j||²)
 ```
 
 ### Sensor Models / Residuals
@@ -126,8 +129,10 @@ The radar has limited elevation diversity (2 TX antennas), causing a systematic 
 |-----------|-------|-------|
 | `HUBER_DELTA` | 1.0 m/s | Must be ≥ radar Doppler bin size (0.63 m/s) |
 | `IMU_MOCAP_OFFSET` | +0.020 s | Empirically determined time alignment |
-| `LAMBDA_ACCEL` | 1.0 | Accelerometer weight |
-| `LAMBDA_GYRO` | 100.0 | Gyroscope weight (primary orientation sensor) |
+| `LAMBDA_ACCEL` | 0.01 | Accelerometer weight |
+| `LAMBDA_GYRO` | 1.0 | Gyroscope weight (primary orientation sensor) |
+| `LAMBDA_ORI_REG` | 0.001 | Orientation increment regularization (penalizes `‖Ω_j‖²` per knot) |
+| `ORI_BASE_JACOBIAN_WINDOW` | 20 | Max base knots per measurement for orientation Jacobian (~1 s); 0 = full exact |
 | `LAMBDA_BIAS_PRIOR_ACCEL` | 1000.0 | Strong prior prevents gravity leakage into bias |
 | `LAMBDA_BIAS_PRIOR_GYRO` | 10000.0 | Very strong prior on gyro bias |
 | `LAMBDA_BOUNDARY_VEL/POS` | 1000.0 | Anchor start of trajectory to MoCap |

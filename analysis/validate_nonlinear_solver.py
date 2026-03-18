@@ -2064,28 +2064,16 @@ def main():
     # --- Derived quantities for new plots ---
     pos_diff = estimated_positions - mocap_positions_eval
     accel_diff = estimated_accelerations - mocap_accelerations
-    accel_errors_per_axis = accel_diff  # alias for clarity
 
     mocap_euler = np.degrees(Rotation.from_matrix(mocap_rotations_eval).as_euler('xyz'))
     est_euler = np.degrees(Rotation.from_matrix(estimated_rotations).as_euler('xyz'))
     euler_diff = ((est_euler - mocap_euler) + 180) % 360 - 180  # wrap to [-180, 180]
 
-    mocap_rot_mag = np.degrees(np.linalg.norm(
-        Rotation.from_matrix(mocap_rotations_eval).as_rotvec(), axis=1))
-    est_rot_mag = np.degrees(np.linalg.norm(
-        Rotation.from_matrix(estimated_rotations).as_rotvec(), axis=1))
-
     mocap_ang_vel = np.array([s.angular_velocity for s in agiros_eval])
     est_ang_vel = np.array([optimized_state.get_angular_velocity(t) for t in eval_times])
     ang_vel_diff = est_ang_vel - mocap_ang_vel
     ang_vel_abs_error = np.linalg.norm(ang_vel_diff, axis=1)
-    mocap_ang_speed = np.linalg.norm(mocap_ang_vel, axis=1)
-    est_ang_speed = np.linalg.norm(est_ang_vel, axis=1)
 
-    mocap_speed = np.linalg.norm(mocap_velocities, axis=1)
-    est_speed = np.linalg.norm(estimated_velocities, axis=1)
-    mocap_accel_norm = np.linalg.norm(mocap_accelerations, axis=1)
-    est_accel_norm = np.linalg.norm(estimated_accelerations, axis=1)
     accel_abs_error = np.linalg.norm(accel_diff, axis=1)
     accel_rmse = np.sqrt(np.mean(accel_abs_error**2))
     ang_vel_rmse = np.sqrt(np.mean(ang_vel_abs_error**2))
@@ -2098,28 +2086,32 @@ def main():
     C_MOCAP = 'royalblue'    # absolute ground truth
     C_EST   = 'crimson'      # absolute estimated
     LW_AXIS = 0.9            # per-axis line width
-    LW_ABS  = 2.0            # absolute curve line width
+    LW_ABS  = 2.0            # absolute curve line width (comparison plots)
+    LW_ERR  = 1.0            # absolute error envelope (thinner; noisy signals make wide lines ugly)
     A_AXIS  = 0.7            # per-axis alpha
 
-    def _comparison(a, t, mocap_data, est_data, mocap_abs, est_abs,
-                    axis_labels, ylabel, abs_label_pair):
-        """Plot per-axis (thin, muted) + absolute (thick, blue/red) comparison."""
+    # Display-only lowpass (5 Hz) for error envelopes and noisy MoCap signals.
+    # Separate from the 10 Hz pre-processing filter — used only for visual clarity.
+    _fc_disp = min(5.0, _fs * 0.4)
+    _bd, _ad = butter(4, _fc_disp / (_fs / 2), btype='low')
+    def _smooth(x):
+        return filtfilt(_bd, _ad, x) if len(x) > 27 else x
+
+    def _comparison(a, t, mocap_data, est_data, axis_labels, ylabel):
+        """Plot per-axis (thin, muted) MoCap vs estimate comparison."""
         for i, lbl in enumerate(axis_labels):
             a.plot(t, mocap_data[:, i], color=AXIS_COLORS[i], linewidth=LW_AXIS,
                    alpha=A_AXIS, label=f'MoCap {lbl}')
             a.plot(t, est_data[:, i], color=AXIS_COLORS[i], linewidth=LW_AXIS,
                    alpha=A_AXIS, linestyle='--')
-        a.plot(t, mocap_abs, color=C_MOCAP, linewidth=LW_ABS, label=f'MoCap {abs_label_pair}')
-        a.plot(t, est_abs,   color=C_EST,   linewidth=LW_ABS, linestyle='--',
-               label=f'Est {abs_label_pair}')
         a.set_ylabel(ylabel); a.legend(fontsize=6, ncol=2); a.grid(True, alpha=0.3)
 
     def _error(a, t, per_axis_diff, abs_error, rmse, axis_labels, ylabel, abs_label):
-        """Plot per-axis errors (thin, muted) + absolute error (thick black) + RMSE line."""
+        """Plot per-axis errors (thin, muted) + smoothed absolute error (black) + RMSE line."""
         for i, lbl in enumerate(axis_labels):
             a.plot(t, per_axis_diff[:, i], color=AXIS_COLORS[i], linewidth=LW_AXIS,
                    alpha=A_AXIS, label=f'Δ{lbl}')
-        a.plot(t, abs_error, color='k', linewidth=LW_ABS, label=f'|{abs_label}|')
+        a.plot(t, _smooth(abs_error), color='k', linewidth=LW_ERR, label=f'|{abs_label}| (smoothed)')
         a.axhline(rmse, color='royalblue', linewidth=1.5, linestyle='--',
                   label=f'RMSE: {rmse:.4f}')
         a.axhline(0, color='gray', linewidth=0.5, linestyle=':')
@@ -2155,9 +2147,7 @@ def main():
     # [0,1] X, Y, Z positions over time
     a = axd[(0, 1)]
     _comparison(a, time_rel, mocap_positions_eval, estimated_positions,
-                np.linalg.norm(mocap_positions_eval, axis=1),
-                np.linalg.norm(estimated_positions, axis=1),
-                axis_labels, 'Position (m)', '|pos|')
+                axis_labels, 'Position (m)')
     a.set_xlabel('Time (s)'); a.set_title('Position vs Time')
 
     # [0,2] Per-axis position error + absolute + RMSE
@@ -2173,15 +2163,8 @@ def main():
                alpha=A_AXIS, label=f'MoCap {lbl}')
         a.plot(time_rel, est_euler[:, i], color=AXIS_COLORS[i], linewidth=LW_AXIS,
                alpha=A_AXIS, linestyle='--')
-    a2 = a.twinx()
-    a2.plot(time_rel, mocap_rot_mag, color=C_MOCAP, linewidth=LW_ABS,
-            linestyle='--', alpha=0.8, label='|R| MoCap')
-    a2.plot(time_rel, est_rot_mag,   color=C_EST,   linewidth=LW_ABS,
-            linestyle='--', alpha=0.8, label='|R| Est')
-    a2.set_ylabel('Rotation magnitude (deg)', fontsize=7)
-    a2.legend(fontsize=6, loc='lower right')
     a.set_xlabel('Time (s)'); a.set_ylabel('Euler angle (deg)')
-    a.set_title('Orientation (Euler xyz) + Abs Magnitude')
+    a.set_title('Orientation (Euler xyz)')
     a.legend(fontsize=6, ncol=2); a.grid(True, alpha=0.3)
 
     # [1,1] Per-axis euler error + absolute orientation error + RMSE
@@ -2193,7 +2176,7 @@ def main():
     # [2,0] Per-axis + absolute velocity comparison
     a = axd[(2, 0)]
     _comparison(a, time_rel, mocap_velocities, estimated_velocities,
-                mocap_speed, est_speed, axis_labels, 'Velocity (m/s)', '|v|')
+                axis_labels, 'Velocity (m/s)')
     a.set_xlabel('Time (s)'); a.set_title('Linear Velocity Comparison')
 
     # [2,1] Per-axis velocity error + absolute + RMSE
@@ -2205,25 +2188,30 @@ def main():
     # [3,0] Per-axis + absolute angular velocity comparison
     a = axd[(3, 0)]
     _comparison(a, time_rel, mocap_ang_vel, est_ang_vel,
-                mocap_ang_speed, est_ang_speed, axis_labels, 'Angular vel (rad/s)', '|ω|')
+                axis_labels, 'Angular vel (rad/s)')
     a.set_xlabel('Time (s)'); a.set_title('Angular Velocity Comparison')
 
-    # [3,1] Per-axis angular velocity error + absolute + RMSE
+    # [3,1] Per-axis angular velocity error + absolute + RMSE (axes smoothed for readability)
     a = axd[(3, 1)]
-    _error(a, time_rel, ang_vel_diff, ang_vel_abs_error, ang_vel_rmse,
+    ang_vel_diff_plot = np.column_stack([_smooth(ang_vel_diff[:, i]) for i in range(3)])
+    _error(a, time_rel, ang_vel_diff_plot, ang_vel_abs_error, ang_vel_rmse,
            axis_labels, 'Error (rad/s)', 'Δω')
     a.set_xlabel('Time (s)'); a.set_title('Angular Velocity Error per Axis + Abs')
 
     # --- Row 4: Linear Acceleration ---
-    # [4,0] Per-axis + absolute acceleration comparison
+    # [4,0] Per-axis + absolute acceleration comparison.
+    # Smooth mocap accel per-axis for plotting only — differentiated velocity is very noisy.
+    mocap_accel_plot = np.column_stack([_smooth(mocap_accelerations[:, i]) for i in range(3)])
+    mocap_accel_norm_plot = np.linalg.norm(mocap_accel_plot, axis=1)
     a = axd[(4, 0)]
-    _comparison(a, time_rel, mocap_accelerations, estimated_accelerations,
-                mocap_accel_norm, est_accel_norm, axis_labels, 'Accel (m/s²)', '|a|')
-    a.set_xlabel('Time (s)'); a.set_title('Acceleration Comparison (vs diff(MoCap vel))')
+    _comparison(a, time_rel, mocap_accel_plot, estimated_accelerations,
+                axis_labels, 'Accel (m/s²)')
+    a.set_xlabel('Time (s)'); a.set_title('Acceleration Comparison (vs diff(MoCap vel), smoothed)')
 
-    # [4,1] Per-axis acceleration error + absolute + RMSE
+    # [4,1] Per-axis acceleration error + absolute + RMSE (axes smoothed for readability)
     a = axd[(4, 1)]
-    _error(a, time_rel, accel_diff, accel_abs_error, accel_rmse,
+    accel_diff_plot = np.column_stack([_smooth(accel_diff[:, i]) for i in range(3)])
+    _error(a, time_rel, accel_diff_plot, accel_abs_error, accel_rmse,
            axis_labels, 'Error (m/s²)', 'Δa')
     a.set_xlabel('Time (s)'); a.set_title('Acceleration Error per Axis + Abs')
 
