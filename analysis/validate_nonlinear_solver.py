@@ -1273,7 +1273,6 @@ def solve_trajectory_nonlinear(
     lambda_accel: float = 1.0,
     lambda_gyro: float = 1.0,
     lambda_snap_pos: float = 0.01,
-    lambda_snap_ori: float = 0.01,
     huber_delta: float = 0.5,
     huber_delta_accel: float = 0.0,
     max_iterations: int = 20,
@@ -1322,7 +1321,7 @@ def solve_trajectory_nonlinear(
     Minimizes:
     E = sum(huber(r_radar)) + lambda_accel * huber_accel(||r_accel||)
         + lambda_gyro * ||r_gyro||^2
-        + lambda_snap_pos * ||snap_pos||^2 + lambda_snap_ori * ||snap_ori||^2
+        + lambda_snap_pos * ||snap_pos||^2
         + boundary_priors (vel, pos, ori, accel, gyro)
     """
     if verbose:
@@ -1337,7 +1336,6 @@ def solve_trajectory_nonlinear(
         print(f"Lambda accel: {lambda_accel}")
         print(f"Lambda gyro: {lambda_gyro}")
         print(f"Lambda snap pos: {lambda_snap_pos}")
-        print(f"Lambda snap ori: {lambda_snap_ori}")
         if lock_biases:
             print(f"*** BIASES LOCKED TO INITIAL VALUES ***")
         if lock_extrinsics:
@@ -1867,7 +1865,7 @@ def main():
         TRANSLATION = _t_base.copy()
         SENSOR_ROTATION = R_base
 
-    BSPLINE_DEGREE = _SOLVER_CFG['bspline_degree']
+    BSPLINE_DEGREE = _SOLVER_CFG['pos_bspline_degree']
     DT_POS = _SOLVER_CFG['dt_pos']
     DT_ORI = _SOLVER_CFG['dt_ori']
 
@@ -1875,7 +1873,6 @@ def main():
     LAMBDA_ACCEL = _SOLVER_CFG['lambda_accel']
     LAMBDA_GYRO = _SOLVER_CFG['lambda_gyro']
     LAMBDA_SNAP_POS = _SOLVER_CFG['lambda_snap_pos']
-    LAMBDA_SNAP_ORI = _SOLVER_CFG['lambda_snap_ori']
     LAMBDA_ORI_REG = _SOLVER_CFG['lambda_ori_reg']
     LAMBDA_GRAVITY = _SOLVER_CFG.get('lambda_gravity', 0.0)
     GRAVITY_ACCEL_THRESHOLD = _SOLVER_CFG.get('gravity_accel_threshold', 3.0)
@@ -1918,7 +1915,7 @@ def main():
     print(f"B-spline degree: {BSPLINE_DEGREE}")
     print(f"Lambda accel: {LAMBDA_ACCEL}")
     print(f"Lambda gyro: {LAMBDA_GYRO}")
-    print(f"Lambda snap (pos/ori): {LAMBDA_SNAP_POS}/{LAMBDA_SNAP_ORI}")
+    print(f"Lambda snap pos: {LAMBDA_SNAP_POS}")
     print(f"Huber delta (radar): {HUBER_DELTA} m/s")
     print(f"Huber delta (accel): {HUBER_DELTA_ACCEL} m/s²")
     print(f"Max iterations: {MAX_ITERATIONS} (re-linearize when delta > {RELINEARIZE_THRESHOLD_DEG}°)")
@@ -2136,7 +2133,7 @@ def main():
     # Use tangent space parameterization around nominal rotations
     
     # Create orientation spline with fixed knot spacing (independent of window duration)
-    ori_degree = min(3, BSPLINE_DEGREE)  # Cubic for orientation (higher degrees destabilize)
+    ori_degree = 3  # CumulativeSO3BSpline is always cubic (hardcoded in the class)
     n_interior_ori = int(np.ceil(DURATION / DT_ORI)) + 1
     n_ori_points = max(ori_degree + 2, n_interior_ori + 2 * BOUNDARY_ORDER)
     
@@ -2367,7 +2364,6 @@ def main():
         lambda_accel=LAMBDA_ACCEL,
         lambda_gyro=LAMBDA_GYRO,
         lambda_snap_pos=LAMBDA_SNAP_POS,
-        lambda_snap_ori=LAMBDA_SNAP_ORI,
         huber_delta=HUBER_DELTA,
         huber_delta_accel=HUBER_DELTA_ACCEL,
         max_iterations=MAX_ITERATIONS,
@@ -2733,9 +2729,9 @@ def main():
         f"HYPERPARAMETERS",
         f"  bag={bag_key}  t={START_TIME_OFFSET:.0f}s+{DURATION:.0f}s",
         f"  flip={FLIP_BODY_FRAME}  lock_bias={LOCK_BIASES}  stat_bias={USE_STATIONARY_BIAS}",
-        f"  dt_pos={DT_POS}  dt_ori={DT_ORI}  deg={BSPLINE_DEGREE}",
+        f"  dt_pos={DT_POS}  dt_ori={DT_ORI}  pos_deg={BSPLINE_DEGREE}  ori_deg=3",
         f"  λ_accel={LAMBDA_ACCEL}  λ_gyro={LAMBDA_GYRO}",
-        f"  λ_snap_pos={LAMBDA_SNAP_POS}  λ_snap_ori={LAMBDA_SNAP_ORI}",
+        f"  λ_snap_pos={LAMBDA_SNAP_POS}",
         f"  huber_radar={HUBER_DELTA}  huber_accel={HUBER_DELTA_ACCEL}",
         f"  λ_bnd_vel={LAMBDA_BOUNDARY_VEL}  λ_bnd_pos={LAMBDA_BOUNDARY_POS}",
         f"  λ_bnd_ori={LAMBDA_BOUNDARY_ORI}  λ_bnd_acc={LAMBDA_BOUNDARY_ACCEL}",

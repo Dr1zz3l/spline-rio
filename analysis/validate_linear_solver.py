@@ -361,7 +361,7 @@ def solve_trajectory_linear(
     # Build minimum snap regularization
     if verbose:
         print(f"Building minimum snap regularization (lambda={lambda_snap})...")
-    R_snap = build_minimum_snap_regularization(bspline, n_samples=100)
+    R_snap = build_minimum_snap_regularization(bspline)
     
     # Build normal equations: H * x = b
     # H = J_radar^T * J_radar + lambda_accel * J_accel^T * J_accel 
@@ -507,7 +507,7 @@ def main():
         TRANSLATION = _t_base.copy()
         R_body_from_sensor = R_base
 
-    BSPLINE_DEGREE = _SOLVER_CFG['bspline_degree']
+    BSPLINE_DEGREE = _SOLVER_CFG['pos_bspline_degree']
     MIN_RANGE = _SOLVER_CFG['min_range']
 
     # Linear solver-specific regularization (separate from nonlinear solver weights)
