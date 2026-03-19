@@ -1371,7 +1371,7 @@ def solve_trajectory_nonlinear(
     # Build regularization matrices once
     if verbose:
         print("\nBuilding regularization matrices...")
-    R_snap_pos = build_minimum_snap_regularization(state.pos_bspline, n_samples=100)
+    R_snap_pos = build_minimum_snap_regularization(state.pos_bspline)
 
     # Separate regularization matrices for position and orientation blocks
     n_pos = state.pos_bspline.n_points * 3
@@ -1499,7 +1499,9 @@ def solve_trajectory_nonlinear(
                     print("Computing analytical Jacobian...")
 
             J, r_total = _build_jacobian(state, iteration_idx=iteration)
-            cost_total = np.sum(r_total**2)
+            x_current_vec = state.to_vector()
+            cost_snap = float(x_current_vec @ (R_snap @ x_current_vec))
+            cost_total = np.sum(r_total**2) + cost_snap
 
             if verbose:
                 # Cost decomposition
@@ -1543,12 +1545,12 @@ def solve_trajectory_nonlinear(
                 if n_bp_prior > 0: bnd_parts.append(f"bias_prior={cost_bp_prior:.1f}")
                 if n_ep > 0: bnd_parts.append(f"ext_prior={cost_ep:.1f}")
                 bnd_str = (" " + " ".join(bnd_parts)) if bnd_parts else ""
-                print(f"Cost: total={cost_total:.2f} | radar={cost_radar:.1f} accel={cost_accel:.1f} gyro={cost_gyro:.1f}{bnd_str}")
+                print(f"Cost: total={cost_total:.2f} | radar={cost_radar:.1f} accel={cost_accel:.1f} gyro={cost_gyro:.1f} snap={cost_snap:.1f}{bnd_str}")
                 print(f"Jacobian: {J.shape}, nnz={J.nnz}, sparsity={100*(1-J.nnz/(J.shape[0]*J.shape[1])):.2f}%")
 
             # Cache undamped normal equations
             H_no_damping = J.T @ J + R_snap
-            b = J.T @ r_total
+            b = J.T @ r_total + R_snap @ x_current_vec
             _j_cache = (H_no_damping, b, r_total, cost_total, J)
 
             if verbose:
@@ -1606,7 +1608,8 @@ def solve_trajectory_nonlinear(
 
         # Bug B fix: evaluate trial cost with residuals only (no Jacobian rebuild)
         r_new = _compute_residuals(state, iteration_idx=iteration)
-        new_cost = np.sum(r_new**2)
+        cost_snap_new = float(x_new @ (R_snap @ x_new))
+        new_cost = np.sum(r_new**2) + cost_snap_new
 
         # Bug C fix: gain ratio for smarter lambda schedule
         # predicted_decrease = 0.5 * dx^T (lambda*dx - b)  [standard LM formula]
