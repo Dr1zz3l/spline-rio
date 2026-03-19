@@ -948,6 +948,7 @@ def solve_trajectory_nonlinear(
     lambda_extrinsic_prior: float = 0.0,
     v_max: float = None,
     ori_base_jacobian_window: int = 0,
+    early_stop_patience: int = 3,
 ) -> TrajectoryState:
     """
     Solve for optimal trajectory using Levenberg-Marquardt.
@@ -1056,7 +1057,7 @@ def solve_trajectory_nonlinear(
     lambda_lm = 1e-3
     prev_cost = None
     n_consecutive_rejects = 0
-    MAX_CONSECUTIVE_REJECTS = 3
+    MAX_CONSECUTIVE_REJECTS = early_stop_patience
 
     for iteration in range(max_iterations):
         # Reset LM state when transitioning from warmup to full accel
@@ -1209,7 +1210,7 @@ def solve_trajectory_nonlinear(
                 print("\n[OK] Converged (delta_norm < 1e-4)!")
             break
 
-        if n_consecutive_rejects >= MAX_CONSECUTIVE_REJECTS:
+        if MAX_CONSECUTIVE_REJECTS != -1 and n_consecutive_rejects >= MAX_CONSECUTIVE_REJECTS:
             if verbose:
                 print(f"\n[OK] Early stop: {MAX_CONSECUTIVE_REJECTS} consecutive rejected steps.")
             break
@@ -1423,6 +1424,7 @@ def main():
     HUBER_DELTA_ACCEL = _SOLVER_CFG['huber_delta_accel']
     MIN_RANGE = _SOLVER_CFG['min_range']
     MAX_ITERATIONS = _SOLVER_CFG['max_iterations']
+    EARLY_STOP_PATIENCE = _SOLVER_CFG.get('early_stop_patience', 3)
     USE_PHASE2_INIT = _SOLVER_CFG['use_phase2_init']
     USE_STATIONARY_BIAS = _SOLVER_CFG['use_stationary_bias']
     LOCK_BIASES = _SOLVER_CFG['lock_biases']
@@ -1479,8 +1481,8 @@ def main():
     imu_data = [d for d in bag_data.imu_data if t_start <= d.timestamp <= t_end]
     
     # Apply time offsets to align all sensors with MoCap time axis
-    # IMU is 20ms behind MoCap (FINDINGS.md §3)
-    # Radar is 19ms behind IMU (notebook 02_radar_time_sync §4), so 39ms behind MoCap total
+    # IMU timestamps are ~20ms too early; adding +20ms aligns with MoCap (see config/extrinsics.yaml)
+    # Radar has an additional ~140ms USB latency behind IMU, so ~120ms total offset relative to MoCap
     if IMU_MOCAP_OFFSET != 0:
         for d in imu_data:
             d.timestamp += IMU_MOCAP_OFFSET
@@ -1918,6 +1920,7 @@ def main():
         lambda_extrinsic_prior=LAMBDA_EXTRINSIC_PRIOR,
         v_max=V_MAX if USE_UNWRAP else None,
         ori_base_jacobian_window=ORI_BASE_JACOBIAN_WINDOW,
+        early_stop_patience=EARLY_STOP_PATIENCE,
     )
     
     # ==================== Evaluate Results ====================
@@ -2065,9 +2068,14 @@ def main():
     pos_diff = estimated_positions - mocap_positions_eval
     accel_diff = estimated_accelerations - mocap_accelerations
 
-    mocap_euler = np.degrees(Rotation.from_matrix(mocap_rotations_eval).as_euler('xyz'))
-    est_euler = np.degrees(Rotation.from_matrix(estimated_rotations).as_euler('xyz'))
-    euler_diff = ((est_euler - mocap_euler) + 180) % 360 - 180  # wrap to [-180, 180]
+    mocap_euler_raw = Rotation.from_matrix(mocap_rotations_eval).as_euler('xyz')
+    est_euler_raw   = Rotation.from_matrix(estimated_rotations).as_euler('xyz')
+    # Unwrap MoCap, then snap estimated to the nearest equivalent branch at each step.
+    # Independent unwrapping can choose opposite branches around spikes; this avoids that.
+    mocap_euler = np.degrees(np.unwrap(mocap_euler_raw, axis=0))
+    est_euler_deg = np.degrees(est_euler_raw)
+    est_euler = mocap_euler + ((est_euler_deg - mocap_euler + 180) % 360 - 180)
+    euler_diff = est_euler - mocap_euler
 
     mocap_ang_vel = np.array([s.angular_velocity for s in agiros_eval])
     est_ang_vel = np.array([optimized_state.get_angular_velocity(t) for t in eval_times])

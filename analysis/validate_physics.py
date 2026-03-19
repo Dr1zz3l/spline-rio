@@ -664,8 +664,11 @@ def run_physics_diagnostics():
         print(f"  {name}: best lag = {best_lag*1000:+.1f} ms")
 
     imu_mocap_offset = np.median(best_shifts)
-    print(f"  → Median IMU-MoCap offset: {imu_mocap_offset*1000:+.1f} ms")
-    print(f"    (positive = IMU timestamps are AHEAD of MoCap)")
+    config_imu_offset = -imu_mocap_offset  # negate: config adds offset to IMU timestamps
+    print(f"  → Median IMU-MoCap lag: {imu_mocap_offset*1000:+.1f} ms")
+    print(f"    (negative lag = IMU timestamps are BEHIND MoCap)")
+    print(f"    Config equivalent: imu_mocap_offset_sec = {config_imu_offset:.4f}")
+    print(f"    (current config:   imu_mocap_offset_sec = {cfg['extrinsics']['imu_mocap_offset_sec']})")
 
     # Re-evaluate gyro with time correction
     gyro_pred_shifted = np.zeros_like(gyro_pred)
@@ -689,10 +692,13 @@ def run_physics_diagnostics():
         print(f"    {name}: corr {corr_orig:.4f} → {corr_shifted:.4f}  "
               f"res_std {accel_residual[:, ax_i].std():.3f} → {accel_res_shifted[:, ax_i].std():.3f}")
 
-    # Re-evaluate radar with combined time correction
-    print(f"\n  Radar after time correction (radar offset = {best_offset*1000:.0f}ms + IMU corr = {imu_mocap_offset*1000:.0f}ms):")
+    # Re-evaluate radar with sweep best offset (already the optimal total radar→MoCap offset)
+    config_radar_imu = config_imu_offset - best_offset
+    print(f"\n  Radar sweep best offset (total radar→MoCap): {best_offset*1000:+.1f} ms")
+    print(f"    Config equivalent: radar_imu_offset_sec = {config_radar_imu:.4f}")
+    print(f"    (current config:   radar_imu_offset_sec = {cfg['extrinsics']['radar_imu_offset_sec']})")
     corr_radar_corrected, _, _, res_radar_corrected, _ = radar_correlation(
-        best_offset + imu_mocap_offset, wrap_alias=use_alias, unwrap=use_unwrap)
+        best_offset, wrap_alias=use_alias, unwrap=use_unwrap)
     print(f"    Correlation: {corr_radar_corrected:.4f} (was {corr:.4f})")
     print(f"    RMSE: {np.sqrt(np.mean(res_radar_corrected**2)):.4f} m/s")
     print("\n--- Generating Plots ---")
