@@ -259,19 +259,23 @@ def create_uniform_bspline_from_times(times: np.ndarray, degree: int,
     return bspline, n_total
 
 
-def build_minimum_snap_regularization(bspline: UniformBSpline, 
-                                       n_samples: int = 100) -> sparse.csr_matrix:
+def build_minimum_snap_regularization(bspline: UniformBSpline,
+                                       n_samples: int = None) -> sparse.csr_matrix:
     """
     Build minimum snap regularization matrix R such that:
     E_reg = ||R * c||^2 approximates integral of ||p^(4)(t)||^2 dt
-    
+
     Args:
         bspline: B-spline object
-        n_samples: Number of time samples for numerical integration
-        
+        n_samples: Number of time samples for numerical integration. If None,
+                   auto-scales to max(100, n_control_points) so every CP is
+                   within the support of at least one quadrature sample.
+
     Returns:
         Sparse matrix R of shape (n_samples * 3, n_control_points * 3)
     """
+    if n_samples is None:
+        n_samples = max(100, bspline.n_points)
     times = np.linspace(bspline.t_start, bspline.t_end, n_samples)
     
     rows = []
