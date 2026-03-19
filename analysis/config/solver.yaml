@@ -1,7 +1,7 @@
 # B-spline parameterization
 bspline_degree: 5          # Quintic for continuous snap
-dt_pos: 0.05               # Knot spacing for position spline (seconds)
-dt_ori: 0.05               # Knot spacing for orientation spline (seconds)
+dt_pos: 0.005            # Knot spacing for position spline (seconds)
+dt_ori: 0.01              # Knot spacing for orientation spline (seconds)
 
 # Radar
 huber_delta: 1.0           # Huber threshold (m/s); must be >= 0.63 m/s Doppler bin size
@@ -26,8 +26,8 @@ lambda_heading: 1            # Weight for MoCap heading residual; 0 = disabled
 
 # Bias priors
 lambda_bias_prior: 1.0     # Fallback (overridden by per-sensor values below)
-lambda_bias_prior_accel: 1000.0   # Strong: prevents gravity leakage into accel bias
-lambda_bias_prior_gyro: 10000.0   # Very strong: MEMS gyro z-bias ~0.18-0.28 rad/s confirmed
+lambda_bias_prior_accel: 10.0   # Strong: prevents gravity leakage into accel bias
+lambda_bias_prior_gyro: 10.0   # Very strong: MEMS gyro z-bias ~0.18-0.28 rad/s confirmed
 use_stationary_bias: true  # Use variance-based stationary detection for bias initialization
 lock_biases: false         # Lock biases to initial values (stationary-detected or zero)
 
@@ -53,5 +53,5 @@ ori_base_jacobian_window: 20      # Max base knots to include per measurement fo
 
 # Extrinsics (radar-to-body)
 lock_extrinsics: false      # Lock radar extrinsics to config/extrinsics.yaml values
-optimize_pitch_only: true  # Only optimize pitch extrinsic; roll/yaw unobservable
-lambda_extrinsic_prior: 1.0
+optimize_pitch_only: false  # Only optimize pitch extrinsic; roll/yaw unobservable
+lambda_extrinsic_prior: 10.0
