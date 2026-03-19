@@ -45,6 +45,8 @@ from codegen.generated_jacobians import (
     radar_residual_with_jacobians,
     accel_residual_with_jacobians,
     gyro_residual_with_jacobians,
+    gravity_residual_with_jacobians,
+    heading_residual_with_jacobians,
     Rot3
 )
 from config_loader import load_config
@@ -451,6 +453,10 @@ def compute_jacobian_analytical(
     lambda_extrinsic_prior: float = 0.0,
     v_max: float = None,
     base_window: int = 0,
+    lambda_gravity: float = 0.0,
+    gravity_accel_threshold: float = 3.0,
+    lambda_heading: float = 0.0,
+    heading_priors: list = None,
 ) -> Tuple[sparse.csr_matrix, np.ndarray]:
     """
     Compute Jacobian and residual vector analytically using SymForce-generated functions.
@@ -669,7 +675,101 @@ def compute_jacobian_analytical(
             rows.append(row_idx); cols.append(col); vals.append(val)
 
             row_idx += 1
-    
+
+    n_gyro_rows = row_idx - n_radar - n_accel_rows
+
+    # ==================== Gravity-direction residuals ====================
+    # Mahony-style roll/pitch constraint from accelerometer direction.
+    # Decoupled from position (no a_world term) — pure orientation + bias constraint.
+    n_gravity_rows = 0
+    if lambda_gravity > 0:
+        sqrt_lambda_grav = np.sqrt(lambda_gravity)
+        G_NORM = 9.81
+        sigma_grav = gravity_accel_threshold
+
+        for imu_msg in imu_data:
+            t = imu_msg.timestamp
+            t_rel_ori = t - state.ori_spline.t_ref
+
+            z_acc = imu_msg.linear_acceleration
+            z_debiased = z_acc - state.acc_bias
+            a_norm = np.linalg.norm(z_debiased)
+
+            # Skip degenerate measurements
+            if a_norm < 1e-6:
+                continue
+
+            # Dynamic weight: Gaussian trust — down-weight during high dynamics
+            w_dynamic = np.exp(-((a_norm - G_NORM) / sigma_grav) ** 2)
+            if w_dynamic < 1e-4:
+                continue
+
+            scale = sqrt_lambda_grav * np.sqrt(w_dynamic)
+
+            R_full, _, J_R_list, _, active_ori = \
+                state.ori_spline.evaluate_full_jacobians(t_rel_ori, base_window=base_window)
+            R_nom_quat = Rot3.from_rotation_matrix(R_full)
+
+            res_3, J_delta_grav, J_ba_grav = gravity_residual_with_jacobians(
+                R_nom_quat, _zeros3, z_acc, state.acc_bias, G_NORM, 1e-10)
+
+            for k in range(3):
+                all_residuals.append(scale * res_3[k])
+
+                # ∂r_gravity/∂Ω_j = J_delta[k,:] @ J_R_list[j]  (no position dependency)
+                for jj, knot_idx in enumerate(active_ori):
+                    J_wrt = J_delta_grav[k, :] @ J_R_list[jj]  # (3,)
+                    for dim in range(3):
+                        col = n_pos + knot_idx * 3 + dim
+                        val = scale * J_wrt[dim]
+                        if abs(val) > 1e-15:
+                            rows.append(row_idx); cols.append(col); vals.append(val)
+
+                # ∂r_gravity/∂b_a = J_ba[k,:]
+                for dim in range(3):
+                    col = n_pos + n_ori + dim
+                    val = scale * J_ba_grav[k, dim]
+                    if abs(val) > 1e-15:
+                        rows.append(row_idx); cols.append(col); vals.append(val)
+
+                row_idx += 1
+                n_gravity_rows += 1
+
+    # ==================== Heading (yaw) residuals ====================
+    # MoCap pseudo-magnetometer: constrains absolute yaw.
+    # No position dependency, no bias dependency.
+    n_heading_rows = 0
+    if lambda_heading > 0 and heading_priors:
+        sqrt_lambda_hdg = np.sqrt(lambda_heading)
+
+        for t_abs, R_mocap in heading_priors:
+            t_rel_ori = t_abs - state.ori_spline.t_ref
+
+            R_full, _, J_R_list, _, active_ori = \
+                state.ori_spline.evaluate_full_jacobians(t_rel_ori, base_window=base_window)
+            R_nom_quat = Rot3.from_rotation_matrix(R_full)
+            R_mocap_quat = Rot3.from_rotation_matrix(R_mocap)
+
+            res_1, J_delta_hdg = heading_residual_with_jacobians(
+                R_nom_quat, _zeros3, R_mocap_quat, 1e-10)
+
+            all_residuals.append(sqrt_lambda_hdg * res_1[0])
+
+            # J_delta_hdg may be (3,) or (1,3) depending on SymForce version; flatten to (3,)
+            J_delta_hdg_flat = np.asarray(J_delta_hdg).flatten()
+
+            # ∂r_heading/∂Ω_j = J_delta[0,:] @ J_R_list[j]
+            for jj, knot_idx in enumerate(active_ori):
+                J_wrt = J_delta_hdg_flat @ J_R_list[jj]  # (3,)
+                for dim in range(3):
+                    col = n_pos + knot_idx * 3 + dim
+                    val = sqrt_lambda_hdg * J_wrt[dim]
+                    if abs(val) > 1e-15:
+                        rows.append(row_idx); cols.append(col); vals.append(val)
+
+            row_idx += 1
+            n_heading_rows += 1
+
     # ==================== Boundary velocity priors ====================
     n_boundary_vel_rows = 0
     if boundary_vel_priors and lambda_boundary_vel > 0:
@@ -876,9 +976,12 @@ def compute_jacobian_analytical(
     )
     r = np.array(all_residuals)
     
-    # Cost decomposition: (n_radar, n_accel_rows) stored as attributes
+    # Cost decomposition: counts stored as attributes for per-cost reporting
     J.n_radar = n_radar
     J.n_accel = n_accel_rows
+    J.n_gyro = n_gyro_rows
+    J.n_gravity = n_gravity_rows
+    J.n_heading = n_heading_rows
     J.n_boundary_vel = n_boundary_vel_rows
     J.n_boundary_pos = n_boundary_pos_rows
     J.n_boundary_ori = n_boundary_ori_rows
@@ -949,6 +1052,10 @@ def solve_trajectory_nonlinear(
     v_max: float = None,
     ori_base_jacobian_window: int = 0,
     early_stop_patience: int = 3,
+    lambda_gravity: float = 0.0,
+    gravity_accel_threshold: float = 3.0,
+    lambda_heading: float = 0.0,
+    heading_priors: list = None,
 ) -> TrajectoryState:
     """
     Solve for optimal trajectory using Levenberg-Marquardt.
@@ -1000,6 +1107,10 @@ def solve_trajectory_nonlinear(
             print(f"Boundary acceleration priors: {len(boundary_accel_priors)} points, lambda={lambda_boundary_accel}")
         if boundary_gyro_priors:
             print(f"Boundary ang. vel. priors: {len(boundary_gyro_priors)} points, lambda={lambda_boundary_gyro}")
+        if lambda_gravity > 0:
+            print(f"Gravity factor: lambda={lambda_gravity}, sigma={gravity_accel_threshold} m/s²")
+        if lambda_heading > 0 and heading_priors:
+            print(f"Heading factor: {len(heading_priors)} priors, lambda={lambda_heading}")
     
     state = initial_state
     
@@ -1052,6 +1163,10 @@ def solve_trajectory_nonlinear(
             lambda_extrinsic_prior=lambda_extrinsic_prior,
             v_max=v_max,
             base_window=ori_base_jacobian_window,
+            lambda_gravity=lambda_gravity,
+            gravity_accel_threshold=gravity_accel_threshold,
+            lambda_heading=lambda_heading,
+            heading_priors=heading_priors,
         )
 
     lambda_lm = 1e-3
@@ -1092,9 +1207,12 @@ def solve_trajectory_nonlinear(
         cost_total = np.sum(r_total**2)
         
         if verbose:
-            # Cost decomposition: residuals ordered as radar|accel|gyro|bnd_vel|bnd_pos|bnd_ori|bnd_accel|bnd_gyro
+            # Cost decomposition: residuals ordered as radar|accel|gyro|gravity|heading|bnd_vel|...
             n_r = getattr(J, 'n_radar', 0)
             n_a = getattr(J, 'n_accel', 0)
+            n_g = getattr(J, 'n_gyro', 0)
+            n_grav = getattr(J, 'n_gravity', 0)
+            n_hdg = getattr(J, 'n_heading', 0)
             n_bv = getattr(J, 'n_boundary_vel', 0)
             n_bp = getattr(J, 'n_boundary_pos', 0)
             n_bo = getattr(J, 'n_boundary_ori', 0)
@@ -1102,11 +1220,12 @@ def solve_trajectory_nonlinear(
             n_bg = getattr(J, 'n_boundary_gyro', 0)
             n_or = getattr(J, 'n_ori_reg', 0)
             n_bp_prior = getattr(J, 'n_bias_prior', 0)
-            n_g = len(r_total) - n_r - n_a - n_bv - n_bp - n_bo - n_bac - n_bg - n_or - n_bp_prior
             idx = 0
             cost_radar = np.sum(r_total[idx:idx+n_r]**2); idx += n_r
             cost_accel = np.sum(r_total[idx:idx+n_a]**2); idx += n_a
             cost_gyro = np.sum(r_total[idx:idx+n_g]**2); idx += n_g
+            cost_grav = np.sum(r_total[idx:idx+n_grav]**2); idx += n_grav
+            cost_hdg = np.sum(r_total[idx:idx+n_hdg]**2); idx += n_hdg
             cost_bv = np.sum(r_total[idx:idx+n_bv]**2); idx += n_bv
             cost_bp = np.sum(r_total[idx:idx+n_bp]**2); idx += n_bp
             cost_bo = np.sum(r_total[idx:idx+n_bo]**2); idx += n_bo
@@ -1116,8 +1235,10 @@ def solve_trajectory_nonlinear(
             cost_bp_prior = np.sum(r_total[idx:idx+n_bp_prior]**2); idx += n_bp_prior
             n_ep = getattr(J, 'n_extrinsic_prior', 0)
             cost_ep = np.sum(r_total[idx:idx+n_ep]**2) if n_ep > 0 else 0.0; idx += n_ep
-            
+
             bnd_parts = []
+            if n_grav > 0: bnd_parts.append(f"gravity={cost_grav:.1f}")
+            if n_hdg > 0: bnd_parts.append(f"heading={cost_hdg:.1f}")
             if n_bv > 0: bnd_parts.append(f"bnd_vel={cost_bv:.1f}")
             if n_bp > 0: bnd_parts.append(f"bnd_pos={cost_bp:.1f}")
             if n_bo > 0: bnd_parts.append(f"bnd_ori={cost_bo:.1f}")
@@ -1417,6 +1538,9 @@ def main():
     LAMBDA_SNAP_POS = _SOLVER_CFG['lambda_snap_pos']
     LAMBDA_SNAP_ORI = _SOLVER_CFG['lambda_snap_ori']
     LAMBDA_ORI_REG = _SOLVER_CFG['lambda_ori_reg']
+    LAMBDA_GRAVITY = _SOLVER_CFG.get('lambda_gravity', 0.0)
+    GRAVITY_ACCEL_THRESHOLD = _SOLVER_CFG.get('gravity_accel_threshold', 3.0)
+    LAMBDA_HEADING = _SOLVER_CFG.get('lambda_heading', 0.0)
     LAMBDA_BIAS_PRIOR = _SOLVER_CFG['lambda_bias_prior']
     LAMBDA_BIAS_PRIOR_ACCEL = _SOLVER_CFG['lambda_bias_prior_accel']
     LAMBDA_BIAS_PRIOR_GYRO = _SOLVER_CFG['lambda_bias_prior_gyro']
@@ -1467,6 +1591,7 @@ def main():
     print(f"Boundary priors (START only): window={BOUNDARY_WINDOW}s")
     print(f"  λ_bnd: vel={LAMBDA_BOUNDARY_VEL} pos={LAMBDA_BOUNDARY_POS} ori={LAMBDA_BOUNDARY_ORI} acc={LAMBDA_BOUNDARY_ACCEL} gyr={LAMBDA_BOUNDARY_GYRO}")
     print(f"  λ_ori_reg: {LAMBDA_ORI_REG}  λ_bias_prior: accel={LAMBDA_BIAS_PRIOR_ACCEL} gyro={LAMBDA_BIAS_PRIOR_GYRO}")
+    print(f"  λ_gravity: {LAMBDA_GRAVITY} (sigma={GRAVITY_ACCEL_THRESHOLD} m/s²)  λ_heading: {LAMBDA_HEADING}")
     
     # ==================== Load Data ====================
     print(f"\n{'Loading Data':-^80}")
@@ -1826,6 +1951,17 @@ def main():
     
     print(f"\n  Boundary priors (START only): {n_boundary_samples} sample points")
     print(f"    vel: {len(boundary_vel_priors)}, pos: {len(boundary_pos_priors)}, ori: {len(boundary_ori_priors)}, acc: {len(boundary_accel_priors)}, gyr: {len(boundary_gyro_priors)}")
+
+    # Build heading priors (MoCap pseudo-magnetometer) across full trajectory
+    heading_priors = []
+    if LAMBDA_HEADING > 0:
+        heading_dt = 0.05  # 20 Hz
+        for t_rel in np.arange(t_spline_start, t_spline_end, heading_dt):
+            t_abs = t_rel + t_ref
+            t_clamped = np.clip(t_rel, mocap_times_rel[0], mocap_times_rel[-1])
+            R_gt = mocap_slerp(t_clamped).as_matrix()
+            heading_priors.append((t_abs, R_gt))
+        print(f"  Built {len(heading_priors)} heading priors at {1/heading_dt:.0f} Hz")
     if len(boundary_vel_priors) > 0:
         v0 = boundary_vel_priors[0][1]
         print(f"    Start vel GT: [{v0[0]:.2f}, {v0[1]:.2f}, {v0[2]:.2f}] m/s (|v|={np.linalg.norm(v0):.2f})")
@@ -1921,6 +2057,10 @@ def main():
         v_max=V_MAX if USE_UNWRAP else None,
         ori_base_jacobian_window=ORI_BASE_JACOBIAN_WINDOW,
         early_stop_patience=EARLY_STOP_PATIENCE,
+        lambda_gravity=LAMBDA_GRAVITY,
+        gravity_accel_threshold=GRAVITY_ACCEL_THRESHOLD,
+        lambda_heading=LAMBDA_HEADING,
+        heading_priors=heading_priors,
     )
     
     # ==================== Evaluate Results ====================
@@ -2253,6 +2393,7 @@ def main():
         f"  max_iter={MAX_ITERATIONS}  precond={USE_JACOBI_PRECOND}",
         f"  relin_thr={RELINEARIZE_THRESHOLD_DEG}°  imu_offset={IMU_MOCAP_OFFSET*1000:.0f}ms  radar_offset={radar_total_offset*1000:.0f}ms",
         f"  λ_ori_reg={LAMBDA_ORI_REG}  λ_bp_a={LAMBDA_BIAS_PRIOR_ACCEL}  λ_bp_g={LAMBDA_BIAS_PRIOR_GYRO}",
+        f"  λ_gravity={LAMBDA_GRAVITY} (σ={GRAVITY_ACCEL_THRESHOLD})  λ_heading={LAMBDA_HEADING}",
         f"",
         f"EXTRINSICS (rotation [roll,pitch,yaw] deg)",
         f"  lock={LOCK_EXTRINSICS}  pitch_only={OPTIMIZE_PITCH_ONLY}  λ_prior={LAMBDA_EXTRINSIC_PRIOR}",
@@ -2332,6 +2473,124 @@ def main():
     fig2.savefig(views_filename, dpi=150, bbox_inches='tight')
     print(f"Saved: {views_filename}")
     
+    # ==================== Gravity Diagnostic Plot ====================
+    # Always generated — shows whether the gravity factor sees plausible measurements.
+    # Even when lambda_gravity=0, the panels reveal whether raw accel direction is sane.
+    G_NORM_DIAG = 9.81
+    _sigma_grav = GRAVITY_ACCEL_THRESHOLD
+
+    grav_times = []
+    grav_accel_norm = []
+    grav_w_dynamic = []
+    grav_measured = []    # (3,) body frame, normalized * g
+    grav_predicted = []   # (3,) body frame from optimized R
+    grav_residual = []    # measured - predicted
+
+    for imu_msg in imu_data:
+        t = imu_msg.timestamp
+        if t < eval_times[0] or t > eval_times[-1]:
+            continue
+        z_acc = imu_msg.linear_acceleration
+        z_deb = z_acc - optimized_state.acc_bias
+        a_norm = np.linalg.norm(z_deb)
+        if a_norm < 1e-6:
+            continue
+        w = np.exp(-((a_norm - G_NORM_DIAG) / _sigma_grav) ** 2)
+        g_meas = (z_deb / a_norm) * G_NORM_DIAG
+        try:
+            R_est = optimized_state.get_rotation(t)
+        except Exception:
+            continue
+        g_pred = R_est.T @ np.array([0.0, 0.0, -G_NORM_DIAG])
+        grav_times.append(t - eval_times[0])
+        grav_accel_norm.append(a_norm)
+        grav_w_dynamic.append(w)
+        grav_measured.append(g_meas)
+        grav_predicted.append(g_pred)
+        grav_residual.append(g_meas - g_pred)
+
+    grav_times = np.array(grav_times)
+    grav_accel_norm = np.array(grav_accel_norm)
+    grav_w_dynamic = np.array(grav_w_dynamic)
+    grav_measured = np.array(grav_measured) if grav_measured else np.zeros((0, 3))
+    grav_predicted = np.array(grav_predicted) if grav_predicted else np.zeros((0, 3))
+    grav_residual = np.array(grav_residual) if grav_residual else np.zeros((0, 3))
+    grav_res_mag = np.linalg.norm(grav_residual, axis=1) if grav_residual.size else np.zeros(0)
+
+    fig3, axes3 = plt.subplots(4, 1, figsize=(14, 14), sharex=True)
+    fig3.suptitle(
+        f'Gravity Factor Diagnostics — {bag_key}'
+        + (f'   [λ_gravity={LAMBDA_GRAVITY}, σ={_sigma_grav} m/s²]' if LAMBDA_GRAVITY > 0
+           else '   [lambda_gravity=0, factor DISABLED]'),
+        fontsize=13, fontweight='bold',
+    )
+
+    # --- Panel 1: Accelerometer norm + trust sigma bands ---
+    ax = axes3[0]
+    ax.plot(grav_times, grav_accel_norm, color='steelblue', linewidth=0.8,
+            alpha=0.7, label='‖a_debiased‖')
+    ax.axhline(G_NORM_DIAG, color='k', linewidth=1.5, linestyle='--', label=f'g = {G_NORM_DIAG} m/s²')
+    for nsig, alpha in [(1, 0.18), (2, 0.10)]:
+        ax.axhspan(G_NORM_DIAG - nsig * _sigma_grav, G_NORM_DIAG + nsig * _sigma_grav,
+                   color='green', alpha=alpha,
+                   label=f'±{nsig}σ trust band' if nsig == 1 else f'±{nsig}σ')
+    ax.set_ylabel('Accel norm (m/s²)')
+    ax.set_title('Accelerometer norm (debiased) — should hover near g during quasi-static phases')
+    ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+
+    # --- Panel 2: Dynamic trust weight ---
+    ax = axes3[1]
+    ax.fill_between(grav_times, grav_w_dynamic, alpha=0.5, color='green', label='w_dynamic')
+    ax.plot(grav_times, grav_w_dynamic, color='green', linewidth=0.8)
+    ax.axhline(1e-4, color='r', linewidth=1.0, linestyle=':', label='skip threshold (1e-4)')
+    ax.set_ylim(-0.05, 1.05)
+    ax.set_ylabel('Trust weight w')
+    ax.set_title('Dynamic trust weight — w→1 near hover, w→0 during high-g maneuvers')
+    ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+
+    # --- Panel 3: Gravity direction per axis (measured vs predicted) ---
+    ax = axes3[2]
+    _axis_colors3 = ['tab:red', 'tab:green', 'tab:blue']
+    _axis_names3 = ['x', 'y', 'z']
+    if grav_measured.size:
+        for i, (col, lbl) in enumerate(zip(_axis_colors3, _axis_names3)):
+            ax.plot(grav_times, grav_measured[:, i], color=col, linewidth=1.0,
+                    alpha=0.85, label=f'meas {lbl}')
+            ax.plot(grav_times, grav_predicted[:, i], color=col, linewidth=1.0,
+                    linestyle='--', alpha=0.5, label=f'pred {lbl}')
+    ax.set_ylabel('g_body (m/s²)')
+    ax.set_title('Gravity direction in body frame: measured (solid) vs predicted from R_est (dashed)')
+    ax.legend(fontsize=7, ncol=2); ax.grid(True, alpha=0.3)
+
+    # --- Panel 4: Gravity residual per axis + magnitude ---
+    ax = axes3[3]
+    if grav_residual.size:
+        for i, (col, lbl) in enumerate(zip(_axis_colors3, _axis_names3)):
+            ax.plot(grav_times, grav_residual[:, i], color=col, linewidth=0.8,
+                    alpha=0.6, label=f'Δ{lbl}')
+        ax.plot(grav_times, grav_res_mag, color='k', linewidth=1.3, label='‖residual‖')
+        rms_grav = float(np.sqrt(np.mean(grav_res_mag ** 2))) if grav_res_mag.size else 0.0
+        ax.axhline(rms_grav, color='royalblue', linewidth=1.3, linestyle='--',
+                   label=f'RMS = {rms_grav:.3f} m/s²')
+        ax.axhline(0, color='gray', linewidth=0.5, linestyle=':')
+    ax.set_xlabel('Time (s)')
+    ax.set_ylabel('Residual (m/s²)')
+    ax.set_title('Gravity residual per axis: measured − predicted (after optimization)')
+    ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+
+    # Radar frame ticks on all panels
+    for _ax in axes3:
+        _trans = mtransforms.blended_transform_factory(_ax.transData, _ax.transAxes)
+        _ax.vlines(radar_tick_times, 0, radar_tick_heights, transform=_trans,
+                   color='#ffe566', linewidth=0.8, alpha=0.85, zorder=0)
+
+    fig3.tight_layout()
+    grav_dir = Path(f'plots/{bag_key}/gravity_diagnostics')
+    grav_dir.mkdir(parents=True, exist_ok=True)
+    grav_filename = grav_dir / f'gravity_diagnostics_{bag_key}_{timestamp_str}.png'
+    fig3.savefig(grav_filename, dpi=150, bbox_inches='tight')
+    print(f"Saved: {grav_filename}")
+
     # ==================== Summary ====================
     total_time = time.time() - start_time
     hours = int(total_time // 3600)

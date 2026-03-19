@@ -24,6 +24,13 @@ lambda_snap_pos: 0.0001    # Position minimum-snap weight
 lambda_snap_ori: 0.0001    # Orientation snap weight (passed to solver for logging; not applied to cumulative spline)
 lambda_ori_reg: 0.001      # Orientation increment regularization (penalizes ||Omega_j||^2 per knot)
 
+# Gravity-direction factor (absolute roll/pitch from accelerometer, Mahony-style)
+lambda_gravity: 0.01            # Weight for gravity-direction residual; 0 = disabled
+gravity_accel_threshold: 3.0   # Dynamic trust sigma (m/s²): down-weight when ||a_debiased|| deviates from g
+
+# Heading factor (yaw constraint from MoCap pseudo-magnetometer)
+lambda_heading: 0.0            # Weight for MoCap heading residual; 0 = disabled
+
 # Bias priors
 lambda_bias_prior: 1.0     # Fallback (overridden by per-sensor values below)
 lambda_bias_prior_accel: 10.0   # Strong: prevents gravity leakage into accel bias
@@ -33,11 +40,11 @@ lock_biases: false         # Lock biases to initial values (stationary-detected 
 
 # Boundary priors (pin spline state at trajectory START to MoCap ground truth)
 boundary_window: 1         # Seconds near start to apply boundary priors
-lambda_boundary_vel: 0.0
+lambda_boundary_vel: 1000.0
 lambda_boundary_pos: 1000.0
-lambda_boundary_ori: 0.0
-lambda_boundary_accel: 0.00
-lambda_boundary_gyro: 0.0
+lambda_boundary_ori: 1000.0
+lambda_boundary_accel: 1000.00
+lambda_boundary_gyro: 1000.0
 
 # Optimizer
 max_iterations: 20
