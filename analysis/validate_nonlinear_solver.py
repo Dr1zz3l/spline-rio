@@ -1304,6 +1304,8 @@ def solve_trajectory_nonlinear(
     v_max: float = None,
     ori_base_jacobian_window: int = 0,
     early_stop_patience: int = 3,
+    converge_window: int = 5,
+    rtol_converge: float = 0.01,
     lambda_gravity: float = 0.0,
     gravity_accel_threshold: float = 3.0,
     lambda_heading: float = 0.0,
@@ -1463,6 +1465,7 @@ def solve_trajectory_nonlinear(
     # Cache: (H_no_damping, b, r_total, cost_total, J) from the last Jacobian build.
     # Valid as long as state hasn't changed (i.e., during a rejection streak).
     _j_cache = None
+    accepted_costs = []  # Costs at each accepted step, for plateau detection
 
     for iteration in range(max_iterations):
         # Reset LM state when transitioning from warmup to full accel
@@ -1548,6 +1551,10 @@ def solve_trajectory_nonlinear(
             b = J.T @ r_total
             _j_cache = (H_no_damping, b, r_total, cost_total, J)
 
+            if verbose:
+                grad_inf = np.max(np.abs(b)) / max(1, len(r_total))
+                print(f"  ||J^T r||_inf / n_residuals = {grad_inf:.6f}")
+
         else:
             # Reuse cached data — state unchanged since last rejection
             H_no_damping, b, r_total, cost_total, J = _j_cache
@@ -1620,6 +1627,7 @@ def solve_trajectory_nonlinear(
             _j_cache = None  # Clear cache; need fresh Jacobian next iteration
             prev_cost = new_cost
             n_consecutive_rejects = 0
+            accepted_costs.append(new_cost)
             if verbose:
                 omega_norms = np.linalg.norm(state.ori_spline.omega_knots, axis=1)
                 print(f"  Accepted: cost {cost_total:.1f} -> {new_cost:.1f} "
@@ -1652,6 +1660,17 @@ def solve_trajectory_nonlinear(
             if verbose:
                 print(f"\n[OK] Early stop: {MAX_CONSECUTIVE_REJECTS} consecutive rejected steps.")
             break
+
+        # Sliding-window plateau detection: stop if total decrease over last K accepted steps
+        # falls below rtol_converge fraction of the older cost.
+        if converge_window > 0 and len(accepted_costs) >= converge_window:
+            old_cost = accepted_costs[-converge_window]
+            window_rtol = (old_cost - accepted_costs[-1]) / old_cost
+            if window_rtol < rtol_converge:
+                if verbose:
+                    print(f"\n[OK] Converged (window rtol={window_rtol:.4f} < {rtol_converge} "
+                          f"over last {converge_window} accepted steps).")
+                break
     
     if verbose:
         print(f"\n{'Optimization Complete':#^80}")
@@ -1866,6 +1885,8 @@ def main():
     MIN_RANGE = _SOLVER_CFG['min_range']
     MAX_ITERATIONS = _SOLVER_CFG['max_iterations']
     EARLY_STOP_PATIENCE = _SOLVER_CFG.get('early_stop_patience', 3)
+    CONVERGE_WINDOW = _SOLVER_CFG.get('converge_window', 5)
+    RTOL_CONVERGE = _SOLVER_CFG.get('rtol_converge', 0.01)
     USE_PHASE2_INIT = _SOLVER_CFG['use_phase2_init']
     USE_STATIONARY_BIAS = _SOLVER_CFG['use_stationary_bias']
     LOCK_BIASES = _SOLVER_CFG['lock_biases']
@@ -2374,6 +2395,8 @@ def main():
         v_max=V_MAX if USE_UNWRAP else None,
         ori_base_jacobian_window=ORI_BASE_JACOBIAN_WINDOW,
         early_stop_patience=EARLY_STOP_PATIENCE,
+        converge_window=CONVERGE_WINDOW,
+        rtol_converge=RTOL_CONVERGE,
         lambda_gravity=LAMBDA_GRAVITY,
         gravity_accel_threshold=GRAVITY_ACCEL_THRESHOLD,
         lambda_heading=LAMBDA_HEADING,

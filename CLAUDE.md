@@ -137,6 +137,9 @@ The radar has limited elevation diversity (2 TX antennas), causing a systematic 
 | `LAMBDA_BIAS_PRIOR_GYRO` | 10000.0 | Very strong prior on gyro bias |
 | `LAMBDA_BOUNDARY_VEL/POS` | 1000.0 | Anchor start of trajectory to MoCap |
 | `LAMBDA_BOUNDARY_ORI` | 10000.0 | Anchor start orientation to MoCap |
+| `early_stop_patience` | 10 | Stop after N consecutive rejected LM steps; -1 = disabled |
+| `converge_window` | 5 | Sliding window (accepted steps) for plateau detection |
+| `rtol_converge` | 0.01 | Relative cost decrease threshold over window; stop if below |
 
 ## ROS Topics
 

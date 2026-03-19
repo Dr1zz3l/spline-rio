@@ -40,8 +40,10 @@ lambda_boundary_accel: 0.001
 lambda_boundary_gyro: 1000.0
 
 # Optimizer
-max_iterations: 20
-early_stop_patience: -1 # Stop after this many consecutive rejected LM steps; -1 = disabled
+max_iterations: 40
+early_stop_patience: 10  # Stop after this many consecutive rejected LM steps; -1 = disabled
+converge_window: 5       # Sliding window size (accepted steps) for plateau detection
+rtol_converge: 0.01      # Relative cost decrease threshold over the window; stop if below this
 relinearize_threshold_deg: 1.0   # Legacy (unused with cumulative SO3 spline; kept for config compat)
 use_phase2_init: false             # Initialize position from Phase 2 linear solver
 ori_base_jacobian_window: 20      # Max base knots to include per measurement for orientation Jacobian.
