@@ -14,6 +14,10 @@ joint calibratoin of radar time offset and full extrinsics. maybe dynamic time-w
 
 ---
 
+check if gyro has different time offset to mocap than accelerometer
+
+---
+
 
 mocap yaw als weighted factor hinzufügen für ideal magnetormeter
 
