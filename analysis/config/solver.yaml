@@ -4,15 +4,8 @@ dt_pos: 0.05               # Knot spacing for position spline (seconds)
 dt_ori: 0.05               # Knot spacing for orientation spline (seconds)
 
 # Radar
-huber_delta: 1.0           # Huber threshold (m/s); must be >= 0.63 m/s Doppler bin size
+huber_delta: 0.1           # Huber threshold (m/s); must be >= 0.63 m/s Doppler bin size
 min_range: 0.2             # Minimum range filter (m)
-# v_max moved to config/bags.yaml radar_config (per-bag: 4.99 for default, 3.00 for best_velocity bags)
-# Timing offsets (apply to radar/IMU timestamps before MoCap lookup)
-# radar_mocap_offset: -0.120  # seconds; radar USB pipeline latency on Jetson
-#   Empirically found: -133ms (fast_racing, V_MAX=3.84 wrong) → -120ms (fast_racing, V_MAX=3.00 correct)
-#   Also -120ms on slow_racing_best_velocity → -120ms is the true USB+ROS driver latency.
-#   Distinct from imu_mocap_offset (-15ms); IMU is on a fast SPI/I2C bus.
-# NOTE: not yet plumbed into validate_nonlinear_solver.py — add when integrating radar factor timing.
 
 # IMU weights
 lambda_accel: 0.01
@@ -23,11 +16,14 @@ huber_delta_accel: 2.0     # Huber threshold for accelerometer (m/s²); clips sp
 lambda_snap_pos: 0.0001    # Position minimum-snap weight
 lambda_snap_ori: 0.0001    # Orientation snap weight (passed to solver for logging; not applied to cumulative spline)
 lambda_ori_reg: 0.001      # Orientation increment regularization (penalizes ||Omega_j||^2 per knot)
+
+# Gravity-direction factor (absolute roll/pitch from accelerometer, Mahony-style)
 lambda_gravity: 0.01            # Weight for gravity-direction residual; 0 = disabled
 gravity_accel_threshold: 3.0   # Dynamic trust sigma (m/s²): down-weight when ||a_debiased|| deviates from g
 
 # Heading factor (yaw constraint from MoCap pseudo-magnetometer)
 lambda_heading: 0.0            # Weight for MoCap heading residual; 0 = disabled
+
 # Bias priors
 lambda_bias_prior: 1.0     # Fallback (overridden by per-sensor values below)
 lambda_bias_prior_accel: 1000.0   # Strong: prevents gravity leakage into accel bias
@@ -45,11 +41,11 @@ lambda_boundary_gyro: 1000.0
 
 # Optimizer
 max_iterations: 20
-early_stop_patience: 3
+early_stop_patience: 3 # Stop after this many consecutive rejected LM steps; -1 = disabled
 relinearize_threshold_deg: 1.0   # Legacy (unused with cumulative SO3 spline; kept for config compat)
 use_phase2_init: false             # Initialize position from Phase 2 linear solver
 ori_base_jacobian_window: 20      # Max base knots to include per measurement for orientation Jacobian.
-                                  # Full left-triangular (window=0) is exact but O(N) per measurement.
+                                  # 0 = full left-triangular (exact baseline, use for comparison).
                                   # Window=20 (~1s at 0.05s/knot) approximates sliding-window LM,
                                   # recovering ~90% sparsity with minimal accuracy loss.
 
