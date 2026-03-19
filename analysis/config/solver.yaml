@@ -45,7 +45,7 @@ lambda_boundary_gyro: 1000.0
 
 # Optimizer
 max_iterations: 20
-early_stop_patience: 10
+early_stop_patience: 3
 relinearize_threshold_deg: 1.0   # Legacy (unused with cumulative SO3 spline; kept for config compat)
 use_phase2_init: false             # Initialize position from Phase 2 linear solver
 ori_base_jacobian_window: 20      # Max base knots to include per measurement for orientation Jacobian.
