@@ -21,7 +21,7 @@ translation_body_m: [0.08, 0.02, -0.01]   # 2 cm left (+y), 1 cm down (-z) (conf
 #     i.e. radar_total_offset is added to raw radar timestamps to align them on the MoCap axis.
 #     With current values: 0.020 - 0.140 = -0.120 s  (radar data arrives ~120 ms late)
 #
-imu_mocap_offset_sec: 0.0150
-radar_imu_offset_sec: 0.1350
+imu_mocap_offset_sec: 0.020
+radar_imu_offset_sec: 0.140
 # imu_mocap_offset_sec: -0.0100
 # radar_imu_offset_sec: 0.1118
