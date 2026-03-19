@@ -2408,17 +2408,55 @@ def main():
     ax_summary.axis('off')
     ax_summary.set_title('Summary & Config')
 
+    # --- Detect de-aliased frames (post-optimization) ---
+    frame_dealiased = np.zeros(len(solver_radar_frames), dtype=bool)
+    if USE_UNWRAP and V_MAX is not None and len(solver_radar_frames) > 0:
+        _R_bs_quat = Rot3.from_rotation_matrix(SENSOR_ROTATION)
+        _zeros3_da = np.zeros(3)
+        for _fi, _frame in enumerate(solver_radar_frames):
+            _t = _frame.timestamp
+            try:
+                _v_world = optimized_state.get_position(_t, derivative=1)
+                _t_rel = _t - optimized_state.ori_spline.t_ref
+                _R_full, _omega, _, _, _ = optimized_state.ori_spline.evaluate_with_jacobians(_t_rel)
+                _R_nom_quat = Rot3.from_rotation_matrix(_R_full)
+            except Exception:
+                continue
+            for _i in range(_frame.num_points()):
+                _p_s = _frame.positions[_i]
+                _rng = np.linalg.norm(_p_s)
+                if _rng < MIN_RANGE:
+                    continue
+                _u_sensor = _p_s / _rng
+                _v_meas = _frame.velocities[_i]
+                _res, *_ = radar_residual_with_jacobians(
+                    _v_world, _R_nom_quat, _zeros3_da, _omega,
+                    _u_sensor, sensor_translation, _R_bs_quat,
+                    _v_meas, 1e-10)
+                _r = _res[0]
+                _k_alias = round(-_r / (2.0 * V_MAX))
+                if _k_alias != 0:
+                    frame_dealiased[_fi] = True
+                    break  # one de-aliased point is enough to flag the frame
+
     # --- Radar frame tick marks on all time-based subplots ---
     # Draw small light-yellow ticks at the bottom of each time axis to show
     # when radar frames contributed (sparse near stationary segments).
+    # Red ticks indicate frames where at least one return was de-aliased (Doppler unwrapped).
     radar_tick_times = np.array([f.timestamp for f in solver_radar_frames]) - eval_times[0]
     radar_tick_counts = np.array([f.num_points() for f in solver_radar_frames], dtype=float)
     radar_tick_heights = 0.04 * radar_tick_counts / 13.5  # normalised to avg ~13.5 returns/frame
+    _mask_normal = ~frame_dealiased
+    _mask_dealiased = frame_dealiased
     _time_axes = [axd[(r, c)] for r in range(5) for c in range(2) if (r, c) != (0, 0)] + [axd[(0, 2)]]
     for _ax in _time_axes:
         _trans = mtransforms.blended_transform_factory(_ax.transData, _ax.transAxes)
-        _ax.vlines(radar_tick_times, 0, radar_tick_heights, transform=_trans,
-                   color='#ffe566', linewidth=0.8, alpha=0.85, zorder=0)
+        if _mask_normal.any():
+            _ax.vlines(radar_tick_times[_mask_normal], 0, radar_tick_heights[_mask_normal],
+                       transform=_trans, color='#ffe566', linewidth=0.8, alpha=0.85, zorder=0)
+        if _mask_dealiased.any():
+            _ax.vlines(radar_tick_times[_mask_dealiased], 0, radar_tick_heights[_mask_dealiased],
+                       transform=_trans, color='#ff4444', linewidth=0.8, alpha=0.85, zorder=0)
 
     plots_dir = Path(f'plots/{bag_key}/validation')
     plots_dir.mkdir(parents=True, exist_ok=True)
@@ -2578,11 +2616,15 @@ def main():
     ax.set_title('Gravity residual per axis: measured − predicted (after optimization)')
     ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
 
-    # Radar frame ticks on all panels
+    # Radar frame ticks on all panels (yellow = normal, red = de-aliased)
     for _ax in axes3:
         _trans = mtransforms.blended_transform_factory(_ax.transData, _ax.transAxes)
-        _ax.vlines(radar_tick_times, 0, radar_tick_heights, transform=_trans,
-                   color='#ffe566', linewidth=0.8, alpha=0.85, zorder=0)
+        if _mask_normal.any():
+            _ax.vlines(radar_tick_times[_mask_normal], 0, radar_tick_heights[_mask_normal],
+                       transform=_trans, color='#ffe566', linewidth=0.8, alpha=0.85, zorder=0)
+        if _mask_dealiased.any():
+            _ax.vlines(radar_tick_times[_mask_dealiased], 0, radar_tick_heights[_mask_dealiased],
+                       transform=_trans, color='#ff4444', linewidth=0.8, alpha=0.85, zorder=0)
 
     fig3.tight_layout()
     grav_dir = Path(f'plots/{bag_key}/gravity_diagnostics')
