@@ -2501,7 +2501,7 @@ def main():
             R_est = optimized_state.get_rotation(t)
         except Exception:
             continue
-        g_pred = R_est.T @ np.array([0.0, 0.0, -G_NORM_DIAG])
+        g_pred = R_est.T @ np.array([0.0, 0.0, G_NORM_DIAG])
         grav_times.append(t - eval_times[0])
         grav_accel_norm.append(a_norm)
         grav_w_dynamic.append(w)
