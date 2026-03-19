@@ -991,8 +991,260 @@ def compute_jacobian_analytical(
     J.n_bias_prior = n_bias_prior_rows
     J.n_extrinsic_prior = n_extrinsic_prior_rows
     J.prior_cost_extrinsic = prior_cost_extrinsic
-    
+
     return J, r
+
+
+def compute_residuals_only(
+    state: TrajectoryState,
+    radar_frames,
+    imu_data,
+    sensor_translation: np.ndarray,
+    sensor_rotation: np.ndarray,
+    lambda_accel: float,
+    lambda_gyro: float,
+    huber_delta: float,
+    min_range: float = 0.2,
+    boundary_vel_priors: list = None,
+    boundary_pos_priors: list = None,
+    lambda_boundary_vel: float = 0.0,
+    lambda_boundary_pos: float = 0.0,
+    huber_delta_accel: float = 0.0,
+    boundary_ori_priors: list = None,
+    boundary_accel_priors: list = None,
+    boundary_gyro_priors: list = None,
+    lambda_boundary_ori: float = 0.0,
+    lambda_boundary_accel: float = 0.0,
+    lambda_boundary_gyro: float = 0.0,
+    lambda_ori_reg: float = 0.0,
+    lambda_bias_prior: float = 0.0,
+    lambda_bias_prior_accel: float = None,
+    lambda_bias_prior_gyro: float = None,
+    bias_prior_mean: np.ndarray = None,
+    lock_extrinsics: bool = False,
+    optimize_pitch_only: bool = True,
+    lambda_extrinsic_prior: float = 0.0,
+    v_max: float = None,
+    lambda_gravity: float = 0.0,
+    gravity_accel_threshold: float = 3.0,
+    lambda_heading: float = 0.0,
+    heading_priors: list = None,
+) -> np.ndarray:
+    """
+    Compute residual vector only — no Jacobian construction.
+
+    ~2-3x faster than compute_jacobian_analytical because:
+    - Uses evaluate_with_jacobians (3 active knots) instead of evaluate_full_jacobians
+      (base_window knots), skipping the expensive base-knot Jacobian accumulation.
+    - Skips all COO (rows/cols/vals) list operations.
+    - Skips CSR matrix construction.
+
+    Returns r: residual vector (N_residuals,), same ordering as compute_jacobian_analytical.
+    """
+    _zeros3 = np.zeros(3)
+    all_residuals = []
+
+    # Pre-compute sensor rotation (same as in full Jacobian)
+    R_bs_nominal = sensor_rotation
+    R_bs_delta_matrix = so3_exp(state.radar_extrinsic_delta)
+    R_bs = R_bs_nominal @ R_bs_delta_matrix
+    R_bs_quat = Rot3.from_rotation_matrix(R_bs)
+
+    # ==================== Radar residuals ====================
+    for frame in radar_frames:
+        t = frame.timestamp
+        t_rel_ori = t - state.ori_spline.t_ref
+
+        v_world = state.get_position(t, derivative=1)
+
+        # Active-span only (no base_window): same R and omega as evaluate_full_jacobians
+        R_full, omega, _, _, _ = state.ori_spline.evaluate_with_jacobians(t_rel_ori)
+        R_nom_quat = Rot3.from_rotation_matrix(R_full)
+
+        n_points = frame.num_points()
+        for i in range(n_points):
+            p_s = frame.positions[i]
+            range_val = frame.ranges[i] if frame.ranges is not None else np.linalg.norm(p_s)
+            if range_val < min_range:
+                continue
+
+            u_sensor = p_s / np.linalg.norm(p_s)
+            v_meas = frame.velocities[i]
+
+            res, _, _, _, _ = radar_residual_with_jacobians(
+                v_world, R_nom_quat, _zeros3, omega,
+                u_sensor, sensor_translation, R_bs_quat,
+                v_meas, 1e-10
+            )
+            r = res[0]
+
+            if v_max is not None:
+                v_pred = v_meas - r
+                k_alias = round((v_pred - v_meas) / (2.0 * v_max))
+                if k_alias != 0:
+                    r += k_alias * 2.0 * v_max
+
+            w = huber_weight(r, delta=huber_delta)
+            all_residuals.append(r * np.sqrt(w))
+
+    # ==================== Accelerometer residuals ====================
+    sqrt_lambda_accel = np.sqrt(lambda_accel)
+    use_huber_accel = huber_delta_accel > 0
+    g_world = np.array([0, 0, -9.81])
+
+    for imu_msg in imu_data:
+        t = imu_msg.timestamp
+        t_rel_ori = t - state.ori_spline.t_ref
+
+        a_world = state.get_position(t, derivative=2)
+        R_full, _, _, _, _ = state.ori_spline.evaluate_with_jacobians(t_rel_ori)
+        R_nom_quat = Rot3.from_rotation_matrix(R_full)
+
+        z_acc = imu_msg.linear_acceleration
+        res_3, _, _, _ = accel_residual_with_jacobians(
+            a_world, R_nom_quat, _zeros3, g_world, z_acc, state.acc_bias, 1e-10
+        )
+
+        if use_huber_accel:
+            accel_res_norm = np.linalg.norm(res_3)
+            sqrt_w_accel = np.sqrt(huber_weight(accel_res_norm, delta=huber_delta_accel))
+        else:
+            sqrt_w_accel = 1.0
+
+        scale = sqrt_lambda_accel * sqrt_w_accel
+        for k in range(3):
+            all_residuals.append(scale * res_3[k])
+
+    # ==================== Gyroscope residuals ====================
+    sqrt_lambda_gyro = np.sqrt(lambda_gyro)
+    for imu_msg in imu_data:
+        t = imu_msg.timestamp
+        t_rel_ori = t - state.ori_spline.t_ref
+        z_gyro = imu_msg.angular_velocity
+        _, omega, _, _, _ = state.ori_spline.evaluate_with_jacobians(t_rel_ori)
+        res_gyro_3 = z_gyro - omega - state.gyr_bias
+        for k in range(3):
+            all_residuals.append(sqrt_lambda_gyro * res_gyro_3[k])
+
+    # ==================== Gravity residuals ====================
+    if lambda_gravity > 0:
+        sqrt_lambda_grav = np.sqrt(lambda_gravity)
+        G_NORM = 9.81
+        sigma_grav = gravity_accel_threshold
+        for imu_msg in imu_data:
+            t = imu_msg.timestamp
+            t_rel_ori = t - state.ori_spline.t_ref
+            z_acc = imu_msg.linear_acceleration
+            z_debiased = z_acc - state.acc_bias
+            a_norm = np.linalg.norm(z_debiased)
+            if a_norm < 1e-6:
+                continue
+            w_dynamic = np.exp(-((a_norm - G_NORM) / sigma_grav) ** 2)
+            if w_dynamic < 1e-4:
+                continue
+            scale = sqrt_lambda_grav * np.sqrt(w_dynamic)
+            R_full, _, _, _, _ = state.ori_spline.evaluate_with_jacobians(t_rel_ori)
+            R_nom_quat = Rot3.from_rotation_matrix(R_full)
+            res_3, _, _ = gravity_residual_with_jacobians(
+                R_nom_quat, _zeros3, z_acc, state.acc_bias, G_NORM, 1e-10)
+            for k in range(3):
+                all_residuals.append(scale * res_3[k])
+
+    # ==================== Heading residuals ====================
+    if lambda_heading > 0 and heading_priors:
+        sqrt_lambda_hdg = np.sqrt(lambda_heading)
+        for t_abs, R_mocap in heading_priors:
+            t_rel_ori = t_abs - state.ori_spline.t_ref
+            R_full, _, _, _, _ = state.ori_spline.evaluate_with_jacobians(t_rel_ori)
+            R_nom_quat = Rot3.from_rotation_matrix(R_full)
+            R_mocap_quat = Rot3.from_rotation_matrix(R_mocap)
+            res_1, _ = heading_residual_with_jacobians(R_nom_quat, _zeros3, R_mocap_quat, 1e-10)
+            all_residuals.append(sqrt_lambda_hdg * res_1[0])
+
+    # ==================== Boundary velocity priors ====================
+    if boundary_vel_priors and lambda_boundary_vel > 0:
+        sqrt_lbv = np.sqrt(lambda_boundary_vel)
+        for t_abs, v_target in boundary_vel_priors:
+            v_est = state.get_position(t_abs, derivative=1)
+            r_bv = v_est - v_target
+            for k in range(3):
+                all_residuals.append(sqrt_lbv * r_bv[k])
+
+    # ==================== Boundary position priors ====================
+    if boundary_pos_priors and lambda_boundary_pos > 0:
+        sqrt_lbp = np.sqrt(lambda_boundary_pos)
+        for t_abs, p_target in boundary_pos_priors:
+            p_est = state.get_position(t_abs, derivative=0)
+            r_bp = p_est - p_target
+            for k in range(3):
+                all_residuals.append(sqrt_lbp * r_bp[k])
+
+    # ==================== Boundary orientation priors ====================
+    if boundary_ori_priors and lambda_boundary_ori > 0:
+        sqrt_lbo = np.sqrt(lambda_boundary_ori)
+        for entry in boundary_ori_priors:
+            if isinstance(entry, (tuple, list)):
+                t_abs, R_target = entry
+            else:
+                continue
+            t_rel_ori = t_abs - state.ori_spline.t_ref
+            R_est, _, _, _, _ = state.ori_spline.evaluate_with_jacobians(t_rel_ori)
+            r_ori = _so3_log_cs(R_target.T @ R_est)
+            for k in range(3):
+                all_residuals.append(sqrt_lbo * r_ori[k])
+
+    # ==================== Boundary acceleration priors ====================
+    if boundary_accel_priors and lambda_boundary_accel > 0:
+        sqrt_lba = np.sqrt(lambda_boundary_accel)
+        for t_abs, a_target in boundary_accel_priors:
+            a_est = state.get_position(t_abs, derivative=2)
+            r_ba = a_est - a_target
+            for k in range(3):
+                all_residuals.append(sqrt_lba * r_ba[k])
+
+    # ==================== Boundary angular velocity priors ====================
+    if boundary_gyro_priors and lambda_boundary_gyro > 0:
+        sqrt_lbg = np.sqrt(lambda_boundary_gyro)
+        for entry in boundary_gyro_priors:
+            if isinstance(entry, (tuple, list)):
+                t_abs, omega_target = entry
+            else:
+                t_abs = entry
+                omega_target = np.zeros(3)
+            t_rel_ori = t_abs - state.ori_spline.t_ref
+            _, omega_est, _, _, _ = state.ori_spline.evaluate_with_jacobians(t_rel_ori)
+            r_gyro_bnd = omega_est - omega_target
+            for k in range(3):
+                all_residuals.append(sqrt_lbg * r_gyro_bnd[k])
+
+    # ==================== Orientation increment regularization ====================
+    if lambda_ori_reg > 0:
+        sqrt_lor = np.sqrt(lambda_ori_reg)
+        for knot_idx in range(state.ori_spline.n_knots):
+            omega_j = state.ori_spline.omega_knots[knot_idx]
+            for k in range(3):
+                all_residuals.append(sqrt_lor * omega_j[k])
+
+    # ==================== Bias prior ====================
+    bp_mean = bias_prior_mean if bias_prior_mean is not None else np.zeros(6)
+    lbp_accel = lambda_bias_prior_accel if lambda_bias_prior_accel is not None else lambda_bias_prior
+    lbp_gyro = lambda_bias_prior_gyro if lambda_bias_prior_gyro is not None else lambda_bias_prior
+    if lbp_accel > 0:
+        sqrt_lbp_a = np.sqrt(lbp_accel)
+        for k in range(3):
+            all_residuals.append(sqrt_lbp_a * (state.acc_bias[k] - bp_mean[k]))
+    if lbp_gyro > 0:
+        sqrt_lbp_g = np.sqrt(lbp_gyro)
+        for k in range(3):
+            all_residuals.append(sqrt_lbp_g * (state.gyr_bias[k] - bp_mean[3 + k]))
+
+    # ==================== Extrinsic prior ====================
+    if lambda_extrinsic_prior > 0:
+        sqrt_lep = np.sqrt(lambda_extrinsic_prior)
+        for k in range(3):
+            all_residuals.append(sqrt_lep * state.radar_extrinsic_delta[k])
+
+    return np.array(all_residuals)
 
 
 def compute_orientation_rmse(state: TrajectoryState, mocap_times_abs, mocap_rotations):
@@ -1169,10 +1421,48 @@ def solve_trajectory_nonlinear(
             heading_priors=heading_priors,
         )
 
+    def _compute_residuals(st, iteration_idx=None):
+        """Residual-only evaluation (no Jacobian). ~2-3x faster than _build_jacobian."""
+        la = lambda_accel
+        if iteration_idx is not None and iteration_idx < ACCEL_WARMUP_ITERS:
+            la = 0.0
+        return compute_residuals_only(
+            st, radar_frames, imu_data,
+            sensor_translation, sensor_rotation,
+            la, lambda_gyro, huber_delta,
+            boundary_vel_priors=boundary_vel_priors,
+            boundary_pos_priors=boundary_pos_priors,
+            lambda_boundary_vel=lambda_boundary_vel,
+            lambda_boundary_pos=lambda_boundary_pos,
+            huber_delta_accel=huber_delta_accel,
+            boundary_ori_priors=boundary_ori_priors,
+            boundary_accel_priors=boundary_accel_priors,
+            boundary_gyro_priors=boundary_gyro_priors,
+            lambda_boundary_ori=lambda_boundary_ori,
+            lambda_boundary_accel=lambda_boundary_accel,
+            lambda_boundary_gyro=lambda_boundary_gyro,
+            lambda_ori_reg=lambda_ori_reg,
+            lambda_bias_prior=lambda_bias_prior,
+            lambda_bias_prior_accel=lambda_bias_prior_accel,
+            lambda_bias_prior_gyro=lambda_bias_prior_gyro,
+            bias_prior_mean=bias_prior_mean,
+            lock_extrinsics=lock_extrinsics,
+            optimize_pitch_only=optimize_pitch_only,
+            lambda_extrinsic_prior=lambda_extrinsic_prior,
+            v_max=v_max,
+            lambda_gravity=lambda_gravity,
+            gravity_accel_threshold=gravity_accel_threshold,
+            lambda_heading=lambda_heading,
+            heading_priors=heading_priors,
+        )
+
     lambda_lm = 1e-3
     prev_cost = None
     n_consecutive_rejects = 0
     MAX_CONSECUTIVE_REJECTS = early_stop_patience
+    # Cache: (H_no_damping, b, r_total, cost_total, J) from the last Jacobian build.
+    # Valid as long as state hasn't changed (i.e., during a rejection streak).
+    _j_cache = None
 
     for iteration in range(max_iterations):
         # Reset LM state when transitioning from warmup to full accel
@@ -1180,6 +1470,7 @@ def solve_trajectory_nonlinear(
             prev_cost = None
             lambda_lm = 1e-3
             n_consecutive_rejects = 0
+            _j_cache = None  # Accel factor changes, must rebuild Jacobian
             if verbose:
                 print(f"\n  >>> Accel warm-up complete. Enabling accelerometer (lambda_accel={lambda_accel})")
         
@@ -1194,78 +1485,88 @@ def solve_trajectory_nonlinear(
                       f"  Gyr bias: [{state.gyr_bias[0]:.3f}, {state.gyr_bias[1]:.3f}, {state.gyr_bias[2]:.3f}]")
         
         t_start = time.time()
-        
-        # Build Jacobian + residual vector analytically (includes all costs)
-        if verbose:
-            if iteration < ACCEL_WARMUP_ITERS:
-                print(f"Computing analytical Jacobian... [ACCEL WARMUP: off, iter {iteration+1}/{ACCEL_WARMUP_ITERS}]")
-            else:
-                print("Computing analytical Jacobian...")
-        
-        J, r_total = _build_jacobian(state, iteration_idx=iteration)
-        
-        cost_total = np.sum(r_total**2)
-        
-        if verbose:
-            # Cost decomposition: residuals ordered as radar|accel|gyro|gravity|heading|bnd_vel|...
-            n_r = getattr(J, 'n_radar', 0)
-            n_a = getattr(J, 'n_accel', 0)
-            n_g = getattr(J, 'n_gyro', 0)
-            n_grav = getattr(J, 'n_gravity', 0)
-            n_hdg = getattr(J, 'n_heading', 0)
-            n_bv = getattr(J, 'n_boundary_vel', 0)
-            n_bp = getattr(J, 'n_boundary_pos', 0)
-            n_bo = getattr(J, 'n_boundary_ori', 0)
-            n_bac = getattr(J, 'n_boundary_accel', 0)
-            n_bg = getattr(J, 'n_boundary_gyro', 0)
-            n_or = getattr(J, 'n_ori_reg', 0)
-            n_bp_prior = getattr(J, 'n_bias_prior', 0)
-            idx = 0
-            cost_radar = np.sum(r_total[idx:idx+n_r]**2); idx += n_r
-            cost_accel = np.sum(r_total[idx:idx+n_a]**2); idx += n_a
-            cost_gyro = np.sum(r_total[idx:idx+n_g]**2); idx += n_g
-            cost_grav = np.sum(r_total[idx:idx+n_grav]**2); idx += n_grav
-            cost_hdg = np.sum(r_total[idx:idx+n_hdg]**2); idx += n_hdg
-            cost_bv = np.sum(r_total[idx:idx+n_bv]**2); idx += n_bv
-            cost_bp = np.sum(r_total[idx:idx+n_bp]**2); idx += n_bp
-            cost_bo = np.sum(r_total[idx:idx+n_bo]**2); idx += n_bo
-            cost_bac = np.sum(r_total[idx:idx+n_bac]**2); idx += n_bac
-            cost_bg = np.sum(r_total[idx:idx+n_bg]**2); idx += n_bg
-            cost_or = np.sum(r_total[idx:idx+n_or]**2); idx += n_or
-            cost_bp_prior = np.sum(r_total[idx:idx+n_bp_prior]**2); idx += n_bp_prior
-            n_ep = getattr(J, 'n_extrinsic_prior', 0)
-            cost_ep = np.sum(r_total[idx:idx+n_ep]**2) if n_ep > 0 else 0.0; idx += n_ep
 
-            bnd_parts = []
-            if n_grav > 0: bnd_parts.append(f"gravity={cost_grav:.1f}")
-            if n_hdg > 0: bnd_parts.append(f"heading={cost_hdg:.1f}")
-            if n_bv > 0: bnd_parts.append(f"bnd_vel={cost_bv:.1f}")
-            if n_bp > 0: bnd_parts.append(f"bnd_pos={cost_bp:.1f}")
-            if n_bo > 0: bnd_parts.append(f"bnd_ori={cost_bo:.1f}")
-            if n_bac > 0: bnd_parts.append(f"bnd_acc={cost_bac:.1f}")
-            if n_bg > 0: bnd_parts.append(f"bnd_gyr={cost_bg:.1f}")
-            if n_or > 0: bnd_parts.append(f"ori_reg={cost_or:.1f}")
-            if n_bp_prior > 0: bnd_parts.append(f"bias_prior={cost_bp_prior:.1f}")
-            if n_ep > 0: bnd_parts.append(f"ext_prior={cost_ep:.1f}")
-            bnd_str = (" " + " ".join(bnd_parts)) if bnd_parts else ""
-            print(f"Cost: total={cost_total:.2f} | radar={cost_radar:.1f} accel={cost_accel:.1f} gyro={cost_gyro:.1f}{bnd_str}")
-            print(f"Jacobian: {J.shape}, nnz={J.nnz}, sparsity={100*(1-J.nnz/(J.shape[0]*J.shape[1])):.2f}%")
-        
-        # Build normal equations with LM damping
-        H = J.T @ J + lambda_lm * sparse.eye(n_total) + R_snap
-        b = J.T @ r_total
+        # ---- Build or reuse Jacobian (Bug A fix: skip rebuild on rejection streak) ----
+        if _j_cache is None:
+            # Fresh Jacobian needed (first iter or after acceptance)
+            if verbose:
+                if iteration < ACCEL_WARMUP_ITERS:
+                    print(f"Computing analytical Jacobian... [ACCEL WARMUP: off, iter {iteration+1}/{ACCEL_WARMUP_ITERS}]")
+                else:
+                    print("Computing analytical Jacobian...")
+
+            J, r_total = _build_jacobian(state, iteration_idx=iteration)
+            cost_total = np.sum(r_total**2)
+
+            if verbose:
+                # Cost decomposition
+                n_r = getattr(J, 'n_radar', 0)
+                n_a = getattr(J, 'n_accel', 0)
+                n_g = getattr(J, 'n_gyro', 0)
+                n_grav = getattr(J, 'n_gravity', 0)
+                n_hdg = getattr(J, 'n_heading', 0)
+                n_bv = getattr(J, 'n_boundary_vel', 0)
+                n_bp_rows = getattr(J, 'n_boundary_pos', 0)
+                n_bo = getattr(J, 'n_boundary_ori', 0)
+                n_bac = getattr(J, 'n_boundary_accel', 0)
+                n_bg = getattr(J, 'n_boundary_gyro', 0)
+                n_or = getattr(J, 'n_ori_reg', 0)
+                n_bp_prior = getattr(J, 'n_bias_prior', 0)
+                idx = 0
+                cost_radar = np.sum(r_total[idx:idx+n_r]**2); idx += n_r
+                cost_accel = np.sum(r_total[idx:idx+n_a]**2); idx += n_a
+                cost_gyro = np.sum(r_total[idx:idx+n_g]**2); idx += n_g
+                cost_grav = np.sum(r_total[idx:idx+n_grav]**2); idx += n_grav
+                cost_hdg = np.sum(r_total[idx:idx+n_hdg]**2); idx += n_hdg
+                cost_bv = np.sum(r_total[idx:idx+n_bv]**2); idx += n_bv
+                cost_bp_v = np.sum(r_total[idx:idx+n_bp_rows]**2); idx += n_bp_rows
+                cost_bo = np.sum(r_total[idx:idx+n_bo]**2); idx += n_bo
+                cost_bac = np.sum(r_total[idx:idx+n_bac]**2); idx += n_bac
+                cost_bg = np.sum(r_total[idx:idx+n_bg]**2); idx += n_bg
+                cost_or = np.sum(r_total[idx:idx+n_or]**2); idx += n_or
+                cost_bp_prior = np.sum(r_total[idx:idx+n_bp_prior]**2); idx += n_bp_prior
+                n_ep = getattr(J, 'n_extrinsic_prior', 0)
+                cost_ep = np.sum(r_total[idx:idx+n_ep]**2) if n_ep > 0 else 0.0; idx += n_ep
+
+                bnd_parts = []
+                if n_grav > 0: bnd_parts.append(f"gravity={cost_grav:.1f}")
+                if n_hdg > 0: bnd_parts.append(f"heading={cost_hdg:.1f}")
+                if n_bv > 0: bnd_parts.append(f"bnd_vel={cost_bv:.1f}")
+                if n_bp_rows > 0: bnd_parts.append(f"bnd_pos={cost_bp_v:.1f}")
+                if n_bo > 0: bnd_parts.append(f"bnd_ori={cost_bo:.1f}")
+                if n_bac > 0: bnd_parts.append(f"bnd_acc={cost_bac:.1f}")
+                if n_bg > 0: bnd_parts.append(f"bnd_gyr={cost_bg:.1f}")
+                if n_or > 0: bnd_parts.append(f"ori_reg={cost_or:.1f}")
+                if n_bp_prior > 0: bnd_parts.append(f"bias_prior={cost_bp_prior:.1f}")
+                if n_ep > 0: bnd_parts.append(f"ext_prior={cost_ep:.1f}")
+                bnd_str = (" " + " ".join(bnd_parts)) if bnd_parts else ""
+                print(f"Cost: total={cost_total:.2f} | radar={cost_radar:.1f} accel={cost_accel:.1f} gyro={cost_gyro:.1f}{bnd_str}")
+                print(f"Jacobian: {J.shape}, nnz={J.nnz}, sparsity={100*(1-J.nnz/(J.shape[0]*J.shape[1])):.2f}%")
+
+            # Cache undamped normal equations
+            H_no_damping = J.T @ J + R_snap
+            b = J.T @ r_total
+            _j_cache = (H_no_damping, b, r_total, cost_total, J)
+
+        else:
+            # Reuse cached data — state unchanged since last rejection
+            H_no_damping, b, r_total, cost_total, J = _j_cache
+            if verbose:
+                print(f"  [CACHE] Reusing Jacobian (lambda={lambda_lm:.2e}, cost={cost_total:.2f})")
+
+        # Apply damping to cached undamped H
+        H = H_no_damping + lambda_lm * sparse.eye(n_total)
 
         # Solve (optionally with Jacobi preconditioning)
         try:
             if use_jacobi_precond:
-                # Jacobi preconditioning: normalize H to remove scale mismatch
                 diag_H = H.diagonal().copy()
                 diag_H[diag_H < 1e-10] = 1.0
                 M_inv_sqrt = sparse.diags(1.0 / np.sqrt(diag_H))
                 H_scaled = M_inv_sqrt @ H @ M_inv_sqrt
                 b_scaled = M_inv_sqrt @ b
                 delta_x_scaled = spsolve(H_scaled, -b_scaled)
-                delta_x = M_inv_sqrt @ delta_x_scaled  # Unscale
+                delta_x = M_inv_sqrt @ delta_x_scaled
             else:
                 delta_x = spsolve(H, -b)
         except Exception:
@@ -1275,7 +1576,6 @@ def solve_trajectory_nonlinear(
             continue
 
         # spsolve returns NaN for singular H without raising an Exception (MatrixRankWarning).
-        # Catch it here before NaN can corrupt the state.
         if not np.isfinite(delta_x).all():
             if verbose:
                 print(f"[WARN] Solver returned NaN/Inf (singular H, damping={lambda_lm:.2e}), increasing damping...")
@@ -1291,41 +1591,58 @@ def solve_trajectory_nonlinear(
         if lock_extrinsics:
             delta_x[n_pos + n_ori + 6 : n_pos + n_ori + 9] = 0.0
         elif optimize_pitch_only:
-            # Zero out roll (x) and yaw (z) updates to only calibrate pitch (y)
             delta_x[n_pos + n_ori + 6] = 0.0
             delta_x[n_pos + n_ori + 8] = 0.0
-            
+
         x_new = x_current + delta_x
         state.from_vector(x_new)
-        
-        # Evaluate new cost
-        _, r_new = _build_jacobian(state, iteration_idx=iteration)
+
+        # Bug B fix: evaluate trial cost with residuals only (no Jacobian rebuild)
+        r_new = _compute_residuals(state, iteration_idx=iteration)
         new_cost = np.sum(r_new**2)
-        
-        # LM acceptance: accept only if cost decreased
+
+        # Bug C fix: gain ratio for smarter lambda schedule
+        # predicted_decrease = 0.5 * dx^T (lambda*dx - b)  [standard LM formula]
+        predicted_decrease = 0.5 * float(delta_x @ (lambda_lm * delta_x - b))
+        actual_decrease = cost_total - new_cost
+        if predicted_decrease > 1e-15:
+            rho = actual_decrease / predicted_decrease
+        else:
+            rho = 1.0 if actual_decrease > 0 else -1.0
+
         if new_cost < cost_total:
-            lambda_lm = max(1e-6, lambda_lm * 0.1)
+            # Accept step — update lambda based on gain ratio quality
+            if rho > 0.75:
+                lambda_lm = max(1e-6, lambda_lm * 0.33)
+            elif rho < 0.25:
+                lambda_lm = min(1e8, lambda_lm * 3.0)
+            # else: keep lambda (0.25 <= rho <= 0.75 is a "good" step)
+            _j_cache = None  # Clear cache; need fresh Jacobian next iteration
             prev_cost = new_cost
             n_consecutive_rejects = 0
             if verbose:
                 omega_norms = np.linalg.norm(state.ori_spline.omega_knots, axis=1)
                 print(f"  Accepted: cost {cost_total:.1f} -> {new_cost:.1f} "
-                      f"(max |Ω|={np.degrees(omega_norms.max()):.1f}°)")
+                      f"rho={rho:.3f} (max |Ω|={np.degrees(omega_norms.max()):.1f}°)")
         else:
-            # Reject and increase damping
+            # Reject step — restore state and increase damping
             state.from_vector(x_current)
-            lambda_lm *= 10.0  # Strong punishment for bad step
+            if rho < -1.0 or predicted_decrease <= 1e-15:
+                lambda_lm = min(1e8, lambda_lm * 10.0)
+            else:
+                lambda_lm = min(1e8, lambda_lm * 3.0)
             n_consecutive_rejects += 1
+            # Keep _j_cache: state is unchanged, so H_no_damping/b are still valid
             if verbose:
-                print(f"  [WARN] Cost increased ({new_cost:.2f} > {cost_total:.2f}), rejecting step")
-        
+                print(f"  [REJECT] cost {cost_total:.2f} -> {new_cost:.2f}, rho={rho:.3f}, new lambda={lambda_lm:.2e}")
+
         # Convergence check
         delta_norm = np.linalg.norm(delta_x)
         if verbose:
             print(f"Update norm: {delta_norm:.6f}")
             print(f"LM damping: {lambda_lm:.2e}")
             print(f"Iteration time: {time.time() - t_start:.3f}s")
-        
+
         if delta_norm < 1e-4:
             if verbose:
                 print("\n[OK] Converged (delta_norm < 1e-4)!")
