@@ -18,6 +18,10 @@ check if gyro has different time offset to mocap than accelerometer
 
 ---
 
+the radar doppler returns are shown in the plots. change colorings for those that contain dealiased speeds.
+
+---
+
 
 mocap yaw als weighted factor hinzufügen für ideal magnetormeter
 

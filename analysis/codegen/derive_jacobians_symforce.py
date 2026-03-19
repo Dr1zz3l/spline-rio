@@ -162,14 +162,15 @@ def gravity_residual(
     """
     Gravity-direction residual (Mahony-style roll/pitch constraint).
 
-    Compares the normalized accelerometer reading (gravity direction in body frame)
-    against the predicted gravity direction from the current attitude estimate.
+    Compares the normalized accelerometer reading (specific force direction in body frame)
+    against the predicted specific force direction from the current attitude estimate.
     Decoupled from linear acceleration / position — no a_world dependency.
 
-    residual = normalize(z_acc - b_a) * g_norm - R^T @ g_world
+    At hover, z_acc ≈ R^T @ [0,0,+g] (accel measures reaction force, pointing UP).
+    residual = normalize(z_acc - b_a) * g_norm - R^T @ [0, 0, +g]
     """
     R = R_nominal * sf.Rot3.from_tangent(delta, epsilon=epsilon)
-    g_world = sf.V3(0, 0, -g_norm)
+    g_world = sf.V3(0, 0, g_norm)
 
     z_debiased = z_acc - b_a
     z_normed = z_debiased / z_debiased.norm(epsilon=epsilon) * g_norm
@@ -647,18 +648,14 @@ class Rot3:
     # At identity rotation, hovering (z_acc ≈ [0,0,9.81] in body=world frame):
     # g_world = [0, 0, -9.81], R=I => g_body_predicted = R^T @ g_world = [0, 0, -9.81]
     # z_debiased = [0, 0, 9.81], normalized * 9.81 = [0, 0, 9.81]
-    # residual = [0, 0, 9.81] - [0, 0, -9.81] = [0, 0, 19.62] ... wait that's wrong
-    # Actually g_body_predicted = R^T @ [0, 0, -g_norm]
-    # At R=I: g_body_predicted = [0, 0, -9.81]
-    # But z_acc in body frame during hover is [0, 0, +9.81] (accelerometer measures reaction force)
-    # normalize([0,0,9.81]) * 9.81 = [0, 0, 9.81]
-    # residual = [0, 0, 9.81] - [0, 0, -9.81] ≠ 0 → this is by design: z_acc points UP, g_world points DOWN
-    # For zero residual, z_acc should be -g_world in body frame = [0,0,+9.81] already
-    # Let me just check J_b_a = -I structure (3x3)
+    # At hover with R=I and zero bias:
+    #   z_acc = [0, 0, +9.81]  (accel measures reaction/contact force, pointing UP)
+    #   g_body_predicted = R^T @ [0, 0, +9.81] = [0, 0, +9.81]
+    #   residual = [0,0,+9.81] - [0,0,+9.81] = [0, 0, 0]  ✓
     result_grav = mod.gravity_residual_with_jacobians(
         R_nom,                             # R_nominal (identity)
         np.array([0.0, 0.0, 0.0]),         # delta (zero)
-        np.array([0.0, 0.0, 9.81]),        # z_acc (pointing up during hover)
+        np.array([0.0, 0.0, 9.81]),        # z_acc (hover: accel reads +g upward)
         np.array([0.0, 0.0, 0.0]),         # b_a (zero bias)
         9.81,                              # g_norm
         1e-10,                             # epsilon
@@ -667,31 +664,9 @@ class Rot3:
           f"J_delta={result_grav[1].shape}, J_ba={result_grav[2].shape}")
     assert result_grav[1].shape == (3, 3), f"J_delta shape should be (3,3): {result_grav[1].shape}"
     assert result_grav[2].shape == (3, 3), f"J_ba shape should be (3,3): {result_grav[2].shape}"
-    # At correct attitude (R=I) and zero bias, residual should be ~0
-    # z_normed = normalize([0,0,9.81])*9.81 = [0,0,9.81]
-    # g_body_predicted = [0,0,-9.81] is wrong — at hover R=I, body z = world z, so g_body = [0,0,-g]
-    # But z_acc = [0,0,+g] since accel measures contact force. So residual = [0,0,9.81]-[0,0,-9.81]=[0,0,19.62]
-    # This is expected — to zero the residual we need z_acc pointing in -g_world direction in body frame
-    # Test with the correct sign: z_acc = R^T @ (-g_world) = [0,0,+g] at R=I → residual = 0
-    # Actually g_body_predicted = R^T @ [0,0,-g] = [0,0,-g] at R=I.
-    # z_normed = normalize([0,0,g])*g = [0,0,g]. residual = [0,0,g] - [0,0,-g] = [0,0,2g]. Not zero!
-    # This means the residual equation expects z_acc to point DOWN (in -g direction).
-    # So at hover, z_acc should be [0,0,-9.81] for zero residual...
-    # But the accel measures contact force (pointing UP at +z during hover).
-    # This is fine — the solver will just have a constant offset from the bias term.
-    # What matters is that J_delta has the right structure.
-    # Test that residual is consistent (same formula applied twice gives same result)
-    result_grav2 = mod.gravity_residual_with_jacobians(
-        R_nom,
-        np.array([0.0, 0.0, 0.0]),
-        np.array([0.0, 0.0, -9.81]),       # z_acc pointing DOWN
-        np.array([0.0, 0.0, 0.0]),
-        9.81, 1e-10,
-    )
-    # At R=I, z_acc=[0,0,-g]: z_normed = [0,0,-g]; g_body_predicted=[0,0,-g]; residual=[0,0,0]
-    assert np.allclose(result_grav2[0].flatten(), [0, 0, 0], atol=1e-6), \
-        f"Gravity residual (z_acc=-g, R=I) should be [0,0,0]: {result_grav2[0].flatten()}"
-    print(f"   gravity (z_acc=-g, R=I): residual={result_grav2[0].flatten()} ✓")
+    assert np.allclose(result_grav[0].flatten(), [0, 0, 0], atol=1e-6), \
+        f"Gravity residual (z_acc=+g, R=I) should be [0,0,0]: {result_grav[0].flatten()}"
+    print(f"   gravity (z_acc=+g, R=I): residual={result_grav[0].flatten()} ✓")
 
     # Test heading residual
     # At identity rotations (both R_est and R_mocap = I), yaw error = 0

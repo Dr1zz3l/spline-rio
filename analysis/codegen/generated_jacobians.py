@@ -1310,16 +1310,17 @@ def gravity_residual_with_jacobians(R_nominal, delta, z_acc, b_a, g_norm, epsilo
     """
     Gravity-direction residual (Mahony-style roll/pitch constraint).
 
-    Compares the normalized accelerometer reading (gravity direction in body frame)
-    against the predicted gravity direction from the current attitude estimate.
+    Compares the normalized accelerometer reading (specific force direction in body frame)
+    against the predicted specific force direction from the current attitude estimate.
     Decoupled from linear acceleration / position — no a_world dependency.
 
-    residual = normalize(z_acc - b_a) * g_norm - R^T @ g_world
+    At hover, z_acc ≈ R^T @ [0,0,+g] (accel measures reaction force, pointing UP).
+    residual = normalize(z_acc - b_a) * g_norm - R^T @ [0, 0, +g]
         res_D_delta: (3x3) jacobian of res (3) wrt arg delta (3)
         res_D_b_a: (3x3) jacobian of res (3) wrt arg b_a (3)
     """
 
-    # Total ops: 345
+    # Total ops: 354
 
     # Input arrays
     _R_nominal = R_nominal.data
@@ -1516,31 +1517,31 @@ def gravity_residual_with_jacobians(R_nominal, delta, z_acc, b_a, g_norm, epsilo
 
     # Output terms
     _res = numpy.zeros(3)
-    _res[0] = _tmp35 * _tmp42 + g_norm * (_tmp16 * _tmp23 - _tmp28 * _tmp34)
-    _res[1] = _tmp36 * _tmp42 + g_norm * (_tmp16 * _tmp34 + _tmp23 * _tmp28)
-    _res[2] = _tmp38 * _tmp42 + g_norm * (-2 * _tmp16**2 - 2 * _tmp28**2 + 1)
+    _res[0] = _tmp35 * _tmp42 - g_norm * (_tmp16 * _tmp23 - _tmp28 * _tmp34)
+    _res[1] = _tmp36 * _tmp42 - g_norm * (_tmp16 * _tmp34 + _tmp23 * _tmp28)
+    _res[2] = _tmp38 * _tmp42 - g_norm * (-2 * _tmp16**2 - 2 * _tmp28**2 + 1)
     _res_D_delta = numpy.zeros((3, 3))
-    _res_D_delta[0, 0] = g_norm * (
+    _res_D_delta[0, 0] = -g_norm * (
         _tmp16 * _tmp57 + _tmp23 * _tmp70 - _tmp28 * _tmp65 - _tmp34 * _tmp73
     )
-    _res_D_delta[1, 0] = g_norm * (
+    _res_D_delta[1, 0] = -g_norm * (
         _tmp16 * _tmp65 + _tmp23 * _tmp73 + _tmp28 * _tmp57 + _tmp34 * _tmp70
     )
-    _res_D_delta[2, 0] = g_norm * (-_tmp70 * _tmp75 - _tmp73 * _tmp74)
-    _res_D_delta[0, 1] = g_norm * (
+    _res_D_delta[2, 0] = -g_norm * (-_tmp70 * _tmp75 - _tmp73 * _tmp74)
+    _res_D_delta[0, 1] = -g_norm * (
         _tmp16 * _tmp83 + _tmp23 * _tmp87 - _tmp28 * _tmp78 - _tmp34 * _tmp81
     )
-    _res_D_delta[1, 1] = g_norm * (
+    _res_D_delta[1, 1] = -g_norm * (
         _tmp16 * _tmp78 + _tmp23 * _tmp81 + _tmp28 * _tmp83 + _tmp34 * _tmp87
     )
-    _res_D_delta[2, 1] = g_norm * (-_tmp74 * _tmp81 - _tmp75 * _tmp87)
-    _res_D_delta[0, 2] = g_norm * (
+    _res_D_delta[2, 1] = -g_norm * (-_tmp74 * _tmp81 - _tmp75 * _tmp87)
+    _res_D_delta[0, 2] = -g_norm * (
         _tmp16 * _tmp91 + _tmp23 * _tmp88 - _tmp28 * _tmp92 - _tmp33 * _tmp90
     )
-    _res_D_delta[1, 2] = g_norm * (
+    _res_D_delta[1, 2] = -g_norm * (
         _tmp16 * _tmp92 + _tmp22 * _tmp90 + _tmp28 * _tmp91 + _tmp34 * _tmp88
     )
-    _res_D_delta[2, 2] = g_norm * (-_tmp74 * _tmp89 - _tmp75 * _tmp88)
+    _res_D_delta[2, 2] = -g_norm * (-_tmp74 * _tmp89 - _tmp75 * _tmp88)
     _res_D_b_a = numpy.zeros((3, 3))
     _res_D_b_a[0, 0] = _tmp40 * _tmp94 + _tmp93
     _res_D_b_a[1, 0] = _tmp95
