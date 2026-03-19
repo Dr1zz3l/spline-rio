@@ -4,7 +4,7 @@ dt_pos: 0.05               # Knot spacing for position spline (seconds)
 dt_ori: 0.05               # Knot spacing for orientation spline (seconds)
 
 # Radar
-huber_delta: 0.1           # Huber threshold (m/s); must be >= 0.63 m/s Doppler bin size
+huber_delta: 1.0           # Huber threshold (m/s); must be >= 0.63 m/s Doppler bin size
 min_range: 0.2             # Minimum range filter (m)
 
 # IMU weights
@@ -35,7 +35,7 @@ lock_biases: false         # Lock biases to initial values (stationary-detected 
 boundary_window: 1         # Seconds near start to apply boundary priors
 lambda_boundary_vel: 1000.0
 lambda_boundary_pos: 1000.0
-lambda_boundary_ori: 10000.0
+lambda_boundary_ori: 1000.0
 lambda_boundary_accel: 0.001
 lambda_boundary_gyro: 1000.0
 
