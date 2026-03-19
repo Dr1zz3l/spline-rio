@@ -2531,10 +2531,31 @@ def main():
     print(f"  The post-fit acceleration RMSE above instead compares estimated a_world")
     print(f"  against MoCap-velocity-differentiated acceleration for evaluation only.")
     
+    # Euler per-axis errors (unwrapped, branch-snapped to MoCap)
+    mocap_euler_raw = Rotation.from_matrix(mocap_rotations_eval).as_euler('xyz')
+    est_euler_raw   = Rotation.from_matrix(estimated_rotations).as_euler('xyz')
+    mocap_euler = np.degrees(np.unwrap(mocap_euler_raw, axis=0))
+    est_euler_deg = np.degrees(est_euler_raw)
+    est_euler = mocap_euler + ((est_euler_deg - mocap_euler + 180) % 360 - 180)
+    euler_diff = est_euler - mocap_euler
+
+    # Angular velocity errors
+    mocap_ang_vel = np.array([s.angular_velocity for s in agiros_eval])
+    est_ang_vel = np.array([optimized_state.get_angular_velocity(t) for t in eval_times])
+    ang_vel_diff = est_ang_vel - mocap_ang_vel
+    ang_vel_abs_error = np.linalg.norm(ang_vel_diff, axis=1)
+
     print(f"\nOrientation Errors:")
     print(f"  Mean: {rot_errors.mean():.4f} deg")
     print(f"  RMSE: {np.sqrt(np.mean(rot_errors**2)):.4f} deg")
-    
+    print(f"  Per-axis RMSE: roll={np.sqrt(np.mean(euler_diff[:,0]**2)):.3f}  pitch={np.sqrt(np.mean(euler_diff[:,1]**2)):.3f}  yaw={np.sqrt(np.mean(euler_diff[:,2]**2)):.3f} deg")
+    print(f"  Per-axis mean:  roll={np.mean(euler_diff[:,0]):.3f}  pitch={np.mean(euler_diff[:,1]):.3f}  yaw={np.mean(euler_diff[:,2]):.3f} deg")
+
+    print(f"\nAngular Velocity Errors:")
+    print(f"  RMSE: {np.sqrt(np.mean(ang_vel_abs_error**2)):.4f} rad/s")
+    print(f"  Per-axis RMSE: x={np.sqrt(np.mean(ang_vel_diff[:,0]**2)):.3f}  y={np.sqrt(np.mean(ang_vel_diff[:,1]**2)):.3f}  z={np.sqrt(np.mean(ang_vel_diff[:,2]**2)):.3f} rad/s")
+    print(f"  Per-axis mean:  x={np.mean(ang_vel_diff[:,0]):.3f}  y={np.mean(ang_vel_diff[:,1]):.3f}  z={np.mean(ang_vel_diff[:,2]):.3f} rad/s")
+
     print(f"\nEstimated Biases:")
     print(f"  Accelerometer: [{optimized_state.acc_bias[0]:.4f}, {optimized_state.acc_bias[1]:.4f}, {optimized_state.acc_bias[2]:.4f}] m/s²")
     print(f"  Gyroscope: [{optimized_state.gyr_bias[0]:.4f}, {optimized_state.gyr_bias[1]:.4f}, {optimized_state.gyr_bias[2]:.4f}] rad/s")
@@ -2547,20 +2568,7 @@ def main():
     # --- Derived quantities for new plots ---
     pos_diff = estimated_positions - mocap_positions_eval
     accel_diff = estimated_accelerations - mocap_accelerations
-
-    mocap_euler_raw = Rotation.from_matrix(mocap_rotations_eval).as_euler('xyz')
-    est_euler_raw   = Rotation.from_matrix(estimated_rotations).as_euler('xyz')
-    # Unwrap MoCap, then snap estimated to the nearest equivalent branch at each step.
-    # Independent unwrapping can choose opposite branches around spikes; this avoids that.
-    mocap_euler = np.degrees(np.unwrap(mocap_euler_raw, axis=0))
-    est_euler_deg = np.degrees(est_euler_raw)
-    est_euler = mocap_euler + ((est_euler_deg - mocap_euler + 180) % 360 - 180)
-    euler_diff = est_euler - mocap_euler
-
-    mocap_ang_vel = np.array([s.angular_velocity for s in agiros_eval])
-    est_ang_vel = np.array([optimized_state.get_angular_velocity(t) for t in eval_times])
-    ang_vel_diff = est_ang_vel - mocap_ang_vel
-    ang_vel_abs_error = np.linalg.norm(ang_vel_diff, axis=1)
+    # euler_diff, mocap_ang_vel, est_ang_vel, ang_vel_diff, ang_vel_abs_error computed above
 
     accel_abs_error = np.linalg.norm(accel_diff, axis=1)
     accel_rmse = np.sqrt(np.mean(accel_abs_error**2))
