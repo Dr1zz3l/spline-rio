@@ -4,7 +4,7 @@ dt_pos: 0.005            # Knot spacing for position spline (seconds)
 dt_ori: 0.008              # Knot spacing for orientation spline (seconds)
 
 # Radar
-huber_delta: 1.0           # Huber threshold (m/s); must be >= 0.63 m/s Doppler bin size
+huber_delta: 0.1           # Huber threshold (m/s); must be >= 0.63 m/s Doppler bin size
 min_range: 0.2             # Minimum range filter (m)
 
 # IMU weights
@@ -40,7 +40,7 @@ lambda_boundary_gyro: 1000.0
 
 # Optimizer
 max_iterations: 40
-early_stop_patience: 10  # Stop after this many consecutive rejected LM steps; -1 = disabled
+early_stop_patience: 20  # Stop after this many consecutive rejected LM steps; -1 = disabled
 converge_window: 50       # Sliding window size (accepted steps) for plateau detection
 rtol_converge: 0.01      # Relative cost decrease threshold over the window; stop if below this
 relinearize_threshold_deg: 1.0   # Legacy (unused with cumulative SO3 spline; kept for config compat)
@@ -52,5 +52,5 @@ ori_base_jacobian_window: 20      # Max base knots to include per measurement fo
 
 # Extrinsics (radar-to-body)
 lock_extrinsics: false      # Lock radar extrinsics to config/extrinsics.yaml values
-optimize_pitch_only: true  # Only optimize pitch extrinsic; roll/yaw unobservable
+optimize_pitch_only: false  # Only optimize pitch extrinsic; roll/yaw unobservable
 lambda_extrinsic_prior: 10.0
