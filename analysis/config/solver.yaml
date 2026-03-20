@@ -25,8 +25,8 @@ lambda_heading: 0            # Weight for MoCap heading residual; 0 = disabled
 
 # Bias priors
 lambda_bias_prior: 1.0     # Fallback (overridden by per-sensor values below)
-lambda_bias_prior_accel: 10.0   # Strong: prevents gravity leakage into accel bias
-lambda_bias_prior_gyro: 10.0   # Very strong: MEMS gyro z-bias ~0.18-0.28 rad/s confirmed
+lambda_bias_prior_accel: 1.0   # the solver no longer exploits the bias as a trash can, so it can be released and oprimized.
+lambda_bias_prior_gyro: 1.0   # the solver no longer exploits the bias as a trash can, so it can be released and oprimized.
 use_stationary_bias: true  # Use variance-based stationary detection for bias initialization
 lock_biases: false         # Lock biases to initial values (stationary-detected or zero)
 
