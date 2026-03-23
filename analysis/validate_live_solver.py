@@ -1,0 +1,1445 @@
+"""
+LIVE RIO SOLVER — MoCap-Free Initialization Prototype
+
+Implements P1-P3 from the live RIO migration plan:
+  P1. Gyro-integrated orientation init (replaces MoCap SLERP)
+  P2. Radar-velocity position init (replaces MoCap cubic interpolation)
+  P3. Sensor-only boundary priors (replaces MoCap-derived targets)
+
+MoCap data is still loaded, but ONLY for final evaluation (RMSE comparison).
+It plays zero role in initialization or optimization.
+
+Usage:
+    python validate_live_solver.py <bag_name>
+    python validate_live_solver.py <bag_name> --noise-deg <σ_deg>   # P5 stress test
+
+The --noise-deg flag adds Gaussian noise (σ in degrees/√s, integrated as random walk)
+to the gyro-integrated orientations, simulating worse-than-real gyro drift.
+Use this to probe how much init error the solver can tolerate.
+"""
+
+import sys
+import numpy as np
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent / 'lib'))
+import matplotlib.pyplot as plt
+import matplotlib.transforms as mtransforms
+from scipy import sparse
+from scipy.spatial.transform import Rotation, Slerp
+from scipy.interpolate import interp1d
+import time
+
+from rosbag_loader.loader import load_bag_topics
+from radar_velocity_utils import (
+    quat_to_rotation_matrix,
+    rotation_matrix_from_euler,
+    solve_ego_velocity_weighted,
+)
+from bspline_utils import (
+    UniformBSpline,
+    build_minimum_snap_regularization,
+)
+from cumulative_so3_bspline import (
+    CumulativeSO3BSpline,
+    so3_exp,
+    so3_log,
+)
+from codegen.generated_jacobians import Rot3
+from config_loader import load_config
+
+# Import solver core from the batch solver (optimizer itself is MoCap-free)
+from validate_nonlinear_solver import (
+    TrajectoryState,
+    compute_jacobian_analytical,
+    compute_residuals_only,
+    solve_trajectory_nonlinear,
+    detect_stationary_bias,
+    compute_orientation_rmse,
+    huber_weight,
+)
+
+
+# ==================== Config ====================
+_cfg = load_config()
+BAGS = _cfg['bags']['bags']
+FLIPPED_BAGS = set(_cfg['bags']['flipped'])
+_BAG_TIMING_CFG = _cfg['bags']['timing']
+_RADAR_CFG = _cfg['bags'].get('radar_config', {})
+_EXTRINSICS_CFG = _cfg['extrinsics']
+_SOLVER_CFG = _cfg['solver']
+del _cfg
+
+
+# ==================== P1: Gravity-derived initial attitude ====================
+
+def gravity_to_rotation(g_body: np.ndarray) -> np.ndarray:
+    """
+    Derive initial rotation matrix from measured gravity vector in body frame.
+
+    The body convention is FLU (x=forward, y=left, z=up). In a level pose,
+    gravity reads [0, 0, +9.81]. Tilt is encoded in the x/y components.
+
+    Returns R_world_from_body (3x3) such that R @ [0,0,-9.81] ≈ g_body.
+    Yaw is set to zero (unobservable without magnetometer).
+    """
+    g_norm = np.linalg.norm(g_body)
+    if g_norm < 1e-3:
+        return np.eye(3)
+
+    g_hat = g_body / g_norm  # unit vector pointing "up" in body frame
+
+    # World z-axis = [0, 0, 1]. In body frame it equals g_hat (gravity is up in FLU).
+    # roll = atan2(g_y, g_z),  pitch = atan2(-g_x, g_z)
+    # These are small-angle approximations good to ±45°.
+    roll  = np.arctan2( g_hat[1],  g_hat[2])
+    pitch = np.arctan2(-g_hat[0],  g_hat[2])
+    yaw   = 0.0  # unobservable without magnetometer
+
+    return rotation_matrix_from_euler(roll, pitch, yaw)
+
+
+# ==================== P1: Gyro integration ====================
+
+def integrate_gyro_orientation(
+    imu_data,
+    b_g: np.ndarray,
+    R_init: np.ndarray,
+    t_start: float,
+    t_end: float,
+    noise_sigma_rad_per_sqrts: float = 0.0,
+) -> tuple:
+    """
+    Forward-integrate gyroscope measurements to produce a dense rotation array.
+
+    Model: R(t + dt) = R(t) @ exp((z_gyro - b_g + noise) * dt)
+
+    Args:
+        imu_data     : list of IMU messages with .timestamp and .angular_velocity
+        b_g          : (3,) gyroscope bias estimate (rad/s)
+        R_init       : (3,3) initial rotation at t_start
+        t_start      : absolute start time (only IMU samples at t >= t_start used)
+        t_end        : absolute end time   (only IMU samples at t <= t_end   used)
+        noise_sigma_rad_per_sqrts : optional Gaussian noise σ for P5 stress tests
+                                    (injected as sqrt(dt)-scaled random walk on gyro)
+
+    Returns:
+        times  : (M,) absolute timestamps of integrated rotations
+        Rs     : (M, 3, 3) rotation matrices at each time
+    """
+    # Filter to window
+    msgs = [d for d in imu_data if t_start <= d.timestamp <= t_end]
+    if len(msgs) < 2:
+        return np.array([t_start]), np.array([R_init])
+
+    times = [msgs[0].timestamp]
+    Rs    = [R_init.copy()]
+    R_cur = R_init.copy()
+
+    rng = np.random.default_rng(42)  # deterministic for reproducibility
+
+    for i in range(1, len(msgs)):
+        dt = msgs[i].timestamp - msgs[i - 1].timestamp
+        if dt <= 0 or dt > 0.1:  # skip bad dt or gaps > 100 ms
+            continue
+        omega = msgs[i].angular_velocity - b_g
+        if noise_sigma_rad_per_sqrts > 0:
+            omega = omega + rng.normal(0.0, noise_sigma_rad_per_sqrts * np.sqrt(dt), 3)
+        dR = so3_exp(omega * dt)
+        R_cur = R_cur @ dR
+        times.append(msgs[i].timestamp)
+        Rs.append(R_cur.copy())
+
+    return np.array(times), np.array(Rs)
+
+
+# ==================== P2: Radar-velocity position integration ====================
+
+def integrate_radar_velocity(
+    radar_frames,
+    imu_times: np.ndarray,
+    imu_Rs: np.ndarray,
+    sensor_rotation: np.ndarray,
+    sensor_translation: np.ndarray,
+    p_init: np.ndarray,
+    min_range: float = 0.2,
+    min_points: int = 5,
+    v_max: float | None = None,
+) -> tuple:
+    """
+    Integrate radar WLS ego-velocity to get a position trajectory.
+
+    Per-frame ego-velocity from WLS (sensor frame) is rotated to world frame
+    and integrated with forward Euler.
+
+    Sign convention:
+        solve_ego_velocity_weighted returns v_wls satisfying  u · v_wls = v_meas.
+        With TI Doppler convention v_meas = -u · v_sensor,
+        we have v_wls = -v_sensor_frame.
+        World velocity ≈ -(R_world_from_body @ sensor_rotation) @ v_wls
+                       = R_world_from_sensor @ v_sensor_frame
+        where R_world_from_sensor = R_world_from_body @ sensor_rotation
+              and v_sensor_frame = -v_wls.
+
+    Args:
+        radar_frames     : radar data list
+        imu_times        : (M,) gyro-integrated rotation timestamps (absolute)
+        imu_Rs           : (M,3,3) corresponding rotation matrices (world-from-body)
+        sensor_rotation  : (3,3) R_body_from_sensor (= SENSOR_ROTATION from config)
+        sensor_translation: (3,) t_body_from_sensor (lever arm, for lever-arm correction)
+        p_init           : (3,) initial position at first radar frame
+        min_range        : minimum range filter
+        min_points       : minimum points for WLS to be valid
+
+    Returns:
+        times  : (K,) absolute timestamps of position estimates
+        ps     : (K,3) integrated positions
+    """
+    times = []
+    ps    = []
+
+    p_cur = p_init.copy()
+    t_prev = None
+    v_prev_wls = None  # previous frame's WLS result (sensor frame, measurement convention)
+
+    for frame in sorted(radar_frames, key=lambda f: f.timestamp):
+        if frame.positions is None or frame.velocities is None or frame.intensities is None:
+            continue
+
+        t = frame.timestamp
+
+        # Unwrap individual Doppler measurements using the previous WLS estimate as prediction
+        velocities_to_use = frame.velocities
+        if v_prev_wls is not None and v_max is not None:
+            unwrapped = frame.velocities.copy()
+            for i in range(len(frame.positions)):
+                _rng = np.linalg.norm(frame.positions[i])
+                if _rng < 1e-6:
+                    continue
+                u = frame.positions[i] / _rng
+                v_pred_radial = np.dot(u, v_prev_wls)  # predicted measurement (u·v_wls convention)
+                v_meas = frame.velocities[i]
+                best = v_meas
+                best_err = abs(v_meas - v_pred_radial)
+                for k in [-1, 1]:
+                    v_shift = v_meas + k * 2 * v_max
+                    err = abs(v_shift - v_pred_radial)
+                    if err < best_err:
+                        best_err = err
+                        best = v_shift
+                unwrapped[i] = best
+            velocities_to_use = unwrapped
+
+        # WLS ego-velocity in sensor frame
+        v_wls = solve_ego_velocity_weighted(
+            frame.positions,
+            velocities_to_use,
+            frame.intensities,
+            min_range=min_range,
+            min_points=min_points,
+        )
+        if v_wls is None:
+            continue
+        v_prev_wls = v_wls
+
+        # Interpolate gyro-integrated rotation at this timestamp
+        idx = np.searchsorted(imu_times, t)
+        if idx == 0:
+            R_wb = imu_Rs[0]
+        elif idx >= len(imu_times):
+            R_wb = imu_Rs[-1]
+        else:
+            # Linear interpolation in so(3)
+            alpha = (t - imu_times[idx - 1]) / (imu_times[idx] - imu_times[idx - 1])
+            dR = imu_Rs[idx - 1].T @ imu_Rs[idx]
+            dw = so3_log(dR)
+            R_wb = imu_Rs[idx - 1] @ so3_exp(alpha * dw)
+
+        # World-frame velocity from WLS:
+        #   v_sensor_actual = -v_wls   (sign from TI convention)
+        #   v_body_actual   = sensor_rotation @ (-v_wls)
+        #   v_world         = R_wb @ v_body_actual
+        # Note: sensor_rotation = R_body_from_sensor
+        v_world = R_wb @ (sensor_rotation @ (-v_wls))
+
+        # Optionally correct for lever arm (omega x t_bs) — omitted for init
+
+        if t_prev is not None:
+            dt = t - t_prev
+            if 0 < dt < 0.5:  # guard against large gaps
+                p_cur = p_cur + v_world * dt
+
+        times.append(t)
+        ps.append(p_cur.copy())
+        t_prev = t
+
+    if len(times) == 0:
+        return np.array([radar_frames[0].timestamp]), np.array([p_init])
+
+    return np.array(times), np.array(ps)
+
+
+# ==================== Init helpers ====================
+
+def build_orientation_spline_from_gyro(
+    imu_gyro_times: np.ndarray,
+    imu_Rs: np.ndarray,
+    n_knots: int,
+    dt_ori: float,
+    t_ref: float,
+) -> CumulativeSO3BSpline:
+    """
+    Sample gyro-integrated rotations at spline knot times and build SO(3) spline.
+
+    Args:
+        imu_gyro_times : (M,) absolute timestamps of integrated rotations
+        imu_Rs         : (M,3,3) rotation matrices
+        n_knots        : number of knots in the orientation spline
+        dt_ori         : knot spacing (seconds)
+        t_ref          : absolute time reference (maps t_rel=0 to this absolute time)
+
+    Returns:
+        CumulativeSO3BSpline initialized from gyro integration
+    """
+    # Relative times for each knot (relative to t_ref)
+    knot_times_rel = np.arange(n_knots) * dt_ori
+    # t_ref corresponds to the first IMU sample in the window
+    # so t_abs = t_ref + t_rel for each knot
+    knot_times_abs = t_ref + knot_times_rel
+
+    imu_start = imu_gyro_times[0]
+    imu_end   = imu_gyro_times[-1]
+
+    R_knot_samples = np.zeros((n_knots, 3, 3))
+    for j, t_abs in enumerate(knot_times_abs):
+        t_abs_clamped = np.clip(t_abs, imu_start, imu_end)
+        idx = np.searchsorted(imu_gyro_times, t_abs_clamped)
+        if idx == 0:
+            R_knot_samples[j] = imu_Rs[0]
+        elif idx >= len(imu_gyro_times):
+            R_knot_samples[j] = imu_Rs[-1]
+        else:
+            alpha = ((t_abs_clamped - imu_gyro_times[idx - 1]) /
+                     (imu_gyro_times[idx] - imu_gyro_times[idx - 1]))
+            dR    = imu_Rs[idx - 1].T @ imu_Rs[idx]
+            dw    = so3_log(dR)
+            R_knot_samples[j] = imu_Rs[idx - 1] @ so3_exp(alpha * dw)
+
+    return CumulativeSO3BSpline.from_rotation_samples(R_knot_samples, dt=dt_ori, t_ref=t_ref)
+
+
+def build_position_spline_from_radar_integration(
+    radar_times: np.ndarray,
+    radar_ps: np.ndarray,
+    n_pos_points: int,
+    bspline_degree: int,
+    dt_pos: float,
+    t_ref: float,
+) -> UniformBSpline:
+    """
+    Fit position B-spline control points by interpolating integrated radar trajectory.
+
+    Args:
+        radar_times    : (K,) absolute timestamps of integrated positions
+        radar_ps       : (K,3) integrated position estimates
+        n_pos_points   : number of control points
+        bspline_degree : B-spline degree (5)
+        dt_pos         : knot spacing (seconds)
+        t_ref          : absolute time reference
+
+    Returns:
+        UniformBSpline with control points initialized from radar integration
+    """
+    pos_bspline = UniformBSpline(np.zeros((n_pos_points, 3)), bspline_degree, dt_pos)
+    pos_bspline.t_ref = t_ref
+
+    # Evaluate at control point times (use uniform sampling over spline domain)
+    radar_times_rel = radar_times - t_ref
+    init_times = np.linspace(pos_bspline.t_start, pos_bspline.t_end, n_pos_points)
+
+    # Clamp to radar data range
+    r_start = radar_times_rel[0]
+    r_end   = radar_times_rel[-1]
+
+    if r_end > r_start:
+        pos_interp = interp1d(radar_times_rel, radar_ps, axis=0,
+                              kind='linear', fill_value='extrapolate')
+        ctrl_pts = pos_interp(np.clip(init_times, r_start, r_end))
+    else:
+        # Degenerate: all radar frames at same time; use flat trajectory
+        ctrl_pts = np.tile(radar_ps[0], (n_pos_points, 1))
+
+    pos_bspline.control_points = ctrl_pts
+    return pos_bspline
+
+
+# ==================== Main ====================
+
+def main():
+    start_time = time.time()
+    from datetime import datetime
+    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    print("=" * 80)
+    print("LIVE RIO SOLVER — MoCap-Free Initialization")
+    print("P1: Gyro-integrated orientation  |  P2: Radar-velocity position")
+    print("P3: Sensor-only boundary priors  |  MoCap used ONLY for final eval")
+    print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 80)
+
+    # ==================== CLI ====================
+    bag_key = sys.argv[1] if len(sys.argv) > 1 else "circle_fwd"
+    if bag_key in BAGS:
+        BAG_PATH = BAGS[bag_key]
+    else:
+        BAG_PATH = bag_key
+
+    # P5 stress test: inject orientation noise
+    noise_deg_per_sqrts = 0.0
+    if '--noise-deg' in sys.argv:
+        idx_n = sys.argv.index('--noise-deg')
+        if idx_n + 1 < len(sys.argv):
+            noise_deg_per_sqrts = float(sys.argv[idx_n + 1])
+    noise_rad_per_sqrts = np.radians(noise_deg_per_sqrts)
+
+    USE_MOCAP_YAW = '--mocap-yaw' in sys.argv
+    BIAS_PRESET = None
+    if '--bias' in sys.argv:
+        idx_b = sys.argv.index('--bias')
+        if idx_b + 1 < len(sys.argv):
+            BIAS_PRESET = sys.argv[idx_b + 1]
+
+    # Init mode string (for display/filenames)
+    if USE_MOCAP_YAW:
+        init_mode_str = "mocap-yaw+gyro"
+    elif BIAS_PRESET:
+        init_mode_str = f"bias={BIAS_PRESET}+gyro"
+    else:
+        init_mode_str = "sensor-only"
+
+    # ==================== Config ====================
+    if bag_key in _BAG_TIMING_CFG:
+        START_TIME_OFFSET, DURATION = _BAG_TIMING_CFG[bag_key]
+    else:
+        START_TIME_OFFSET = 30.0
+        DURATION = 5.0
+
+    ROTATION_EULER_DEG = np.array(_EXTRINSICS_CFG['rotation_euler_deg'])
+    _t_base = np.array(_EXTRINSICS_CFG['translation_body_m'])
+    IMU_MOCAP_OFFSET  = _EXTRINSICS_CFG['imu_mocap_offset_sec']
+    RADAR_IMU_OFFSET  = _EXTRINSICS_CFG['radar_imu_offset_sec']
+
+    FLIP_BODY_FRAME = bag_key in FLIPPED_BAGS
+    if '--flip'    in sys.argv: FLIP_BODY_FRAME = True
+    if '--no-flip' in sys.argv: FLIP_BODY_FRAME = False
+
+    R_base    = rotation_matrix_from_euler(*np.radians(ROTATION_EULER_DEG))
+    R_yaw_flip = rotation_matrix_from_euler(0.0, 0.0, np.pi)
+    if FLIP_BODY_FRAME:
+        TRANSLATION    = R_yaw_flip @ _t_base
+        SENSOR_ROTATION = R_yaw_flip @ R_base
+    else:
+        TRANSLATION    = _t_base.copy()
+        SENSOR_ROTATION = R_base
+
+    BSPLINE_DEGREE  = _SOLVER_CFG['pos_bspline_degree']
+    DT_POS          = _SOLVER_CFG['dt_pos']
+    DT_ORI          = _SOLVER_CFG['dt_ori']
+    LAMBDA_ACCEL    = _SOLVER_CFG['lambda_accel']
+    LAMBDA_GYRO     = _SOLVER_CFG['lambda_gyro']
+    LAMBDA_SNAP_POS = _SOLVER_CFG['lambda_snap_pos']
+    LAMBDA_ORI_REG  = _SOLVER_CFG['lambda_ori_reg']
+    LAMBDA_GRAVITY  = _SOLVER_CFG.get('lambda_gravity', 0.1)  # default 0.1 for live solver
+    GRAVITY_ACCEL_THRESHOLD = _SOLVER_CFG.get('gravity_accel_threshold', 3.0)
+    LAMBDA_HEADING  = _SOLVER_CFG.get('lambda_heading', 0.0)
+    if USE_MOCAP_YAW and LAMBDA_HEADING == 0.0:
+        LAMBDA_HEADING = 1.0  # default heading weight for --mocap-yaw
+    LAMBDA_BIAS_PRIOR = _SOLVER_CFG['lambda_bias_prior']
+    LAMBDA_BIAS_PRIOR_ACCEL = _SOLVER_CFG['lambda_bias_prior_accel']
+    LAMBDA_BIAS_PRIOR_GYRO  = _SOLVER_CFG['lambda_bias_prior_gyro']
+    HUBER_DELTA     = _SOLVER_CFG['huber_delta']
+    HUBER_DELTA_ACCEL = _SOLVER_CFG['huber_delta_accel']
+    MIN_RANGE       = _SOLVER_CFG['min_range']
+    MAX_ITERATIONS  = _SOLVER_CFG['max_iterations']
+    EARLY_STOP_PATIENCE = _SOLVER_CFG.get('early_stop_patience', 3)
+    CONVERGE_WINDOW = _SOLVER_CFG.get('converge_window', 5)
+    RTOL_CONVERGE   = _SOLVER_CFG.get('rtol_converge', 0.01)
+    LOCK_BIASES     = _SOLVER_CFG['lock_biases']
+    LOCK_EXTRINSICS = _SOLVER_CFG['lock_extrinsics']
+    OPTIMIZE_PITCH_ONLY = _SOLVER_CFG['optimize_pitch_only']
+    LAMBDA_EXTRINSIC_PRIOR = _SOLVER_CFG['lambda_extrinsic_prior']
+    RELINEARIZE_THRESHOLD_DEG = _SOLVER_CFG['relinearize_threshold_deg']
+    ORI_BASE_JACOBIAN_WINDOW = _SOLVER_CFG.get('ori_base_jacobian_window', 0)
+    LAMBDA_BOUNDARY_VEL   = _SOLVER_CFG['lambda_boundary_vel']
+    LAMBDA_BOUNDARY_POS   = _SOLVER_CFG['lambda_boundary_pos']
+    LAMBDA_BOUNDARY_ORI   = _SOLVER_CFG['lambda_boundary_ori']
+    LAMBDA_BOUNDARY_ACCEL = _SOLVER_CFG['lambda_boundary_accel']
+    LAMBDA_BOUNDARY_GYRO  = _SOLVER_CFG['lambda_boundary_gyro']
+    BOUNDARY_WINDOW       = _SOLVER_CFG['boundary_window']
+
+    NO_RADAR = '--no-radar' in sys.argv
+    USE_JACOBI_PRECOND = '--precond' in sys.argv
+    NO_UNWRAP = '--no-unwrap' in sys.argv
+
+    _rc = _RADAR_CFG.get('best_velocity' if 'best_velocity' in bag_key else 'default', {})
+    V_MAX = _rc.get('v_max', 4.99)
+    USE_UNWRAP = not NO_UNWRAP
+
+    print(f"\n{'Configuration':-^80}")
+    print(f"Bag: {bag_key} -> {BAG_PATH}")
+    print(f"Flip body frame: {FLIP_BODY_FRAME}")
+    print(f"Time window: {START_TIME_OFFSET:.1f}s + {DURATION:.1f}s")
+    print(f"Init mode: {init_mode_str}")
+    if noise_rad_per_sqrts > 0:
+        print(f"P5 gyro noise: {noise_deg_per_sqrts:.1f} deg/sqrt(s)")
+
+    # ==================== Load Data ====================
+    print(f"\n{'Loading Data':-^80}")
+
+    bag_data = load_bag_topics(BAG_PATH, verbose=True)
+
+    t_bag_start = bag_data.start_time + START_TIME_OFFSET
+    t_bag_end   = t_bag_start + DURATION
+
+    agiros_states = [s for s in bag_data.agiros_state
+                     if t_bag_start <= s.timestamp <= t_bag_end]
+    radar_frames  = [f for f in bag_data.radar_velocity
+                     if t_bag_start <= f.timestamp <= t_bag_end]
+    imu_data      = [d for d in bag_data.imu_data
+                     if t_bag_start <= d.timestamp <= t_bag_end]
+
+    # Apply hardware time offsets (these are calibrated hardware constants, not MoCap-derived)
+    radar_total_offset = IMU_MOCAP_OFFSET - RADAR_IMU_OFFSET
+    for d in imu_data:
+        d.timestamp += IMU_MOCAP_OFFSET
+    for f in radar_frames:
+        f.timestamp += radar_total_offset
+
+    # Filter near-duplicate MoCap timestamps (for evaluation only)
+    n_before = len(agiros_states)
+    filtered_agiros = [agiros_states[0]] if agiros_states else []
+    for i in range(1, len(agiros_states)):
+        if agiros_states[i].timestamp - filtered_agiros[-1].timestamp >= 1e-3:
+            filtered_agiros.append(agiros_states[i])
+    agiros_states = filtered_agiros
+
+    print(f"\nFiltered data:")
+    print(f"  MoCap states (eval only): {len(agiros_states)}")
+    print(f"  Radar frames: {len(radar_frames)}")
+    print(f"  IMU samples: {len(imu_data)}")
+
+    # Build MoCap SLERP for heading priors and initial conditions
+    mocap_slerp = None
+    mocap_pos_arr = None
+    _mc_times = None
+    if agiros_states:
+        _mc_times   = np.array([s.timestamp for s in agiros_states])
+        _mc_rots    = Rotation.from_matrix(
+            np.array([quat_to_rotation_matrix(s.orientation) for s in agiros_states]))
+        mocap_slerp = Slerp(_mc_times, _mc_rots)
+        mocap_pos_arr = np.array([s.position for s in agiros_states])
+
+    if len(radar_frames) == 0 or len(imu_data) == 0:
+        print("ERROR: Insufficient sensor data!")
+        return
+
+    # Downsample IMU (~200 Hz is sufficient)
+    IMU_DOWNSAMPLE = max(1, len(imu_data) // (int(DURATION * 200)))
+    imu_data_full  = imu_data  # keep full-rate for gyro integration
+    imu_data       = imu_data[::IMU_DOWNSAMPLE]
+    print(f"  IMU after downsampling (1/{IMU_DOWNSAMPLE}): {len(imu_data)}")
+
+    # Time reference = first IMU sample after time offset (MoCap-free)
+    t_ref = imu_data[0].timestamp
+
+    # ==================== P3: Stationary Bias (already MoCap-free) ====================
+    print(f"\n{'Stationary Bias Detection (sensor-only)':-^80}")
+    # Lower min_stationary_sec to 1.0s — the configured timing windows cover flight only,
+    # so the 1s pre-flight stationary period would be rejected with the default 2s threshold.
+    stationary_result = detect_stationary_bias(bag_data.imu_data, min_stationary_sec=1.0, verbose=True)
+
+    if stationary_result is not None:
+        acc_bias = stationary_result['acc_bias']
+        gyr_bias = stationary_result['gyr_bias']
+        # Re-extract gravity (mean accel) from the stationary window
+        t_stat_s = stationary_result['stationary_start']
+        t_stat_e = stationary_result['stationary_end']
+        stat_imu = [d for d in bag_data.imu_data
+                    if t_stat_s <= d.timestamp <= t_stat_e]
+        gravity_body_stationary = (np.mean([d.linear_acceleration for d in stat_imu], axis=0)
+                                   if stat_imu else np.array([0.0, 0.0, 9.81]))
+    else:
+        print("  [WARN] Stationary detection failed; using zero biases and level initial attitude")
+        acc_bias = np.zeros(3)
+        gyr_bias = np.zeros(3)
+        gravity_body_stationary = np.array([0.0, 0.0, 9.81])
+
+    bias_prior_mean = np.concatenate([acc_bias, gyr_bias])
+
+    # --bias flag: override with known per-bag presets for testing convergence
+    _BIAS_PRESETS = {
+        'slow_racing_best_velocity': {
+            # Stationary-detected biases from prior batch run
+            'acc':       (np.array([-0.0077, +0.0072, +0.0605]),
+                          np.array([+0.0042, -0.0028, +0.0003])),
+            # Converged biases from batch solver (optimal)
+            'converged': (np.array([-0.0955, -0.1791, +0.0999]),
+                          np.array([+0.0220, -0.0009, -0.0063])),
+        },
+    }
+    if BIAS_PRESET and bag_key in _BIAS_PRESETS and BIAS_PRESET in _BIAS_PRESETS[bag_key]:
+        acc_bias, gyr_bias = _BIAS_PRESETS[bag_key][BIAS_PRESET]
+        bias_prior_mean = np.concatenate([acc_bias, gyr_bias])
+        print(f"  [--bias {BIAS_PRESET}] Overriding biases from preset:")
+    elif BIAS_PRESET:
+        print(f"  [WARN] --bias {BIAS_PRESET}: no preset for bag '{bag_key}', using detected/zero")
+
+    print(f"\n  Acc bias: [{acc_bias[0]:.4f}, {acc_bias[1]:.4f}, {acc_bias[2]:.4f}] m/s²")
+    print(f"  Gyr bias: [{gyr_bias[0]:.5f}, {gyr_bias[1]:.5f}, {gyr_bias[2]:.5f}] rad/s")
+    print(f"  Gravity (body, stationary): [{gravity_body_stationary[0]:.3f}, "
+          f"{gravity_body_stationary[1]:.3f}, {gravity_body_stationary[2]:.3f}] m/s²")
+
+    # ==================== P1: Gravity-derived initial attitude ====================
+    print(f"\n{'P1: Gravity-derived initial attitude':-^80}")
+    R_init = gravity_to_rotation(gravity_body_stationary)
+    init_euler_deg = np.degrees(Rotation.from_matrix(R_init).as_euler('xyz'))
+    print(f"  Gravity body frame: [{gravity_body_stationary[0]:.3f}, "
+          f"{gravity_body_stationary[1]:.3f}, {gravity_body_stationary[2]:.3f}]")
+    print(f"  Gravity-derived attitude (Euler xyz): [{init_euler_deg[0]:.2f}, "
+          f"{init_euler_deg[1]:.2f}, {init_euler_deg[2]:.2f}] deg  (yaw=0, unobservable)")
+
+    # --mocap-yaw: override initial attitude with MoCap orientation at t=t_ref
+    if USE_MOCAP_YAW and mocap_slerp is not None:
+        t_ref_clamped = np.clip(t_ref, _mc_times[0], _mc_times[-1])
+        R_init = mocap_slerp(t_ref_clamped).as_matrix()
+        mocap_euler_init = np.degrees(Rotation.from_matrix(R_init).as_euler('xyz'))
+        print(f"  [--mocap-yaw] Using MoCap orientation at t_ref:")
+        print(f"    Euler xyz: [{mocap_euler_init[0]:.2f}, {mocap_euler_init[1]:.2f}, {mocap_euler_init[2]:.2f}] deg")
+    else:
+        print(f"  (yaw unobservable; set to 0 — use --mocap-yaw for true yaw init)")
+
+    # If stationary period is BEFORE the flight window, use R_init directly.
+    # If the drone starts in a tilted pose, this will be slightly wrong — acceptable
+    # because the gravity factor and gyro will correct it within a few iterations.
+
+    # ==================== P1: Gyro integration ====================
+    print(f"\n{'P1: Gyro integration over flight window':-^80}")
+    if noise_rad_per_sqrts > 0:
+        print(f"  *** STRESS TEST: adding {noise_deg_per_sqrts:.1f} deg/sqrt(s) gyro noise ***")
+
+    gyro_times, gyro_Rs = integrate_gyro_orientation(
+        imu_data_full,
+        gyr_bias,
+        R_init,
+        t_start=t_ref,
+        t_end=imu_data[-1].timestamp,
+        noise_sigma_rad_per_sqrts=noise_rad_per_sqrts,
+    )
+
+    gyro_euler = np.degrees(np.array(
+        [Rotation.from_matrix(R).as_euler('xyz') for R in gyro_Rs]))
+    print(f"  Integrated {len(gyro_times)} steps over {gyro_times[-1]-gyro_times[0]:.2f}s")
+    print(f"  Euler at end: [{gyro_euler[-1,0]:.1f}, {gyro_euler[-1,1]:.1f}, {gyro_euler[-1,2]:.1f}] deg")
+    print(f"  Max |Euler| change: roll={np.abs(gyro_euler[:,0]-gyro_euler[0,0]).max():.1f}  "
+          f"pitch={np.abs(gyro_euler[:,1]-gyro_euler[0,1]).max():.1f}  "
+          f"yaw={np.abs(gyro_euler[:,2]-gyro_euler[0,2]).max():.1f} deg")
+
+    # Compare against MoCap at a few timestamps (eval only)
+    if agiros_states:
+        print(f"\n  Gyro-init vs MoCap (eval only):")
+        mocap_times_ev = np.array([s.timestamp for s in agiros_states])
+        mocap_rots_ev  = np.array([quat_to_rotation_matrix(s.orientation)
+                                   for s in agiros_states])
+        eval_idxs = np.linspace(0, len(gyro_times)-1, min(5, len(gyro_times)), dtype=int)
+        for ei in eval_idxs:
+            t_abs = gyro_times[ei]
+            R_gyro = gyro_Rs[ei]
+            ic = np.argmin(np.abs(mocap_times_ev - t_abs))
+            R_mocap = mocap_rots_ev[ic]
+            angle_err = np.degrees(np.arccos(np.clip(
+                (np.trace(R_mocap.T @ R_gyro) - 1) / 2, -1, 1)))
+            print(f"    t={t_abs-t_ref:.2f}s  angle error vs MoCap: {angle_err:.1f} deg")
+
+    # ==================== Build orientation spline from gyro ====================
+    ori_degree   = 3
+    BOUNDARY_ORDER = 2
+    n_interior_ori = int(np.ceil(DURATION / DT_ORI)) + 1
+    n_ori_points   = max(ori_degree + 2, n_interior_ori + 2 * BOUNDARY_ORDER)
+
+    ori_spline = build_orientation_spline_from_gyro(
+        gyro_times, gyro_Rs, n_ori_points, DT_ORI, t_ref
+    )
+    print(f"\n  Orientation spline: {n_ori_points} knots, dt={DT_ORI:.4f}s  (from gyro)")
+
+    # ==================== P2: Radar velocity integration ====================
+    print(f"\n{'P2: Radar velocity integration':-^80}")
+
+    # --mocap-yaw: use MoCap position at t_ref as position origin
+    if USE_MOCAP_YAW and mocap_pos_arr is not None:
+        p_init_world = np.array([
+            np.interp(t_ref, _mc_times, mocap_pos_arr[:, i]) for i in range(3)])
+        print(f"  [--mocap-yaw] Using MoCap position at t_ref as origin: "
+              f"[{p_init_world[0]:.3f}, {p_init_world[1]:.3f}, {p_init_world[2]:.3f}] m")
+    else:
+        p_init_world = np.zeros(3)
+
+    if NO_RADAR:
+        print("  *** --no-radar: skipping radar integration, using zero-position init ***")
+        radar_int_times = np.array([t_ref, t_ref + DURATION])
+        radar_int_ps    = np.array([p_init_world, p_init_world])
+    else:
+        radar_int_times, radar_int_ps = integrate_radar_velocity(
+            radar_frames,
+            gyro_times, gyro_Rs,
+            SENSOR_ROTATION, TRANSLATION,
+            p_init=p_init_world,
+            min_range=MIN_RANGE,
+            v_max=V_MAX if USE_UNWRAP else None,
+        )
+        print(f"  Integrated {len(radar_int_times)} radar frames")
+        pos_range = np.ptp(radar_int_ps, axis=0)
+        print(f"  Position range: Δx={pos_range[0]:.2f}  Δy={pos_range[1]:.2f}  Δz={pos_range[2]:.2f} m")
+
+    # Build position spline from integrated trajectory
+    n_interior_pos = int(np.ceil((DURATION) / DT_POS)) + 1
+    n_pos_points   = n_interior_pos + 2 * BOUNDARY_ORDER
+
+    pos_bspline = build_position_spline_from_radar_integration(
+        radar_int_times, radar_int_ps,
+        n_pos_points, BSPLINE_DEGREE, DT_POS, t_ref
+    )
+    print(f"  Position spline: {n_pos_points} control points, dt={DT_POS:.4f}s  (from radar WLS)")
+
+    # Compare integrated trajectory to MoCap (eval only)
+    if agiros_states:
+        mocap_pos_ev = np.array([s.position for s in agiros_states])
+        mocap_pos_ev_centered = mocap_pos_ev - mocap_pos_ev[0]  # center to origin
+        # Sample spline at MoCap times
+        t_spline_s = pos_bspline.t_start + t_ref
+        t_spline_e = pos_bspline.t_end   + t_ref
+        spline_mask = ((mocap_times_ev >= t_spline_s) & (mocap_times_ev <= t_spline_e))
+        if spline_mask.any():
+            est_ps_init = np.array([
+                pos_bspline(mocap_times_ev[i] - t_ref, derivative=0)
+                for i in range(len(mocap_times_ev)) if spline_mask[i]
+            ])
+            gt_ps_init = mocap_pos_ev_centered[spline_mask]
+            pos_init_err = np.linalg.norm(est_ps_init - gt_ps_init, axis=1)
+            print(f"\n  Position init vs MoCap-centered (eval only):")
+            print(f"    RMSE: {np.sqrt(np.mean(pos_init_err**2)):.3f} m  "
+                  f"max: {pos_init_err.max():.3f} m")
+
+    # ==================== P3: Sensor-only boundary priors ====================
+    print(f"\n{'P3: Sensor-only boundary priors':-^80}")
+    # Origin is [0,0,0] (local frame, no global reference)
+    # Velocity from first good radar WLS result
+    # Orientation from gyro integration
+    # Angular velocity from first IMU gyro reading
+
+    boundary_vel_priors   = []
+    boundary_pos_priors   = []
+    boundary_ori_priors   = []
+    boundary_accel_priors = []
+    boundary_gyro_priors  = []
+
+    t_spline_start_rel = pos_bspline.t_start
+    t_spline_start_abs = t_spline_start_rel + t_ref
+
+    # Build sensor-only interpolators for boundary window
+    # Orientation: interpolate from gyro_Rs
+    def interp_gyro_R(t_abs):
+        tc = np.clip(t_abs, gyro_times[0], gyro_times[-1])
+        idx = np.searchsorted(gyro_times, tc)
+        if idx == 0: return gyro_Rs[0]
+        if idx >= len(gyro_times): return gyro_Rs[-1]
+        alpha = (tc - gyro_times[idx-1]) / (gyro_times[idx] - gyro_times[idx-1])
+        dw = so3_log(gyro_Rs[idx-1].T @ gyro_Rs[idx])
+        return gyro_Rs[idx-1] @ so3_exp(alpha * dw)
+
+    # Velocity: from integrated radar positions (numerical derivative over small window)
+    def interp_radar_vel(t_abs):
+        if len(radar_int_times) < 2:
+            return np.zeros(3)
+        tc = np.clip(t_abs, radar_int_times[0], radar_int_times[-1])
+        idx = np.searchsorted(radar_int_times, tc)
+        if idx == 0: idx = 1
+        if idx >= len(radar_int_times): idx = len(radar_int_times) - 1
+        dt = radar_int_times[idx] - radar_int_times[idx-1]
+        if dt < 1e-6: return np.zeros(3)
+        return (radar_int_ps[idx] - radar_int_ps[idx-1]) / dt
+
+    # Angular velocity: from IMU gyro (debiased)
+    def interp_gyro_omega(t_abs):
+        imu_times_arr = np.array([d.timestamp for d in imu_data_full])
+        imu_gyros_arr = np.array([d.angular_velocity for d in imu_data_full])
+        tc = np.clip(t_abs, imu_times_arr[0], imu_times_arr[-1])
+        idx = np.searchsorted(imu_times_arr, tc)
+        if idx >= len(imu_times_arr): idx = len(imu_times_arr) - 1
+        return imu_gyros_arr[idx] - gyr_bias
+
+    # Position: radar-integrated position (already starts at [0,0,0])
+    def interp_radar_pos(t_abs):
+        if len(radar_int_times) < 2:
+            return np.zeros(3)
+        tc = np.clip(t_abs, radar_int_times[0], radar_int_times[-1])
+        idx = np.searchsorted(radar_int_times, tc)
+        if idx == 0: return radar_int_ps[0]
+        if idx >= len(radar_int_times): return radar_int_ps[-1]
+        alpha = (tc - radar_int_times[idx-1]) / (radar_int_times[idx] - radar_int_times[idx-1])
+        return radar_int_ps[idx-1] + alpha * (radar_int_ps[idx] - radar_int_ps[idx-1])
+
+    n_boundary_samples = max(1, int(BOUNDARY_WINDOW * 50))
+    t_bnd_end = t_spline_start_abs + BOUNDARY_WINDOW
+
+    for t_abs in np.linspace(t_spline_start_abs, t_bnd_end, n_boundary_samples):
+        # Velocity from radar integration
+        v_bnd = interp_radar_vel(t_abs)
+        boundary_vel_priors.append((t_abs, v_bnd))
+        # Position from radar integration (starts at origin)
+        p_bnd = interp_radar_pos(t_abs)
+        boundary_pos_priors.append((t_abs, p_bnd))
+        # Orientation from gyro integration
+        R_bnd = interp_gyro_R(t_abs)
+        boundary_ori_priors.append((t_abs, R_bnd))
+        # Acceleration: gravity-only approximation (zero dynamics assumption at start)
+        # Better than nothing; replaced quickly by accel factor
+        boundary_accel_priors.append((t_abs, np.zeros(3)))
+        # Angular velocity from gyro
+        omega_bnd = interp_gyro_omega(t_abs)
+        boundary_gyro_priors.append((t_abs, omega_bnd))
+
+    print(f"  Boundary window: [{t_spline_start_abs-t_ref:.2f}, {t_bnd_end-t_ref:.2f}] s rel")
+    print(f"  Prior counts: vel={len(boundary_vel_priors)} pos={len(boundary_pos_priors)} "
+          f"ori={len(boundary_ori_priors)} acc={len(boundary_accel_priors)} "
+          f"gyr={len(boundary_gyro_priors)}")
+    if boundary_vel_priors:
+        v0 = boundary_vel_priors[0][1]
+        R0 = boundary_ori_priors[0][1]
+        r0_euler = np.degrees(Rotation.from_matrix(R0).as_euler('xyz'))
+        print(f"  Start vel (sensor): [{v0[0]:.2f}, {v0[1]:.2f}, {v0[2]:.2f}] m/s")
+        print(f"  Start ori Euler: [{r0_euler[0]:.1f}, {r0_euler[1]:.1f}, {r0_euler[2]:.1f}] deg")
+
+    # ==================== Heading priors (--mocap-yaw pseudo-magnetometer) ====================
+    heading_priors = []
+    if USE_MOCAP_YAW and LAMBDA_HEADING > 0 and mocap_slerp is not None:
+        print(f"\n{'Heading Priors (MoCap pseudo-magnetometer)':-^80}")
+        heading_dt = 0.05   # 20 Hz, same as batch solver
+        t_spline_start_rel = pos_bspline.t_start
+        t_spline_end_rel   = pos_bspline.t_end
+        for t_rel in np.arange(t_spline_start_rel, t_spline_end_rel, heading_dt):
+            t_abs = t_rel + t_ref
+            t_clamped = np.clip(t_abs, _mc_times[0], _mc_times[-1])
+            R_gt = mocap_slerp(t_clamped).as_matrix()
+            heading_priors.append((t_abs, R_gt))
+        print(f"  Built {len(heading_priors)} heading priors at {1/heading_dt:.0f} Hz  "
+              f"lambda_heading={LAMBDA_HEADING}")
+
+    # ==================== Create initial state ====================
+    initial_state = TrajectoryState(
+        pos_bspline=pos_bspline,
+        ori_spline=ori_spline,
+        acc_bias=acc_bias,
+        gyr_bias=gyr_bias,
+        radar_extrinsic_delta=np.zeros(3),
+    )
+
+    print(f"\n  Total state variables: {initial_state.get_state_size()}")
+    print(f"    Position: {n_pos_points * 3}")
+    print(f"    Orientation (Ω knots): {ori_spline.n_knots * 3}")
+    print(f"    Biases: 6")
+
+    # ==================== Initial radar residual stats ====================
+    from codegen.generated_jacobians import radar_residual_with_jacobians
+    _zeros3_init = np.zeros(3)
+    init_residuals = []
+    n_total_pts    = 0
+    for frame in radar_frames:
+        t = frame.timestamp
+        try:
+            v_world = initial_state.get_position(t, derivative=1)
+            t_rel_ori = t - initial_state.ori_spline.t_ref
+            R_full, omega, _, _, _ = initial_state.ori_spline.evaluate_with_jacobians(t_rel_ori)
+            R_nom_quat = Rot3.from_rotation_matrix(R_full)
+            R_bs_quat  = Rot3.from_rotation_matrix(SENSOR_ROTATION)
+        except Exception:
+            continue
+        for i in range(frame.num_points()):
+            p_s      = frame.positions[i]
+            range_val = frame.ranges[i] if frame.ranges is not None else np.linalg.norm(p_s)
+            if range_val < MIN_RANGE:
+                continue
+            u_sensor  = p_s / np.linalg.norm(p_s)
+            v_meas    = frame.velocities[i]
+            res, _, _, _, _ = radar_residual_with_jacobians(
+                v_world, R_nom_quat, _zeros3_init, omega,
+                u_sensor, TRANSLATION, R_bs_quat, v_meas, 1e-10)
+            init_residuals.append(res[0])
+            n_total_pts += 1
+
+    init_residuals = np.array(init_residuals) if init_residuals else np.array([0.0])
+    print(f"\n{'Initial Radar Residuals (sensor-only init)':=^80}")
+    print(f"  Total radar points: {n_total_pts}")
+    print(f"  Mean: {init_residuals.mean():+.4f} m/s  Std: {init_residuals.std():.4f} m/s")
+    print(f"  Median |r|: {np.median(np.abs(init_residuals)):.4f} m/s")
+    print(f"  Max |r|: {np.abs(init_residuals).max():.4f} m/s")
+
+    # ==================== Optimize ====================
+    solver_radar_frames = [] if NO_RADAR else radar_frames
+
+    # MoCap data for solver verbose RMSE display only (does not affect optimization)
+    mocap_times_abs = np.array([s.timestamp for s in agiros_states]) if agiros_states else None
+    mocap_rots_eval = (np.array([quat_to_rotation_matrix(s.orientation) for s in agiros_states])
+                       if agiros_states else None)
+
+    optimized_state = solve_trajectory_nonlinear(
+        initial_state=initial_state,
+        radar_frames=solver_radar_frames,
+        imu_data=imu_data,
+        sensor_translation=TRANSLATION,
+        sensor_rotation=SENSOR_ROTATION,
+        lambda_accel=LAMBDA_ACCEL,
+        lambda_gyro=LAMBDA_GYRO,
+        lambda_snap_pos=LAMBDA_SNAP_POS,
+        huber_delta=HUBER_DELTA,
+        huber_delta_accel=HUBER_DELTA_ACCEL,
+        max_iterations=MAX_ITERATIONS,
+        lock_biases=LOCK_BIASES,
+        use_jacobi_precond=USE_JACOBI_PRECOND,
+        verbose=True,
+        mocap_times_abs=mocap_times_abs,
+        mocap_rotations=mocap_rots_eval,
+        boundary_vel_priors=boundary_vel_priors,
+        boundary_pos_priors=boundary_pos_priors,
+        lambda_boundary_vel=LAMBDA_BOUNDARY_VEL,
+        lambda_boundary_pos=LAMBDA_BOUNDARY_POS,
+        boundary_ori_priors=boundary_ori_priors,
+        boundary_accel_priors=boundary_accel_priors,
+        boundary_gyro_priors=boundary_gyro_priors,
+        lambda_boundary_ori=LAMBDA_BOUNDARY_ORI,
+        lambda_boundary_accel=LAMBDA_BOUNDARY_ACCEL,
+        lambda_boundary_gyro=LAMBDA_BOUNDARY_GYRO,
+        relinearize_threshold_deg=RELINEARIZE_THRESHOLD_DEG,
+        lambda_ori_reg=LAMBDA_ORI_REG,
+        lambda_bias_prior=LAMBDA_BIAS_PRIOR,
+        lambda_bias_prior_accel=LAMBDA_BIAS_PRIOR_ACCEL,
+        lambda_bias_prior_gyro=LAMBDA_BIAS_PRIOR_GYRO,
+        bias_prior_mean=bias_prior_mean,
+        lock_extrinsics=LOCK_EXTRINSICS,
+        optimize_pitch_only=OPTIMIZE_PITCH_ONLY,
+        lambda_extrinsic_prior=LAMBDA_EXTRINSIC_PRIOR,
+        v_max=V_MAX if USE_UNWRAP else None,
+        ori_base_jacobian_window=ORI_BASE_JACOBIAN_WINDOW,
+        early_stop_patience=EARLY_STOP_PATIENCE,
+        converge_window=CONVERGE_WINDOW,
+        rtol_converge=RTOL_CONVERGE,
+        lambda_gravity=LAMBDA_GRAVITY,
+        gravity_accel_threshold=GRAVITY_ACCEL_THRESHOLD,
+        lambda_heading=LAMBDA_HEADING,
+        heading_priors=heading_priors if heading_priors else None,
+    )
+
+    # ==================== Evaluate against MoCap ====================
+    print(f"\n{'Evaluation vs MoCap Ground Truth (not used in optimization)':=^80}")
+
+    if not agiros_states:
+        print("  No MoCap data available for evaluation.")
+    else:
+        from scipy.signal import butter, filtfilt, savgol_filter
+
+        mocap_times_abs = np.array([s.timestamp for s in agiros_states])
+        mocap_positions  = np.array([s.position for s in agiros_states])
+        mocap_rots_all   = np.array([quat_to_rotation_matrix(s.orientation)
+                                     for s in agiros_states])
+
+        t_eval_start = max(pos_bspline.t_start + t_ref, mocap_times_abs[0])
+        t_eval_end   = min(pos_bspline.t_end   + t_ref, mocap_times_abs[-1])
+        spline_valid_mask = ((mocap_times_abs >= t_eval_start) &
+                             (mocap_times_abs <= t_eval_end))
+        eval_times     = mocap_times_abs[spline_valid_mask]
+        agiros_eval    = [agiros_states[i] for i in range(len(agiros_states)) if spline_valid_mask[i]]
+        mocap_pos_eval = mocap_positions[spline_valid_mask]
+        mocap_rot_eval = mocap_rots_all[spline_valid_mask]
+
+        print(f"  Eval range: [{eval_times[0]-t_ref:.3f}, {eval_times[-1]-t_ref:.3f}] s "
+              f"({len(eval_times)} MoCap points)")
+
+        estimated_positions     = np.array([optimized_state.get_position(t, 0) for t in eval_times])
+        estimated_velocities    = np.array([optimized_state.get_position(t, 1) for t in eval_times])
+        estimated_accelerations = np.array([optimized_state.get_position(t, 2) for t in eval_times])
+        estimated_rotations     = np.array([optimized_state.get_rotation(t)    for t in eval_times])
+        est_ang_vel             = np.array([optimized_state.get_angular_velocity(t) for t in eval_times])
+
+        # Align position to MoCap frame (subtract constant offset at first eval point)
+        pos_offset = mocap_pos_eval[0] - estimated_positions[0]
+        estimated_positions_aligned = estimated_positions + pos_offset
+        print(f"  Position alignment offset: [{pos_offset[0]:.3f}, "
+              f"{pos_offset[1]:.3f}, {pos_offset[2]:.3f}] m")
+
+        # MoCap derived quantities
+        mocap_velocities = np.array([s.velocity for s in agiros_eval])
+        mocap_ang_vel    = np.array([s.angular_velocity for s in agiros_eval])
+
+        # Lowpass filter MoCap velocity (4th-order Butterworth, 10 Hz)
+        _eval_dt = np.median(np.diff(eval_times))
+        _fs = 1.0 / _eval_dt
+        _fc = min(10.0, _fs * 0.4)
+        _b, _a = butter(4, _fc / (_fs / 2), btype='low')
+        if len(mocap_velocities) > 3 * 9:
+            for dim in range(3):
+                mocap_velocities[:, dim] = filtfilt(_b, _a, mocap_velocities[:, dim])
+
+        # MoCap acceleration via numerical differentiation of velocity
+        all_mocap_velocities = np.array([s.velocity for s in agiros_states])
+        dt_mocap = np.diff(mocap_times_abs)
+        valid_mask_acc = np.ones(len(mocap_times_abs), dtype=bool)
+        for i in range(1, len(dt_mocap)):
+            if dt_mocap[i - 1] < 1e-3:
+                valid_mask_acc[i] = False
+        clean_times = mocap_times_abs[valid_mask_acc]
+        clean_vel   = all_mocap_velocities[valid_mask_acc]
+        dt_clean    = np.diff(clean_times)
+        clean_accel = np.zeros_like(clean_vel)
+        clean_accel[1:-1] = (clean_vel[2:] - clean_vel[:-2]) / (dt_clean[1:] + dt_clean[:-1])[:, None]
+        clean_accel[0]    = (clean_vel[1] - clean_vel[0]) / dt_clean[0]
+        clean_accel[-1]   = (clean_vel[-1] - clean_vel[-2]) / dt_clean[-1]
+        win = min(15, len(clean_accel) - (1 if len(clean_accel) % 2 == 0 else 0))
+        if win >= 5:
+            for dim in range(3):
+                clean_accel[:, dim] = savgol_filter(clean_accel[:, dim], win, 3)
+        mocap_accelerations = np.zeros_like(mocap_velocities)
+        for dim in range(3):
+            mocap_accelerations[:, dim] = np.interp(eval_times, clean_times, clean_accel[:, dim])
+        if len(mocap_accelerations) > 3 * 9:
+            for dim in range(3):
+                mocap_accelerations[:, dim] = filtfilt(_b, _a, mocap_accelerations[:, dim])
+
+        # Compute errors
+        pos_diff        = estimated_positions_aligned - mocap_pos_eval
+        pos_errors      = np.linalg.norm(pos_diff, axis=1)
+        pos_rmse        = np.sqrt(np.mean(pos_errors**2))
+        vel_diff        = estimated_velocities - mocap_velocities
+        vel_errors      = np.linalg.norm(vel_diff, axis=1)
+        vel_rmse        = np.sqrt(np.mean(vel_errors**2))
+        accel_diff      = estimated_accelerations - mocap_accelerations
+        accel_abs_error = np.linalg.norm(accel_diff, axis=1)
+        accel_rmse      = np.sqrt(np.mean(accel_abs_error**2))
+        ang_vel_diff      = est_ang_vel - mocap_ang_vel
+        ang_vel_abs_error = np.linalg.norm(ang_vel_diff, axis=1)
+        ang_vel_rmse      = np.sqrt(np.mean(ang_vel_abs_error**2))
+
+        rot_errors = []
+        for i in range(len(eval_times)):
+            R_err = mocap_rot_eval[i].T @ estimated_rotations[i]
+            angle = np.degrees(np.arccos(np.clip((np.trace(R_err) - 1) / 2, -1, 1)))
+            rot_errors.append(angle)
+        rot_errors = np.array(rot_errors)
+        rot_rmse   = np.sqrt(np.mean(rot_errors**2))
+
+        # Euler per-axis errors (unwrapped, branch-snapped to MoCap)
+        mocap_euler_raw = Rotation.from_matrix(mocap_rot_eval).as_euler('xyz')
+        est_euler_raw   = Rotation.from_matrix(estimated_rotations).as_euler('xyz')
+        mocap_euler = np.degrees(np.unwrap(mocap_euler_raw, axis=0))
+        est_euler_deg = np.degrees(est_euler_raw)
+        est_euler = mocap_euler + ((est_euler_deg - mocap_euler + 180) % 360 - 180)
+        euler_diff = est_euler - mocap_euler
+
+        print(f"\n  === RESULTS ({init_mode_str}) ===")
+        print(f"  Position RMSE (aligned): {pos_rmse:.4f} m  (max: {pos_errors.max():.4f} m)")
+        print(f"  Velocity RMSE:           {vel_rmse:.4f} m/s")
+        print(f"  Angular vel RMSE:        {ang_vel_rmse:.4f} rad/s")
+        print(f"  Acceleration RMSE:       {accel_rmse:.4f} m/s²")
+        print(f"  Orientation RMSE:        {rot_rmse:.4f} deg  (max: {rot_errors.max():.4f} deg)")
+        print(f"  Per-axis ori RMSE: roll={np.sqrt(np.mean(euler_diff[:,0]**2)):.3f}  "
+              f"pitch={np.sqrt(np.mean(euler_diff[:,1]**2)):.3f}  "
+              f"yaw={np.sqrt(np.mean(euler_diff[:,2]**2)):.3f} deg")
+        print(f"  Acc bias: [{optimized_state.acc_bias[0]:.4f}, {optimized_state.acc_bias[1]:.4f}, "
+              f"{optimized_state.acc_bias[2]:.4f}] m/s²")
+        print(f"  Gyr bias: [{optimized_state.gyr_bias[0]:.4f}, {optimized_state.gyr_bias[1]:.4f}, "
+              f"{optimized_state.gyr_bias[2]:.4f}] rad/s")
+
+        if noise_rad_per_sqrts > 0:
+            print(f"\n  [P5] Gyro noise={noise_deg_per_sqrts:.1f} deg/sqrt(s) -> "
+                  f"pos_rmse={pos_rmse:.4f} m  ori_rmse={rot_rmse:.4f} deg")
+
+        # ==================== Plot ====================
+        print(f"\n{'Generating Plots':-^80}")
+
+        time_rel = eval_times - eval_times[0]
+
+        # Style constants
+        AXIS_COLORS = ['#c85050', '#4e9e4e', '#4878c8']
+        C_MOCAP = 'royalblue'
+        C_EST   = 'crimson'
+        LW_AXIS = 0.9
+        LW_ABS  = 2.0
+        LW_ERR  = 1.0
+        A_AXIS  = 0.7
+
+        # Display-only lowpass (5 Hz) for error envelopes
+        _fc_disp = min(5.0, _fs * 0.4)
+        _bd, _ad = butter(4, _fc_disp / (_fs / 2), btype='low')
+        def _smooth(x):
+            return filtfilt(_bd, _ad, x) if len(x) > 27 else x
+
+        axis_labels = ['x', 'y', 'z']
+        euler_names = ['roll', 'pitch', 'yaw']
+
+        def _comparison(a, t, mocap_data, est_data, ax_labels, ylabel):
+            for i, lbl in enumerate(ax_labels):
+                a.plot(t, mocap_data[:, i], color=AXIS_COLORS[i], linewidth=LW_AXIS,
+                       alpha=A_AXIS, label=f'MoCap {lbl}')
+                a.plot(t, est_data[:, i], color=AXIS_COLORS[i], linewidth=LW_AXIS,
+                       alpha=A_AXIS, linestyle='--')
+            a.set_ylabel(ylabel); a.legend(fontsize=6, ncol=2); a.grid(True, alpha=0.3)
+
+        def _error(a, t, per_axis_diff, abs_error, rmse, ax_labels, ylabel, abs_label):
+            for i, lbl in enumerate(ax_labels):
+                a.plot(t, per_axis_diff[:, i], color=AXIS_COLORS[i], linewidth=LW_AXIS,
+                       alpha=A_AXIS, label=f'Δ{lbl}')
+            a.plot(t, _smooth(abs_error), color='k', linewidth=LW_ERR,
+                   label=f'|{abs_label}| (smoothed)')
+            a.axhline(rmse, color='royalblue', linewidth=1.5, linestyle='--',
+                      label=f'RMSE: {rmse:.4f}')
+            a.axhline(0, color='gray', linewidth=0.5, linestyle=':')
+            a.set_ylabel(ylabel); a.legend(fontsize=7); a.grid(True, alpha=0.3)
+
+        # Figure 1: 5 rows x 3 cols (rows 1-4 col 2 = summary)
+        fig = plt.figure(figsize=(21, 28))
+        noise_suffix = f'  |  gyro noise={noise_deg_per_sqrts:.1f} deg/√s' if noise_rad_per_sqrts > 0 else ''
+        fig.suptitle(f'Live RIO ({init_mode_str}) — {bag_key}{noise_suffix}',
+                     fontsize=14, fontweight='bold')
+        gs = fig.add_gridspec(5, 3, hspace=0.45, wspace=0.35)
+        axd = {}
+        for row in range(5):
+            for col in range(2):
+                axd[(row, col)] = fig.add_subplot(gs[row, col])
+        axd[(0, 2)] = fig.add_subplot(gs[0, 2])
+        ax_summary  = fig.add_subplot(gs[1:, 2])
+
+        # Row 0: Position
+        a = axd[(0, 0)]
+        a.plot(mocap_pos_eval[:, 0], mocap_pos_eval[:, 1],
+               color=C_MOCAP, linewidth=LW_ABS, label='MoCap')
+        a.plot(estimated_positions_aligned[:, 0], estimated_positions_aligned[:, 1],
+               color=C_EST, linewidth=LW_ABS, linestyle='--', label='Estimate')
+        a.set_xlabel('X (m)'); a.set_ylabel('Y (m)')
+        a.set_title('Trajectory (X-Y)')
+        a.legend(fontsize=8); a.grid(True, alpha=0.3); a.axis('equal')
+
+        a = axd[(0, 1)]
+        _comparison(a, time_rel, mocap_pos_eval, estimated_positions_aligned,
+                    axis_labels, 'Position (m)')
+        a.set_xlabel('Time (s)'); a.set_title('Position vs Time')
+
+        a = axd[(0, 2)]
+        _error(a, time_rel, pos_diff, pos_errors, pos_rmse, axis_labels, 'Error (m)', 'err')
+        a.set_xlabel('Time (s)'); a.set_title('Position Error per Axis + Abs')
+
+        # Row 1: Orientation
+        a = axd[(1, 0)]
+        for i, lbl in enumerate(euler_names):
+            a.plot(time_rel, mocap_euler[:, i], color=AXIS_COLORS[i], linewidth=LW_AXIS,
+                   alpha=A_AXIS, label=f'MoCap {lbl}')
+            a.plot(time_rel, est_euler[:, i], color=AXIS_COLORS[i], linewidth=LW_AXIS,
+                   alpha=A_AXIS, linestyle='--')
+        a.set_xlabel('Time (s)'); a.set_ylabel('Euler angle (deg)')
+        a.set_title('Orientation (Euler xyz)')
+        a.legend(fontsize=6, ncol=2); a.grid(True, alpha=0.3)
+
+        a = axd[(1, 1)]
+        _error(a, time_rel, euler_diff, rot_errors, rot_rmse, euler_names, 'Error (deg)', 'Δori')
+        a.set_xlabel('Time (s)'); a.set_title('Orientation Error per Axis + Abs')
+
+        # Row 2: Linear velocity
+        a = axd[(2, 0)]
+        _comparison(a, time_rel, mocap_velocities, estimated_velocities,
+                    axis_labels, 'Velocity (m/s)')
+        a.set_xlabel('Time (s)'); a.set_title('Linear Velocity Comparison')
+
+        a = axd[(2, 1)]
+        _error(a, time_rel, vel_diff, vel_errors, vel_rmse, axis_labels, 'Error (m/s)', 'Δv')
+        a.set_xlabel('Time (s)'); a.set_title('Linear Velocity Error per Axis + Abs')
+
+        # Row 3: Angular velocity
+        a = axd[(3, 0)]
+        _comparison(a, time_rel, mocap_ang_vel, est_ang_vel,
+                    axis_labels, 'Angular vel (rad/s)')
+        a.set_xlabel('Time (s)'); a.set_title('Angular Velocity Comparison')
+
+        a = axd[(3, 1)]
+        ang_vel_diff_plot = np.column_stack([_smooth(ang_vel_diff[:, i]) for i in range(3)])
+        _error(a, time_rel, ang_vel_diff_plot, ang_vel_abs_error, ang_vel_rmse,
+               axis_labels, 'Error (rad/s)', 'Δω')
+        a.set_xlabel('Time (s)'); a.set_title('Angular Velocity Error per Axis + Abs')
+
+        # Row 4: Acceleration
+        mocap_accel_plot = np.column_stack([_smooth(mocap_accelerations[:, i]) for i in range(3)])
+        a = axd[(4, 0)]
+        _comparison(a, time_rel, mocap_accel_plot, estimated_accelerations,
+                    axis_labels, 'Accel (m/s²)')
+        a.set_xlabel('Time (s)'); a.set_title('Acceleration Comparison (vs diff(MoCap vel), smoothed)')
+
+        a = axd[(4, 1)]
+        accel_diff_plot = np.column_stack([_smooth(accel_diff[:, i]) for i in range(3)])
+        _error(a, time_rel, accel_diff_plot, accel_abs_error, accel_rmse,
+               axis_labels, 'Error (m/s²)', 'Δa')
+        a.set_xlabel('Time (s)'); a.set_title('Acceleration Error per Axis + Abs')
+
+        # Summary panel
+        calibrated_R_bs = Rot3.from_rotation_matrix(
+            SENSOR_ROTATION @ so3_exp(optimized_state.radar_extrinsic_delta))
+        calibrated_euler_extr = np.degrees(Rotation.from_quat(calibrated_R_bs.data).as_euler('xyz'))
+        delta_deg_extr = np.degrees(optimized_state.radar_extrinsic_delta)
+        summary_lines = [
+            f"RESULTS",
+            f"  Pos  RMSE: {pos_rmse:.4f} m",
+            f"  Vel  RMSE: {vel_rmse:.4f} m/s",
+            f"  AngV RMSE: {ang_vel_rmse:.4f} rad/s",
+            f"  Acc  RMSE: {accel_rmse:.4f} m/s²",
+            f"  Ori  RMSE: {rot_rmse:.4f}°",
+            f"",
+            f"INIT ({init_mode_str})",
+            f"  Acc: [{bias_prior_mean[0]:+.4f}, {bias_prior_mean[1]:+.4f}, {bias_prior_mean[2]:+.4f}] m/s²",
+            f"  Gyr: [{np.degrees(bias_prior_mean[3]):+.2f}, {np.degrees(bias_prior_mean[4]):+.2f}, {np.degrees(bias_prior_mean[5]):+.2f}] deg/s",
+            f"FINAL BIASES",
+            f"  Acc: [{optimized_state.acc_bias[0]:+.4f}, {optimized_state.acc_bias[1]:+.4f}, {optimized_state.acc_bias[2]:+.4f}] m/s²",
+            f"  Gyr: [{np.degrees(optimized_state.gyr_bias[0]):+.2f}, {np.degrees(optimized_state.gyr_bias[1]):+.2f}, {np.degrees(optimized_state.gyr_bias[2]):+.2f}] deg/s",
+            f"",
+            f"HYPERPARAMETERS",
+            f"  bag={bag_key}  t={START_TIME_OFFSET:.0f}s+{DURATION:.0f}s",
+            f"  flip={FLIP_BODY_FRAME}  lock_bias={LOCK_BIASES}",
+            f"  dt_pos={DT_POS}  dt_ori={DT_ORI}  pos_deg={BSPLINE_DEGREE}  ori_deg=3",
+            f"  λ_accel={LAMBDA_ACCEL}  λ_gyro={LAMBDA_GYRO}",
+            f"  λ_snap_pos={LAMBDA_SNAP_POS}",
+            f"  huber_radar={HUBER_DELTA}  huber_accel={HUBER_DELTA_ACCEL}",
+            f"  λ_bnd_vel={LAMBDA_BOUNDARY_VEL}  λ_bnd_pos={LAMBDA_BOUNDARY_POS}",
+            f"  λ_bnd_ori={LAMBDA_BOUNDARY_ORI}  λ_bnd_acc={LAMBDA_BOUNDARY_ACCEL}",
+            f"  λ_bnd_gyr={LAMBDA_BOUNDARY_GYRO}",
+            f"  bnd_window={BOUNDARY_WINDOW}s (start only)",
+            f"  max_iter={MAX_ITERATIONS}  precond={USE_JACOBI_PRECOND}",
+            f"  relin_thr={RELINEARIZE_THRESHOLD_DEG}°  imu_offset={IMU_MOCAP_OFFSET*1000:.0f}ms",
+            f"  λ_ori_reg={LAMBDA_ORI_REG}  λ_bp_a={LAMBDA_BIAS_PRIOR_ACCEL}  λ_bp_g={LAMBDA_BIAS_PRIOR_GYRO}",
+            f"  λ_gravity={LAMBDA_GRAVITY} (σ={GRAVITY_ACCEL_THRESHOLD})  λ_heading={LAMBDA_HEADING}",
+            f"",
+            f"EXTRINSICS (rotation [roll,pitch,yaw] deg)",
+            f"  lock={LOCK_EXTRINSICS}  pitch_only={OPTIMIZE_PITCH_ONLY}  λ_prior={LAMBDA_EXTRINSIC_PRIOR}",
+            f"  Init:  [{ROTATION_EULER_DEG[0]:.2f}, {ROTATION_EULER_DEG[1]:.2f}, {ROTATION_EULER_DEG[2]:.2f}]",
+            f"  Δ:     [{delta_deg_extr[0]:+.3f}, {delta_deg_extr[1]:+.3f}, {delta_deg_extr[2]:+.3f}]",
+            f"  Final: [{calibrated_euler_extr[0]:.2f}, {calibrated_euler_extr[1]:.2f}, {calibrated_euler_extr[2]:.2f}]",
+            f"  Trans: [{TRANSLATION[0]:.3f}, {TRANSLATION[1]:.3f}, {TRANSLATION[2]:.3f}] m",
+        ]
+        ax_summary.text(0.02, 0.98, "\n".join(summary_lines),
+                        transform=ax_summary.transAxes,
+                        fontsize=8, fontfamily='monospace', verticalalignment='top')
+        ax_summary.axis('off')
+        ax_summary.set_title('Summary & Config')
+
+        # --- Detect de-aliased frames (post-optimization) ---
+        frame_dealiased = np.zeros(len(solver_radar_frames), dtype=bool)
+        if USE_UNWRAP and V_MAX is not None and len(solver_radar_frames) > 0:
+            from codegen.generated_jacobians import radar_residual_with_jacobians as _rr_fn
+            _R_bs_quat_da = Rot3.from_rotation_matrix(SENSOR_ROTATION)
+            _zeros3_da = np.zeros(3)
+            for _fi, _frame in enumerate(solver_radar_frames):
+                _t = _frame.timestamp
+                try:
+                    _v_world = optimized_state.get_position(_t, derivative=1)
+                    _t_rel = _t - optimized_state.ori_spline.t_ref
+                    _R_full, _omega, _, _, _ = optimized_state.ori_spline.evaluate_with_jacobians(_t_rel)
+                    _R_nom_quat = Rot3.from_rotation_matrix(_R_full)
+                except Exception:
+                    continue
+                for _i in range(_frame.num_points()):
+                    _p_s = _frame.positions[_i]
+                    _rng = np.linalg.norm(_p_s)
+                    if _rng < MIN_RANGE:
+                        continue
+                    _u_sensor = _p_s / _rng
+                    _v_meas = _frame.velocities[_i]
+                    _res, *_ = _rr_fn(
+                        _v_world, _R_nom_quat, _zeros3_da, _omega,
+                        _u_sensor, TRANSLATION, _R_bs_quat_da,
+                        _v_meas, 1e-10)
+                    _k_alias = round(-_res[0] / (2.0 * V_MAX))
+                    if _k_alias != 0:
+                        frame_dealiased[_fi] = True
+                        break  # one de-aliased point is enough to flag the frame
+
+        # Radar frame tick marks on all time-axis subplots
+        # Yellow = normal frames, red = frames with at least one de-aliased return
+        radar_tick_times   = np.array([f.timestamp for f in solver_radar_frames]) - eval_times[0]
+        radar_tick_counts  = np.array([f.num_points() for f in solver_radar_frames], dtype=float)
+        radar_tick_heights = 0.04 * radar_tick_counts / 13.5
+        _mask_normal    = ~frame_dealiased
+        _mask_dealiased = frame_dealiased
+        _time_axes = [axd[(r, c)] for r in range(5) for c in range(2) if (r, c) != (0, 0)] + [axd[(0, 2)]]
+        for _ax in _time_axes:
+            if len(radar_tick_times) > 0:
+                _trans = mtransforms.blended_transform_factory(_ax.transData, _ax.transAxes)
+                if _mask_normal.any():
+                    _ax.vlines(radar_tick_times[_mask_normal], 0, radar_tick_heights[_mask_normal],
+                               transform=_trans, color='#ffe566', linewidth=0.8, alpha=0.85, zorder=0)
+                if _mask_dealiased.any():
+                    _ax.vlines(radar_tick_times[_mask_dealiased], 0, radar_tick_heights[_mask_dealiased],
+                               transform=_trans, color='#ff4444', linewidth=0.8, alpha=0.85, zorder=0)
+
+        noise_tag   = f"_noise{noise_deg_per_sqrts:.0f}" if noise_rad_per_sqrts > 0 else ""
+        mocap_tag   = "_mocap-yaw" if USE_MOCAP_YAW else ""
+        bias_tag    = f"_bias-{BIAS_PRESET}" if BIAS_PRESET else ""
+        plots_dir   = Path(__file__).parent.parent / 'plots' / bag_key / 'live_solver'
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        out1 = plots_dir / f'live_validation_{bag_key}{mocap_tag}{bias_tag}{noise_tag}_{timestamp_str}.png'
+        fig.savefig(out1, dpi=150, bbox_inches='tight')
+        print(f"  Saved: {out1}")
+        plt.close(fig)
+
+        # Figure 2: Multi-view trajectory
+        fig2 = plt.figure(figsize=(14, 12))
+        gt  = mocap_pos_eval
+        est = estimated_positions_aligned
+
+        def _setup_2d(ax, xi, yi, xlabel, ylabel, title):
+            ax.plot(gt[:, xi], gt[:, yi], 'b-', label='MoCap', linewidth=2)
+            ax.plot(est[:, xi], est[:, yi], 'r--', label='Estimated', linewidth=1.5)
+            ax.plot(gt[0, xi], gt[0, yi], 'bs', markersize=8)
+            ax.plot(est[0, xi], est[0, yi], 'rs', markersize=8)
+            ax.set_xlabel(xlabel, fontsize=11); ax.set_ylabel(ylabel, fontsize=11)
+            ax.set_title(title, fontsize=12, fontweight='bold')
+            ax.legend(fontsize=9); ax.grid(True, alpha=0.3); ax.set_aspect('equal')
+
+        _setup_2d(fig2.add_subplot(2, 2, 1), 0, 1, 'X (m)', 'Y (m)', 'X-Y Plane')
+        _setup_2d(fig2.add_subplot(2, 2, 2), 0, 2, 'X (m)', 'Z (m)', 'X-Z Plane')
+        _setup_2d(fig2.add_subplot(2, 2, 3), 1, 2, 'Y (m)', 'Z (m)', 'Y-Z Plane')
+
+        ax3d = fig2.add_subplot(2, 2, 4, projection='3d')
+        ax3d.plot(gt[:, 0], gt[:, 1], gt[:, 2], 'b-', label='MoCap', linewidth=2)
+        ax3d.plot(est[:, 0], est[:, 1], est[:, 2], 'r--', label='Estimated', linewidth=1.5)
+        ax3d.plot([gt[0, 0]], [gt[0, 1]], [gt[0, 2]], 'bs', markersize=8)
+        ax3d.plot([est[0, 0]], [est[0, 1]], [est[0, 2]], 'rs', markersize=8)
+        ax3d.set_xlabel('X (m)', fontsize=10); ax3d.set_ylabel('Y (m)', fontsize=10)
+        ax3d.set_zlabel('Z (m)', fontsize=10)
+        ax3d.set_title('3D View', fontsize=12, fontweight='bold')
+        ax3d.legend(fontsize=9)
+
+        fig2.suptitle(f'Live RIO Trajectory Views — {bag_key}', fontsize=14, fontweight='bold')
+        fig2.tight_layout()
+        out2 = plots_dir / f'live_views_{bag_key}{mocap_tag}{bias_tag}{noise_tag}_{timestamp_str}.png'
+        fig2.savefig(out2, dpi=150, bbox_inches='tight')
+        print(f"  Saved: {out2}")
+        plt.close(fig2)
+
+        # Figure 3: Gravity diagnostics
+        G_NORM_DIAG = 9.81
+        _sigma_grav = GRAVITY_ACCEL_THRESHOLD
+        grav_times = []; grav_accel_norm = []; grav_w_dynamic = []
+        grav_measured = []; grav_predicted = []; grav_residual = []
+        for imu_msg in imu_data:
+            t = imu_msg.timestamp
+            if t < eval_times[0] or t > eval_times[-1]:
+                continue
+            z_acc  = imu_msg.linear_acceleration
+            z_deb  = z_acc - optimized_state.acc_bias
+            a_norm = np.linalg.norm(z_deb)
+            if a_norm < 1e-6:
+                continue
+            w      = np.exp(-((a_norm - G_NORM_DIAG) / _sigma_grav) ** 2)
+            g_meas = (z_deb / a_norm) * G_NORM_DIAG
+            try:
+                R_est = optimized_state.get_rotation(t)
+            except Exception:
+                continue
+            g_pred = R_est.T @ np.array([0.0, 0.0, G_NORM_DIAG])
+            grav_times.append(t - eval_times[0])
+            grav_accel_norm.append(a_norm)
+            grav_w_dynamic.append(w)
+            grav_measured.append(g_meas)
+            grav_predicted.append(g_pred)
+            grav_residual.append(g_meas - g_pred)
+
+        grav_times      = np.array(grav_times)
+        grav_accel_norm = np.array(grav_accel_norm)
+        grav_w_dynamic  = np.array(grav_w_dynamic)
+        grav_measured   = np.array(grav_measured)  if grav_measured  else np.zeros((0, 3))
+        grav_predicted  = np.array(grav_predicted) if grav_predicted else np.zeros((0, 3))
+        grav_residual   = np.array(grav_residual)  if grav_residual  else np.zeros((0, 3))
+        grav_res_mag    = np.linalg.norm(grav_residual, axis=1) if grav_residual.size else np.zeros(0)
+
+        fig3, axes3 = plt.subplots(4, 1, figsize=(14, 14), sharex=True)
+        fig3.suptitle(
+            f'Gravity Factor Diagnostics — {bag_key}'
+            + (f'   [λ_gravity={LAMBDA_GRAVITY}, σ={_sigma_grav} m/s²]' if LAMBDA_GRAVITY > 0
+               else '   [lambda_gravity=0, factor DISABLED]'),
+            fontsize=13, fontweight='bold',
+        )
+        _axis_colors3 = ['tab:red', 'tab:green', 'tab:blue']
+        _axis_names3  = ['x', 'y', 'z']
+
+        ax = axes3[0]
+        ax.plot(grav_times, grav_accel_norm, color='steelblue', linewidth=0.8,
+                alpha=0.7, label='‖a_debiased‖')
+        ax.axhline(G_NORM_DIAG, color='k', linewidth=1.5, linestyle='--',
+                   label=f'g = {G_NORM_DIAG} m/s²')
+        for nsig, alpha_band in [(1, 0.18), (2, 0.10)]:
+            ax.axhspan(G_NORM_DIAG - nsig * _sigma_grav, G_NORM_DIAG + nsig * _sigma_grav,
+                       color='green', alpha=alpha_band,
+                       label=f'±{nsig}σ trust band' if nsig == 1 else f'±{nsig}σ')
+        ax.set_ylabel('Accel norm (m/s²)')
+        ax.set_title('Accelerometer norm (debiased) — near g during quasi-static phases')
+        ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+
+        ax = axes3[1]
+        ax.fill_between(grav_times, grav_w_dynamic, alpha=0.5, color='green', label='w_dynamic')
+        ax.plot(grav_times, grav_w_dynamic, color='green', linewidth=0.8)
+        ax.axhline(1e-4, color='r', linewidth=1.0, linestyle=':', label='skip threshold (1e-4)')
+        ax.set_ylim(-0.05, 1.05)
+        ax.set_ylabel('Trust weight w')
+        ax.set_title('Dynamic trust weight — w→1 near hover, w→0 during high-g maneuvers')
+        ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+
+        ax = axes3[2]
+        if grav_measured.size:
+            for i, (col, lbl) in enumerate(zip(_axis_colors3, _axis_names3)):
+                ax.plot(grav_times, grav_measured[:, i], color=col, linewidth=1.0,
+                        alpha=0.85, label=f'meas {lbl}')
+                ax.plot(grav_times, grav_predicted[:, i], color=col, linewidth=1.0,
+                        linestyle='--', alpha=0.5, label=f'pred {lbl}')
+        ax.set_ylabel('g_body (m/s²)')
+        ax.set_title('Gravity direction in body frame: measured (solid) vs predicted (dashed)')
+        ax.legend(fontsize=7, ncol=2); ax.grid(True, alpha=0.3)
+
+        ax = axes3[3]
+        if grav_residual.size:
+            for i, (col, lbl) in enumerate(zip(_axis_colors3, _axis_names3)):
+                ax.plot(grav_times, grav_residual[:, i], color=col, linewidth=0.8,
+                        alpha=0.6, label=f'Δ{lbl}')
+            ax.plot(grav_times, grav_res_mag, color='k', linewidth=1.3, label='‖residual‖')
+            rms_grav = float(np.sqrt(np.mean(grav_res_mag ** 2))) if grav_res_mag.size else 0.0
+            ax.axhline(rms_grav, color='royalblue', linewidth=1.3, linestyle='--',
+                       label=f'RMS = {rms_grav:.3f} m/s²')
+            ax.axhline(0, color='gray', linewidth=0.5, linestyle=':')
+        ax.set_xlabel('Time (s)'); ax.set_ylabel('Residual (m/s²)')
+        ax.set_title('Gravity residual per axis: measured − predicted (after optimization)')
+        ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+
+        if len(solver_radar_frames) > 0:
+            for _ax in axes3:
+                _trans = mtransforms.blended_transform_factory(_ax.transData, _ax.transAxes)
+                if _mask_normal.any():
+                    _ax.vlines(radar_tick_times[_mask_normal], 0, radar_tick_heights[_mask_normal],
+                               transform=_trans, color='#ffe566', linewidth=0.8, alpha=0.85, zorder=0)
+                if _mask_dealiased.any():
+                    _ax.vlines(radar_tick_times[_mask_dealiased], 0, radar_tick_heights[_mask_dealiased],
+                               transform=_trans, color='#ff4444', linewidth=0.8, alpha=0.85, zorder=0)
+
+        fig3.tight_layout()
+        out3 = plots_dir / f'live_gravity_{bag_key}{mocap_tag}{bias_tag}{noise_tag}_{timestamp_str}.png'
+        fig3.savefig(out3, dpi=150, bbox_inches='tight')
+        print(f"  Saved: {out3}")
+        plt.close(fig3)
+
+    elapsed = time.time() - start_time
+    print(f"\n{'Done':#^80}")
+    print(f"Total time: {elapsed:.1f}s")
+
+
+if __name__ == '__main__':
+    main()
