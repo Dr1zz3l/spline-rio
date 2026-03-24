@@ -47,6 +47,9 @@ from codegen.generated_jacobians import (
     gyro_residual_with_jacobians,
     gravity_residual_with_jacobians,
     heading_residual_with_jacobians,
+    preint_rot_residual_with_jacobians,
+    preint_vel_residual_with_jacobians,
+    preint_pos_residual_with_jacobians,
     Rot3
 )
 from config_loader import load_config
@@ -458,6 +461,10 @@ def compute_jacobian_analytical(
     gravity_accel_threshold: float = 3.0,
     lambda_heading: float = 0.0,
     heading_priors: list = None,
+    preintegrated_factors: list = None,
+    lambda_preint_rot: float = 1.0,
+    lambda_preint_vel: float = 1.0,
+    lambda_preint_pos: float = 1.0,
 ) -> Tuple[sparse.csr_matrix, np.ndarray]:
     """
     Compute Jacobian and residual vector analytically using SymForce-generated functions.
@@ -678,6 +685,153 @@ def compute_jacobian_analytical(
             row_idx += 1
 
     n_gyro_rows = row_idx - n_radar - n_accel_rows
+
+    # ==================== Preintegrated IMU factors ====================
+    # Optional: replaces per-sample accel+gyro with one 9D factor per radar interval.
+    # Uses full-rate IMU (preintegrated before the solver call).
+    n_preint_rows = 0
+    if preintegrated_factors:
+        sqrt_lpr = np.sqrt(lambda_preint_rot)
+        sqrt_lpv = np.sqrt(lambda_preint_vel)
+        sqrt_lpp = np.sqrt(lambda_preint_pos)
+        g_world_preint = np.array([0.0, 0.0, -9.81])
+
+        for m in preintegrated_factors:
+            t_i, t_j = m.t_i, m.t_j
+            dt = m.dt
+
+            # Relative times for spline evaluation
+            t_rel_pos_i = t_i - state.pos_bspline.t_ref
+            t_rel_pos_j = t_j - state.pos_bspline.t_ref
+            t_rel_ori_i = t_i - state.ori_spline.t_ref
+            t_rel_ori_j = t_j - state.ori_spline.t_ref
+
+            # Skip factors outside spline domain
+            if (t_rel_pos_i < state.pos_bspline.t_start or t_rel_pos_j > state.pos_bspline.t_end or
+                    t_rel_ori_i < state.ori_spline.t_start or t_rel_ori_j > state.ori_spline.t_end):
+                continue
+
+            # --- Evaluate spline state at t_i ---
+            p_i = state.get_position(t_i, derivative=0)
+            v_i = state.get_position(t_i, derivative=1)
+            pos_coeff_i, pos_idx_i = state.pos_bspline.get_basis_coefficients(t_rel_pos_i, derivative=0)
+            vel_coeff_i, vel_idx_i = state.pos_bspline.get_basis_coefficients(t_rel_pos_i, derivative=1)
+            R_i, _, J_R_list_i, _, active_ori_i = state.ori_spline.evaluate_full_jacobians(
+                t_rel_ori_i, base_window=base_window)
+            R_i_rot3 = Rot3.from_rotation_matrix(R_i)
+
+            # --- Evaluate spline state at t_j ---
+            p_j = state.get_position(t_j, derivative=0)
+            v_j = state.get_position(t_j, derivative=1)
+            pos_coeff_j, pos_idx_j = state.pos_bspline.get_basis_coefficients(t_rel_pos_j, derivative=0)
+            vel_coeff_j, vel_idx_j = state.pos_bspline.get_basis_coefficients(t_rel_pos_j, derivative=1)
+            R_j, _, J_R_list_j, _, active_ori_j = state.ori_spline.evaluate_full_jacobians(
+                t_rel_ori_j, base_window=base_window)
+            R_j_rot3 = Rot3.from_rotation_matrix(R_j)
+
+            # Apply first-order bias correction to preintegrated measurements
+            delta_R_c, delta_v_c, delta_p_c = m.corrected(state.acc_bias, state.gyr_bias)
+            delta_R_c_rot3 = Rot3.from_rotation_matrix(delta_R_c)
+
+            # --- SymForce calls (at delta=0 linearization) ---
+            r_R, J_di_R, J_dj_R = preint_rot_residual_with_jacobians(
+                R_i_rot3, _zeros3, R_j_rot3, _zeros3, delta_R_c_rot3, 1e-10)
+            r_v, J_di_v, J_vi, J_vj = preint_vel_residual_with_jacobians(
+                R_i_rot3, _zeros3, v_i, v_j, g_world_preint, dt, delta_v_c, 1e-10)
+            r_p, J_di_p, J_pi, J_vi_p, J_pj = preint_pos_residual_with_jacobians(
+                R_i_rot3, _zeros3, p_i, v_i, p_j, g_world_preint, dt, delta_p_c, 1e-10)
+
+            # Bias Jacobians from preintegrated measurement
+            J_ba_preint, J_bg_preint = m.bias_jacobians_residual()  # (9,3) each
+
+            # Scale factors for each residual block
+            scales = [sqrt_lpr] * 3 + [sqrt_lpv] * 3 + [sqrt_lpp] * 3
+            r_all = np.concatenate([r_R, r_v, r_p])  # (9,)
+
+            for k in range(9):
+                scale = scales[k]
+                all_residuals.append(scale * r_all[k])
+
+                # Rotation Jacobians depend on which row:
+                if k < 3:       # r_R: depends on delta_i, delta_j
+                    J_di = J_di_R[k]   # (3,) — ∂r_R[k]/∂delta_i
+                    J_dj = J_dj_R[k]   # (3,) — ∂r_R[k]/∂delta_j
+                elif k < 6:     # r_v: depends on delta_i
+                    J_di = J_di_v[k-3]
+                    J_dj = None
+                else:           # r_p: depends on delta_i
+                    J_di = J_di_p[k-6]
+                    J_dj = None
+
+                # ∂r/∂Ω_j at t_i (orientation at start)
+                for jj, knot_idx in enumerate(active_ori_i):
+                    J_wrt = J_di @ J_R_list_i[jj]  # (3,)
+                    for dim in range(3):
+                        col = n_pos + knot_idx * 3 + dim
+                        val = scale * J_wrt[dim]
+                        if abs(val) > 1e-15:
+                            rows.append(row_idx); cols.append(col); vals.append(val)
+
+                # ∂r/∂Ω_j at t_j (rotation residual only)
+                if J_dj is not None:
+                    for jj, knot_idx in enumerate(active_ori_j):
+                        J_wrt = J_dj @ J_R_list_j[jj]  # (3,)
+                        for dim in range(3):
+                            col = n_pos + knot_idx * 3 + dim
+                            val = scale * J_wrt[dim]
+                            if abs(val) > 1e-15:
+                                rows.append(row_idx); cols.append(col); vals.append(val)
+
+                # Position CP Jacobians
+                if 3 <= k < 6:      # r_v: depends on v_i (velocity CPs) and v_j (velocity CPs)
+                    for ci, cp_idx in enumerate(vel_idx_i):
+                        for dim in range(3):
+                            col = cp_idx * 3 + dim
+                            val = scale * J_vi[k-3, dim] * vel_coeff_i[ci]
+                            if abs(val) > 1e-15:
+                                rows.append(row_idx); cols.append(col); vals.append(val)
+                    for cj, cp_idx in enumerate(vel_idx_j):
+                        for dim in range(3):
+                            col = cp_idx * 3 + dim
+                            val = scale * J_vj[k-3, dim] * vel_coeff_j[cj]
+                            if abs(val) > 1e-15:
+                                rows.append(row_idx); cols.append(col); vals.append(val)
+
+                elif k >= 6:        # r_p: depends on p_i, v_i, p_j
+                    for ci, cp_idx in enumerate(pos_idx_i):
+                        for dim in range(3):
+                            col = cp_idx * 3 + dim
+                            val = scale * J_pi[k-6, dim] * pos_coeff_i[ci]
+                            if abs(val) > 1e-15:
+                                rows.append(row_idx); cols.append(col); vals.append(val)
+                    for ci, cp_idx in enumerate(vel_idx_i):
+                        for dim in range(3):
+                            col = cp_idx * 3 + dim
+                            val = scale * J_vi_p[k-6, dim] * vel_coeff_i[ci]
+                            if abs(val) > 1e-15:
+                                rows.append(row_idx); cols.append(col); vals.append(val)
+                    for cj, cp_idx in enumerate(pos_idx_j):
+                        for dim in range(3):
+                            col = cp_idx * 3 + dim
+                            val = scale * J_pj[k-6, dim] * pos_coeff_j[cj]
+                            if abs(val) > 1e-15:
+                                rows.append(row_idx); cols.append(col); vals.append(val)
+
+                # Bias Jacobians
+                for dim in range(3):
+                    # ∂r/∂b_a
+                    col = n_pos + n_ori + dim
+                    val = scale * J_ba_preint[k, dim]
+                    if abs(val) > 1e-15:
+                        rows.append(row_idx); cols.append(col); vals.append(val)
+                    # ∂r/∂b_g
+                    col = n_pos + n_ori + 3 + dim
+                    val = scale * J_bg_preint[k, dim]
+                    if abs(val) > 1e-15:
+                        rows.append(row_idx); cols.append(col); vals.append(val)
+
+                row_idx += 1
+                n_preint_rows += 1
 
     # ==================== Gravity-direction residuals ====================
     # Mahony-style roll/pitch constraint from accelerometer direction.
@@ -988,6 +1142,7 @@ def compute_jacobian_analytical(
     J.n_radar = n_radar
     J.n_accel = n_accel_rows
     J.n_gyro = n_gyro_rows
+    J.n_preint = n_preint_rows
     J.n_gravity = n_gravity_rows
     J.n_heading = n_heading_rows
     J.n_boundary_vel = n_boundary_vel_rows
@@ -1038,6 +1193,10 @@ def compute_residuals_only(
     gravity_accel_threshold: float = 3.0,
     lambda_heading: float = 0.0,
     heading_priors: list = None,
+    preintegrated_factors: list = None,
+    lambda_preint_rot: float = 1.0,
+    lambda_preint_vel: float = 1.0,
+    lambda_preint_pos: float = 1.0,
 ) -> np.ndarray:
     """
     Compute residual vector only — no Jacobian construction.
@@ -1134,6 +1293,48 @@ def compute_residuals_only(
         res_gyro_3 = z_gyro - omega - state.gyr_bias
         for k in range(3):
             all_residuals.append(sqrt_lambda_gyro * res_gyro_3[k])
+
+    # ==================== Preintegrated IMU residuals ====================
+    if preintegrated_factors:
+        sqrt_lpr = np.sqrt(lambda_preint_rot)
+        sqrt_lpv = np.sqrt(lambda_preint_vel)
+        sqrt_lpp = np.sqrt(lambda_preint_pos)
+        g_world_preint = np.array([0.0, 0.0, -9.81])
+        scales_preint = [sqrt_lpr] * 3 + [sqrt_lpv] * 3 + [sqrt_lpp] * 3
+
+        for m in preintegrated_factors:
+            t_i, t_j = m.t_i, m.t_j
+            dt = m.dt
+            t_rel_pos_i = t_i - state.pos_bspline.t_ref
+            t_rel_pos_j = t_j - state.pos_bspline.t_ref
+            t_rel_ori_i = t_i - state.ori_spline.t_ref
+            t_rel_ori_j = t_j - state.ori_spline.t_ref
+            if (t_rel_pos_i < state.pos_bspline.t_start or t_rel_pos_j > state.pos_bspline.t_end or
+                    t_rel_ori_i < state.ori_spline.t_start or t_rel_ori_j > state.ori_spline.t_end):
+                continue
+
+            p_i = state.get_position(t_i, derivative=0)
+            v_i = state.get_position(t_i, derivative=1)
+            p_j = state.get_position(t_j, derivative=0)
+            v_j = state.get_position(t_j, derivative=1)
+            R_i, _, _, _, _ = state.ori_spline.evaluate_with_jacobians(t_rel_ori_i)
+            R_j, _, _, _, _ = state.ori_spline.evaluate_with_jacobians(t_rel_ori_j)
+            R_i_rot3 = Rot3.from_rotation_matrix(R_i)
+            R_j_rot3 = Rot3.from_rotation_matrix(R_j)
+
+            delta_R_c, delta_v_c, delta_p_c = m.corrected(state.acc_bias, state.gyr_bias)
+            delta_R_c_rot3 = Rot3.from_rotation_matrix(delta_R_c)
+
+            r_R, _, _ = preint_rot_residual_with_jacobians(
+                R_i_rot3, _zeros3, R_j_rot3, _zeros3, delta_R_c_rot3, 1e-10)
+            r_v, _, _, _ = preint_vel_residual_with_jacobians(
+                R_i_rot3, _zeros3, v_i, v_j, g_world_preint, dt, delta_v_c, 1e-10)
+            r_p, _, _, _, _ = preint_pos_residual_with_jacobians(
+                R_i_rot3, _zeros3, p_i, v_i, p_j, g_world_preint, dt, delta_p_c, 1e-10)
+
+            r_all = np.concatenate([r_R, r_v, r_p])
+            for k in range(9):
+                all_residuals.append(scales_preint[k] * r_all[k])
 
     # ==================== Gravity residuals ====================
     if lambda_gravity > 0:
@@ -1323,6 +1524,10 @@ def solve_trajectory_nonlinear(
     gravity_accel_threshold: float = 3.0,
     lambda_heading: float = 0.0,
     heading_priors: list = None,
+    preintegrated_factors: list = None,
+    lambda_preint_rot: float = 1.0,
+    lambda_preint_vel: float = 1.0,
+    lambda_preint_pos: float = 1.0,
 ) -> TrajectoryState:
     """
     Solve for optimal trajectory using Levenberg-Marquardt.
@@ -1434,6 +1639,10 @@ def solve_trajectory_nonlinear(
             gravity_accel_threshold=gravity_accel_threshold,
             lambda_heading=lambda_heading,
             heading_priors=heading_priors,
+            preintegrated_factors=preintegrated_factors,
+            lambda_preint_rot=lambda_preint_rot,
+            lambda_preint_vel=lambda_preint_vel,
+            lambda_preint_pos=lambda_preint_pos,
         )
 
     def _compute_residuals(st, iteration_idx=None):
@@ -1470,6 +1679,10 @@ def solve_trajectory_nonlinear(
             gravity_accel_threshold=gravity_accel_threshold,
             lambda_heading=lambda_heading,
             heading_priors=heading_priors,
+            preintegrated_factors=preintegrated_factors,
+            lambda_preint_rot=lambda_preint_rot,
+            lambda_preint_vel=lambda_preint_vel,
+            lambda_preint_pos=lambda_preint_pos,
         )
 
     lambda_lm = 1e-3
@@ -1522,6 +1735,7 @@ def solve_trajectory_nonlinear(
                 n_r = getattr(J, 'n_radar', 0)
                 n_a = getattr(J, 'n_accel', 0)
                 n_g = getattr(J, 'n_gyro', 0)
+                n_preint = getattr(J, 'n_preint', 0)
                 n_grav = getattr(J, 'n_gravity', 0)
                 n_hdg = getattr(J, 'n_heading', 0)
                 n_bv = getattr(J, 'n_boundary_vel', 0)
@@ -1535,6 +1749,7 @@ def solve_trajectory_nonlinear(
                 cost_radar = np.sum(r_total[idx:idx+n_r]**2); idx += n_r
                 cost_accel = np.sum(r_total[idx:idx+n_a]**2); idx += n_a
                 cost_gyro = np.sum(r_total[idx:idx+n_g]**2); idx += n_g
+                cost_preint = np.sum(r_total[idx:idx+n_preint]**2); idx += n_preint
                 cost_grav = np.sum(r_total[idx:idx+n_grav]**2); idx += n_grav
                 cost_hdg = np.sum(r_total[idx:idx+n_hdg]**2); idx += n_hdg
                 cost_bv = np.sum(r_total[idx:idx+n_bv]**2); idx += n_bv
@@ -1548,6 +1763,7 @@ def solve_trajectory_nonlinear(
                 cost_ep = np.sum(r_total[idx:idx+n_ep]**2) if n_ep > 0 else 0.0; idx += n_ep
 
                 bnd_parts = []
+                if n_preint > 0: bnd_parts.append(f"preint={cost_preint:.1f}")
                 if n_grav > 0: bnd_parts.append(f"gravity={cost_grav:.1f}")
                 if n_hdg > 0: bnd_parts.append(f"heading={cost_hdg:.1f}")
                 if n_bv > 0: bnd_parts.append(f"bnd_vel={cost_bv:.1f}")

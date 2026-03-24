@@ -47,6 +47,7 @@ from cumulative_so3_bspline import (
 )
 from codegen.generated_jacobians import Rot3
 from config_loader import load_config
+from imu_preintegration import build_preintegrated_factors
 
 # Import solver core from the batch solver (optimizer itself is MoCap-free)
 from validate_nonlinear_solver import (
@@ -484,6 +485,9 @@ def main():
     USE_MOCAP_INIT    = _legacy_mocap_yaw or '--mocap-init' in sys.argv
     USE_MOCAP_HEADING = _legacy_mocap_yaw or '--mocap-heading' in sys.argv
 
+    NO_PLOT = '--no-plot' in sys.argv
+    USE_PREINTEGRATE = '--preintegrate' in sys.argv
+
     BIAS_PRESET = None
     if '--bias' in sys.argv:
         idx_b = sys.argv.index('--bias')
@@ -658,12 +662,21 @@ def main():
     bias_prior_mean = np.concatenate([acc_bias, gyr_bias])
 
     # --bias flag: override with known per-bag presets for testing convergence
+    # Bags from the same session share the same IMU sensor state, so converged
+    # biases from one bag can be used for others recorded in the same session.
     _BIAS_PRESETS = {
         'slow_racing_best_velocity': {
             # Stationary-detected biases from prior batch run
             'acc':       (np.array([-0.0077, +0.0072, +0.0605]),
                           np.array([+0.0042, -0.0028, +0.0003])),
             # Converged biases from batch solver (optimal)
+            'converged': (np.array([-0.0955, -0.1791, +0.0999]),
+                          np.array([+0.0220, -0.0009, -0.0063])),
+        },
+        # Same sensor session as slow_racing_best_velocity (Wed_11032026_1503).
+        # Stationary detection is unreliable for this bag (no clean pre-flight
+        # stationary window); use slow_racing converged biases as proxy.
+        'fast_racing_best_velocity': {
             'converged': (np.array([-0.0955, -0.1791, +0.0999]),
                           np.array([+0.0220, -0.0009, -0.0063])),
         },
@@ -969,6 +982,14 @@ def main():
     # ==================== Optimize ====================
     solver_radar_frames = [] if NO_RADAR else radar_frames
 
+    # Build preintegrated IMU factors (one per consecutive radar frame interval)
+    preintegrated_factors = None
+    if USE_PREINTEGRATE:
+        radar_times_for_preint = np.array([f.timestamp for f in radar_frames])
+        preintegrated_factors = build_preintegrated_factors(
+            imu_data_full, radar_times_for_preint, acc_bias, gyr_bias)
+        print(f"  Preintegrated IMU factors: {len(preintegrated_factors)}")
+
     # MoCap data for solver verbose RMSE display only (does not affect optimization)
     mocap_times_abs = np.array([s.timestamp for s in agiros_states]) if agiros_states else None
     mocap_rots_eval = (np.array([quat_to_rotation_matrix(s.orientation) for s in agiros_states])
@@ -1020,6 +1041,7 @@ def main():
         gravity_accel_threshold=GRAVITY_ACCEL_THRESHOLD,
         lambda_heading=LAMBDA_HEADING,
         heading_priors=heading_priors if heading_priors else None,
+        preintegrated_factors=preintegrated_factors,
     )
 
     # ==================== Evaluate against MoCap ====================
@@ -1158,6 +1180,9 @@ def main():
                   f"pos_rmse={pos_rmse:.4f} m  ori_rmse={rot_rmse:.4f} deg")
 
         # ==================== Plot ====================
+        if NO_PLOT:
+            print(f"\n  [--no-plot] Skipping plot generation.")
+            return
         print(f"\n{'Generating Plots':-^80}")
 
         time_rel = eval_times - eval_times[0]

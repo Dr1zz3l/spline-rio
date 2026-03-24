@@ -208,6 +208,93 @@ def heading_residual(
     return sf.V1(sf.atan2(cross_z, dot_xy, epsilon=epsilon))
 
 
+def preintegrated_rotation_residual(
+    R_i_nominal: sf.Rot3,
+    delta_i: sf.V3,
+    R_j_nominal: sf.Rot3,
+    delta_j: sf.V3,
+    delta_R_corr: sf.Rot3,
+    epsilon: sf.Scalar,
+) -> sf.V3:
+    """
+    Preintegrated IMU rotation residual (Forster et al., TRO 2017).
+
+    Convention: R is body-to-world (R_wb), matching SymForce usage
+    (R.inverse() maps world → body, R * v rotates body vector to world).
+    This matches the existing accel/gyro residuals in this file.
+
+    Preintegrated rotation: ΔR̃ = ∏ Exp(ω_k * dt_k)   (accumulated body rotation)
+    Predicted relation:     ΔR_pred = R_i^T @ R_j      (in R_wb convention)
+    Bias-corrected meas:    ΔR̃_corr = ΔR̃ @ Exp(d_R_d_bg @ δb_g)
+
+    Residual: r_R = Log(ΔR̃_corr^T @ R_i^T @ R_j)
+
+    Jacobians computed w.r.t. delta_i and delta_j (SO3 tangent perturbations).
+    Bias Jacobians (∂r_R/∂b_g ≈ -d_R_d_bg) are handled analytically outside SymForce.
+    """
+    R_i = R_i_nominal * sf.Rot3.from_tangent(delta_i, epsilon=epsilon)
+    R_j = R_j_nominal * sf.Rot3.from_tangent(delta_j, epsilon=epsilon)
+    # R_rel = ΔR̃_corr^T @ R_i^T @ R_j = delta_R_corr.inverse() @ R_i.inverse() @ R_j
+    R_rel = delta_R_corr.inverse() * R_i.inverse() * R_j
+    return sf.V3(R_rel.to_tangent(epsilon=epsilon))
+
+
+def preintegrated_velocity_residual(
+    R_i_nominal: sf.Rot3,
+    delta_i: sf.V3,
+    v_i: sf.V3,
+    v_j: sf.V3,
+    g_world: sf.V3,
+    dt: sf.Scalar,
+    delta_v_corr: sf.V3,
+    epsilon: sf.Scalar,
+) -> sf.V3:
+    """
+    Preintegrated IMU velocity residual (Forster et al., TRO 2017).
+
+    Preintegrated velocity: Δṽ = ∫ ΔR(s) @ (a_m - b_a) ds
+    Predicted:              Δv_pred = R_i^T @ (v_j - v_i - g * dt)
+    Bias-corrected meas:    Δṽ_corr = Δṽ + J_v_ba @ δb_a + J_v_bg @ δb_g
+
+    Residual: r_v = R_i^T @ (v_j - v_i - g * dt) - Δṽ_corr
+
+    Jacobians computed w.r.t. delta_i, v_i, v_j.
+    Bias Jacobians (∂r_v/∂b_a = -J_v_ba, ∂r_v/∂b_g = -J_v_bg) handled analytically.
+    """
+    R_i = R_i_nominal * sf.Rot3.from_tangent(delta_i, epsilon=epsilon)
+    e_v = v_j - v_i - g_world * dt
+    return R_i.inverse() * e_v - delta_v_corr
+
+
+def preintegrated_position_residual(
+    R_i_nominal: sf.Rot3,
+    delta_i: sf.V3,
+    p_i: sf.V3,
+    v_i: sf.V3,
+    p_j: sf.V3,
+    g_world: sf.V3,
+    dt: sf.Scalar,
+    delta_p_corr: sf.V3,
+    epsilon: sf.Scalar,
+) -> sf.V3:
+    """
+    Preintegrated IMU position residual (Forster et al., TRO 2017).
+
+    Preintegrated position: Δp̃ = ∫∫ ΔR(s) @ (a_m - b_a) ds²
+    Predicted:              Δp_pred = R_i^T @ (p_j - p_i - v_i*dt - 0.5*g*dt²)
+    Bias-corrected meas:    Δp̃_corr = Δp̃ + J_p_ba @ δb_a + J_p_bg @ δb_g
+
+    Residual: r_p = R_i^T @ (p_j - p_i - v_i*dt - 0.5*g*dt²) - Δp̃_corr
+
+    Jacobians computed w.r.t. delta_i, p_i, v_i, p_j.
+    Bias Jacobians (∂r_p/∂b_a = -J_p_ba, ∂r_p/∂b_g = -J_p_bg) handled analytically.
+    """
+    R_i = R_i_nominal * sf.Rot3.from_tangent(delta_i, epsilon=epsilon)
+    half = sf.Rational(1, 2)
+    e_p = p_j - p_i - v_i * dt - g_world * (half * dt * dt)
+    return R_i.inverse() * e_p - delta_p_corr
+
+
 # ============================================================
 # Code generation
 # ============================================================
@@ -321,6 +408,30 @@ def main():
         which_args=["delta"],
     )
 
+    # Generate preintegrated IMU rotation residual
+    print("\n[6/8] Preintegrated IMU rotation residual:")
+    preint_rot_code = generate_and_read(
+        preintegrated_rotation_residual,
+        "preint_rot",
+        which_args=["delta_i", "delta_j"],
+    )
+
+    # Generate preintegrated IMU velocity residual
+    print("\n[7/8] Preintegrated IMU velocity residual:")
+    preint_vel_code = generate_and_read(
+        preintegrated_velocity_residual,
+        "preint_vel",
+        which_args=["delta_i", "v_i", "v_j"],
+    )
+
+    # Generate preintegrated IMU position residual
+    print("\n[8/8] Preintegrated IMU position residual:")
+    preint_pos_code = generate_and_read(
+        preintegrated_position_residual,
+        "preint_pos",
+        which_args=["delta_i", "p_i", "v_i", "p_j"],
+    )
+
     # Post-process all generated code
     print("\nPost-processing generated code...")
     processed_radar = {}
@@ -343,6 +454,18 @@ def main():
     for name, code in heading_code.items():
         processed_heading[name] = post_process(code)
 
+    processed_preint_rot = {}
+    for name, code in preint_rot_code.items():
+        processed_preint_rot[name] = post_process(code)
+
+    processed_preint_vel = {}
+    for name, code in preint_vel_code.items():
+        processed_preint_vel[name] = post_process(code)
+
+    processed_preint_pos = {}
+    for name, code in preint_pos_code.items():
+        processed_preint_pos[name] = post_process(code)
+
     # Assemble the output file
     print("Assembling generated_jacobians.py...")
 
@@ -353,11 +476,14 @@ Generated by: derive_jacobians_symforce.py (using SymForce {sf_version})
 This file has NO dependency on SymForce — it uses only numpy and math.
 
 Contains:
-- radar_residual_with_jacobians():   Doppler residual + Jacobians w.r.t. v_world, delta, omega
-- accel_residual_with_jacobians():   Accel residual + Jacobians w.r.t. a_world, delta, b_a
-- gyro_residual_with_jacobians():    Gyro residual  + Jacobians w.r.t. delta, delta_dot, b_g
-- gravity_residual_with_jacobians(): Gravity-direction residual + Jacobians w.r.t. delta, b_a
-- heading_residual_with_jacobians(): Heading (yaw) residual + Jacobians w.r.t. delta
+- radar_residual_with_jacobians():        Doppler residual + Jacobians w.r.t. v_world, delta, omega
+- accel_residual_with_jacobians():        Accel residual + Jacobians w.r.t. a_world, delta, b_a
+- gyro_residual_with_jacobians():         Gyro residual  + Jacobians w.r.t. delta, delta_dot, b_g
+- gravity_residual_with_jacobians():      Gravity-direction residual + Jacobians w.r.t. delta, b_a
+- heading_residual_with_jacobians():      Heading (yaw) residual + Jacobians w.r.t. delta
+- preint_rot_residual_with_jacobians():   Preintegrated rotation 3D residual + Jacobians
+- preint_vel_residual_with_jacobians():   Preintegrated velocity 3D residual + Jacobians
+- preint_pos_residual_with_jacobians():   Preintegrated position 3D residual + Jacobians
 - Rot3: Lightweight quaternion wrapper matching SymForce convention [x, y, z, w]
 
 Usage:
@@ -519,6 +645,48 @@ class Rot3:
                        'def heading_residual_with_jacobians(', code)
         output_parts.append(code.strip())
 
+    # Add separator and preintegrated rotation functions
+    output_parts.append("\n\n# " + "=" * 70)
+    output_parts.append("# PREINTEGRATED IMU ROTATION RESIDUAL + JACOBIANS")
+    output_parts.append("# " + "=" * 70 + "\n")
+
+    for name, code in processed_preint_rot.items():
+        output_parts.append(f"\n# --- From: {name} ---\n")
+        code = re.sub(r'^import math\s*$', '', code, flags=re.MULTILINE)
+        code = re.sub(r'^import typing as T\s*$', '', code, flags=re.MULTILINE)
+        code = re.sub(r'^import numpy\s*$', '', code, flags=re.MULTILINE)
+        code = re.sub(r'def preintegrated_rotation_residual_with_jacobians\d*\(',
+                       'def preint_rot_residual_with_jacobians(', code)
+        output_parts.append(code.strip())
+
+    # Add separator and preintegrated velocity functions
+    output_parts.append("\n\n# " + "=" * 70)
+    output_parts.append("# PREINTEGRATED IMU VELOCITY RESIDUAL + JACOBIANS")
+    output_parts.append("# " + "=" * 70 + "\n")
+
+    for name, code in processed_preint_vel.items():
+        output_parts.append(f"\n# --- From: {name} ---\n")
+        code = re.sub(r'^import math\s*$', '', code, flags=re.MULTILINE)
+        code = re.sub(r'^import typing as T\s*$', '', code, flags=re.MULTILINE)
+        code = re.sub(r'^import numpy\s*$', '', code, flags=re.MULTILINE)
+        code = re.sub(r'def preintegrated_velocity_residual_with_jacobians\d*\(',
+                       'def preint_vel_residual_with_jacobians(', code)
+        output_parts.append(code.strip())
+
+    # Add separator and preintegrated position functions
+    output_parts.append("\n\n# " + "=" * 70)
+    output_parts.append("# PREINTEGRATED IMU POSITION RESIDUAL + JACOBIANS")
+    output_parts.append("# " + "=" * 70 + "\n")
+
+    for name, code in processed_preint_pos.items():
+        output_parts.append(f"\n# --- From: {name} ---\n")
+        code = re.sub(r'^import math\s*$', '', code, flags=re.MULTILINE)
+        code = re.sub(r'^import typing as T\s*$', '', code, flags=re.MULTILINE)
+        code = re.sub(r'^import numpy\s*$', '', code, flags=re.MULTILINE)
+        code = re.sub(r'def preintegrated_position_residual_with_jacobians\d*\(',
+                       'def preint_pos_residual_with_jacobians(', code)
+        output_parts.append(code.strip())
+
     # Write output file
     output_path = os.path.join(os.path.dirname(__file__), "generated_jacobians.py")
     output_content = "\n".join(output_parts) + "\n"
@@ -543,9 +711,11 @@ class Rot3:
     assert hasattr(mod, 'gyro_residual_with_jacobians'), "Missing gyro_residual_with_jacobians"
     assert hasattr(mod, 'gravity_residual_with_jacobians'), "Missing gravity_residual_with_jacobians"
     assert hasattr(mod, 'heading_residual_with_jacobians'), "Missing heading_residual_with_jacobians"
-    print("   Found: radar_residual_with_jacobians, accel_residual_with_jacobians, "
-          "gyro_residual_with_jacobians, gravity_residual_with_jacobians, "
-          "heading_residual_with_jacobians, Rot3")
+    assert hasattr(mod, 'preint_rot_residual_with_jacobians'), "Missing preint_rot_residual_with_jacobians"
+    assert hasattr(mod, 'preint_vel_residual_with_jacobians'), "Missing preint_vel_residual_with_jacobians"
+    assert hasattr(mod, 'preint_pos_residual_with_jacobians'), "Missing preint_pos_residual_with_jacobians"
+    print("   Found: radar, accel, gyro, gravity, heading, "
+          "preint_rot, preint_vel, preint_pos, Rot3")
 
     # Quick numerical test
     import numpy as np
