@@ -4,7 +4,7 @@ dt_pos: 0.005            # Knot spacing for position spline (seconds)
 dt_ori: 0.008              # Knot spacing for orientation spline (seconds)
 
 # Radar
-huber_delta: 0.1           # Huber threshold (m/s); must be >= 0.63 m/s Doppler bin size
+huber_delta: 1           # Huber threshold (m/s); must be >= 0.63 m/s Doppler bin size
 min_range: 0.2             # Minimum range filter (m)
 
 # IMU weights
@@ -21,7 +21,7 @@ lambda_gravity: 0.0            # Weight for gravity-direction residual; 0 = disa
 gravity_accel_threshold: 3.0   # Dynamic trust sigma (m/s²): down-weight when ||a_debiased|| deviates from g
 
 # Heading factor (yaw constraint from MoCap pseudo-magnetometer)
-lambda_heading: 0            # Weight for MoCap heading residual; 0 = disabled
+lambda_heading: 3            # Weight for MoCap heading residual; 0 = disabled
 
 # Bias priors
 lambda_bias_prior: 1.0     # Fallback (overridden by per-sensor values below)

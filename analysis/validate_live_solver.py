@@ -164,6 +164,8 @@ def integrate_radar_velocity(
     min_range: float = 0.2,
     min_points: int = 5,
     v_max: float | None = None,
+    imu_data_full=None,
+    acc_bias: np.ndarray = None,
 ) -> tuple:
     """
     Integrate radar WLS ego-velocity to get a position trajectory.
@@ -181,14 +183,21 @@ def integrate_radar_velocity(
               and v_sensor_frame = -v_wls.
 
     Args:
-        radar_frames     : radar data list
-        imu_times        : (M,) gyro-integrated rotation timestamps (absolute)
-        imu_Rs           : (M,3,3) corresponding rotation matrices (world-from-body)
-        sensor_rotation  : (3,3) R_body_from_sensor (= SENSOR_ROTATION from config)
+        radar_frames      : radar data list
+        imu_times         : (M,) gyro-integrated rotation timestamps (absolute)
+        imu_Rs            : (M,3,3) corresponding rotation matrices (world-from-body)
+        sensor_rotation   : (3,3) R_body_from_sensor (= SENSOR_ROTATION from config)
         sensor_translation: (3,) t_body_from_sensor (lever arm, for lever-arm correction)
-        p_init           : (3,) initial position at first radar frame
-        min_range        : minimum range filter
-        min_points       : minimum points for WLS to be valid
+        p_init            : (3,) initial position at first radar frame
+        min_range         : minimum range filter
+        min_points        : minimum points for WLS to be valid
+        imu_data_full     : optional full-rate IMU message list. When provided with
+                            acc_bias, an IMU-integrated velocity is maintained and
+                            used as the Doppler unwrapping prediction. This prevents
+                            aliasing cascades when v_prev_wls is None (first frame)
+                            or when the drone exceeds v_max. After each successful
+                            WLS, v_imu is reset from the WLS result to bound drift.
+        acc_bias          : (3,) accelerometer bias for IMU integration.
 
     Returns:
         times  : (K,) absolute timestamps of position estimates
@@ -201,22 +210,72 @@ def integrate_radar_velocity(
     t_prev = None
     v_prev_wls = None  # previous frame's WLS result (sensor frame, measurement convention)
 
+    # IMU-aided unwrapping: maintain a world-frame velocity from accel integration.
+    # Used as unwrapping prediction to handle the first frame (v_prev_wls=None) and
+    # high-speed segments where the drone exceeds v_max.
+    use_imu_unwrap = (imu_data_full is not None and acc_bias is not None and v_max is not None)
+    v_imu = np.zeros(3)   # world-frame velocity estimate
+    _g_world = np.array([0.0, 0.0, -9.81])
+    if use_imu_unwrap:
+        _imu_t = np.array([d.timestamp for d in imu_data_full])
+        _imu_a = np.array([d.linear_acceleration for d in imu_data_full])
+        _imu_next_idx = 0
+        _t_imu_prev = imu_times[0]   # start integration from t_ref
+
     for frame in sorted(radar_frames, key=lambda f: f.timestamp):
         if frame.positions is None or frame.velocities is None or frame.intensities is None:
             continue
 
         t = frame.timestamp
 
-        # Unwrap individual Doppler measurements using the previous WLS estimate as prediction
+        # Advance IMU-velocity integration to current radar frame time.
+        # We use nearest-neighbour rotation (imu_Rs already at ~1kHz, so error < 1ms).
+        if use_imu_unwrap:
+            while _imu_next_idx < len(_imu_t) and _imu_t[_imu_next_idx] <= t:
+                t_cur = _imu_t[_imu_next_idx]
+                dt_imu = t_cur - _t_imu_prev
+                if 0 < dt_imu < 0.1:
+                    idx_r = min(np.searchsorted(imu_times, t_cur), len(imu_times) - 1)
+                    R_wb_imu = imu_Rs[idx_r]
+                    a_debiased = _imu_a[_imu_next_idx] - acc_bias
+                    v_imu += (R_wb_imu @ a_debiased + _g_world) * dt_imu
+                _t_imu_prev = t_cur
+                _imu_next_idx += 1
+
+        # Interpolate gyro-integrated rotation at this radar frame timestamp.
+        idx = np.searchsorted(imu_times, t)
+        if idx == 0:
+            R_wb = imu_Rs[0]
+        elif idx >= len(imu_times):
+            R_wb = imu_Rs[-1]
+        else:
+            alpha = (t - imu_times[idx - 1]) / (imu_times[idx] - imu_times[idx - 1])
+            dR = imu_Rs[idx - 1].T @ imu_Rs[idx]
+            dw = so3_log(dR)
+            R_wb = imu_Rs[idx - 1] @ so3_exp(alpha * dw)
+
+        # Unwrapping prediction: when IMU integration is available, always use v_imu
+        # (which is continuously propagated by accelerometer and corrected by each WLS
+        # result). This avoids the cascade failure where one stale v_prev_wls prediction
+        # causes every subsequent frame to unwrap incorrectly.
+        # v_wls convention: u·v_wls = v_meas = -u·v_sensor, so v_wls = -v_sensor.
+        # v_imu_pred_wls = -(R_sensor_from_body^T @ R_body_from_world @ v_imu)
+        #                = -(sensor_rotation.T @ R_wb.T @ v_imu)
+        if use_imu_unwrap:
+            v_unwrap_pred = -(sensor_rotation.T @ R_wb.T @ v_imu)
+        else:
+            v_unwrap_pred = v_prev_wls
+
+        # Unwrap individual Doppler measurements using the chosen prediction.
         velocities_to_use = frame.velocities
-        if v_prev_wls is not None and v_max is not None:
+        if v_unwrap_pred is not None and v_max is not None:
             unwrapped = frame.velocities.copy()
             for i in range(len(frame.positions)):
                 _rng = np.linalg.norm(frame.positions[i])
                 if _rng < 1e-6:
                     continue
                 u = frame.positions[i] / _rng
-                v_pred_radial = np.dot(u, v_prev_wls)  # predicted measurement (u·v_wls convention)
+                v_pred_radial = np.dot(u, v_unwrap_pred)
                 v_meas = frame.velocities[i]
                 best = v_meas
                 best_err = abs(v_meas - v_pred_radial)
@@ -241,25 +300,17 @@ def integrate_radar_velocity(
             continue
         v_prev_wls = v_wls
 
-        # Interpolate gyro-integrated rotation at this timestamp
-        idx = np.searchsorted(imu_times, t)
-        if idx == 0:
-            R_wb = imu_Rs[0]
-        elif idx >= len(imu_times):
-            R_wb = imu_Rs[-1]
-        else:
-            # Linear interpolation in so(3)
-            alpha = (t - imu_times[idx - 1]) / (imu_times[idx] - imu_times[idx - 1])
-            dR = imu_Rs[idx - 1].T @ imu_Rs[idx]
-            dw = so3_log(dR)
-            R_wb = imu_Rs[idx - 1] @ so3_exp(alpha * dw)
-
         # World-frame velocity from WLS:
         #   v_sensor_actual = -v_wls   (sign from TI convention)
         #   v_body_actual   = sensor_rotation @ (-v_wls)
         #   v_world         = R_wb @ v_body_actual
         # Note: sensor_rotation = R_body_from_sensor
         v_world = R_wb @ (sensor_rotation @ (-v_wls))
+
+        # Reset IMU velocity from WLS result to prevent accelerometer drift accumulation.
+        if use_imu_unwrap:
+            v_imu = v_world.copy()
+            _t_imu_prev = t   # restart integration from this anchor
 
         # Optionally correct for lever arm (omega x t_bs) — omitted for init
 
@@ -694,6 +745,8 @@ def main():
             p_init=p_init_world,
             min_range=MIN_RANGE,
             v_max=V_MAX if USE_UNWRAP else None,
+            imu_data_full=imu_data_full,
+            acc_bias=acc_bias,
         )
         print(f"  Integrated {len(radar_int_times)} radar frames")
         pos_range = np.ptp(radar_int_ps, axis=0)
