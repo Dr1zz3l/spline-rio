@@ -1021,11 +1021,23 @@ def main():
         estimated_rotations     = np.array([optimized_state.get_rotation(t)    for t in eval_times])
         est_ang_vel             = np.array([optimized_state.get_angular_velocity(t) for t in eval_times])
 
-        # Align position to MoCap frame (subtract constant offset at first eval point)
-        pos_offset = mocap_pos_eval[0] - estimated_positions[0]
-        estimated_positions_aligned = estimated_positions + pos_offset
-        print(f"  Position alignment offset: [{pos_offset[0]:.3f}, "
-              f"{pos_offset[1]:.3f}, {pos_offset[2]:.3f}] m")
+        # Constant SE3 alignment to MoCap frame.
+        # R_align rotates the estimate's initial orientation into the MoCap initial orientation.
+        # Applied as a single constant transform — preserves trajectory shape, only fixes
+        # the unobservable initial yaw (and any small roll/pitch offset).
+        R_est_0  = estimated_rotations[0]
+        R_gt_0   = mocap_rot_eval[0]
+        R_align  = R_gt_0 @ R_est_0.T
+        t_align  = mocap_pos_eval[0] - R_align @ estimated_positions[0]
+
+        estimated_positions_aligned     = (R_align @ estimated_positions.T).T + t_align
+        estimated_velocities_aligned    = (R_align @ estimated_velocities.T).T
+        estimated_accelerations_aligned = (R_align @ estimated_accelerations.T).T
+        estimated_rotations_aligned     = np.array([R_align @ R for R in estimated_rotations])
+
+        align_euler = np.degrees(Rotation.from_matrix(R_align).as_euler('xyz'))
+        print(f"  SE3 alignment R: [{align_euler[0]:.1f}, {align_euler[1]:.1f}, {align_euler[2]:.1f}] deg  "
+              f"t: [{t_align[0]:.3f}, {t_align[1]:.3f}, {t_align[2]:.3f}] m")
 
         # MoCap derived quantities
         mocap_velocities = np.array([s.velocity for s in agiros_eval])
@@ -1069,10 +1081,10 @@ def main():
         pos_diff        = estimated_positions_aligned - mocap_pos_eval
         pos_errors      = np.linalg.norm(pos_diff, axis=1)
         pos_rmse        = np.sqrt(np.mean(pos_errors**2))
-        vel_diff        = estimated_velocities - mocap_velocities
+        vel_diff        = estimated_velocities_aligned - mocap_velocities
         vel_errors      = np.linalg.norm(vel_diff, axis=1)
         vel_rmse        = np.sqrt(np.mean(vel_errors**2))
-        accel_diff      = estimated_accelerations - mocap_accelerations
+        accel_diff      = estimated_accelerations_aligned - mocap_accelerations
         accel_abs_error = np.linalg.norm(accel_diff, axis=1)
         accel_rmse      = np.sqrt(np.mean(accel_abs_error**2))
         ang_vel_diff      = est_ang_vel - mocap_ang_vel
@@ -1081,7 +1093,7 @@ def main():
 
         rot_errors = []
         for i in range(len(eval_times)):
-            R_err = mocap_rot_eval[i].T @ estimated_rotations[i]
+            R_err = mocap_rot_eval[i].T @ estimated_rotations_aligned[i]
             angle = np.degrees(np.arccos(np.clip((np.trace(R_err) - 1) / 2, -1, 1)))
             rot_errors.append(angle)
         rot_errors = np.array(rot_errors)
@@ -1089,7 +1101,7 @@ def main():
 
         # Euler per-axis errors (unwrapped, branch-snapped to MoCap)
         mocap_euler_raw = Rotation.from_matrix(mocap_rot_eval).as_euler('xyz')
-        est_euler_raw   = Rotation.from_matrix(estimated_rotations).as_euler('xyz')
+        est_euler_raw   = Rotation.from_matrix(estimated_rotations_aligned).as_euler('xyz')
         mocap_euler = np.degrees(np.unwrap(mocap_euler_raw, axis=0))
         est_euler_deg = np.degrees(est_euler_raw)
         est_euler = mocap_euler + ((est_euler_deg - mocap_euler + 180) % 360 - 180)
@@ -1204,7 +1216,7 @@ def main():
 
         # Row 2: Linear velocity
         a = axd[(2, 0)]
-        _comparison(a, time_rel, mocap_velocities, estimated_velocities,
+        _comparison(a, time_rel, mocap_velocities, estimated_velocities_aligned,
                     axis_labels, 'Velocity (m/s)')
         a.set_xlabel('Time (s)'); a.set_title('Linear Velocity Comparison')
 
@@ -1227,7 +1239,7 @@ def main():
         # Row 4: Acceleration
         mocap_accel_plot = np.column_stack([_smooth(mocap_accelerations[:, i]) for i in range(3)])
         a = axd[(4, 0)]
-        _comparison(a, time_rel, mocap_accel_plot, estimated_accelerations,
+        _comparison(a, time_rel, mocap_accel_plot, estimated_accelerations_aligned,
                     axis_labels, 'Accel (m/s²)')
         a.set_xlabel('Time (s)'); a.set_title('Acceleration Comparison (vs diff(MoCap vel), smoothed)')
 
