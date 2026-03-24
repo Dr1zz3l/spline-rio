@@ -35,6 +35,7 @@ boundary_window: 1         # Seconds near start to apply boundary priors
 lambda_boundary_vel: 1000.0
 lambda_boundary_pos: 1000.0
 lambda_boundary_ori: 1000.0
+lambda_boundary_ori_yaw: 0.0   # Yaw component weight (null = same as lambda_boundary_ori, 0.0 = free yaw gauge)
 lambda_boundary_accel: 0.001
 lambda_boundary_gyro: 1000.0
 

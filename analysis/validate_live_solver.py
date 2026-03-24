@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent / 'lib'))
 import matplotlib.pyplot as plt
 import matplotlib.transforms as mtransforms
 from scipy import sparse
+import scipy.sparse.linalg
 from scipy.spatial.transform import Rotation, Slerp
 from scipy.interpolate import interp1d
 import time
@@ -387,7 +388,10 @@ def build_position_spline_from_radar_integration(
     t_ref: float,
 ) -> UniformBSpline:
     """
-    Fit position B-spline control points by interpolating integrated radar trajectory.
+    Fit position B-spline control points by least-squares to the integrated radar trajectory.
+
+    Uses a proper LS fit (B @ c = p_samples) instead of interpolating at control point times,
+    which would produce a systematic error for a quintic B-spline (spline != control points).
 
     Args:
         radar_times    : (K,) absolute timestamps of integrated positions
@@ -398,26 +402,46 @@ def build_position_spline_from_radar_integration(
         t_ref          : absolute time reference
 
     Returns:
-        UniformBSpline with control points initialized from radar integration
+        UniformBSpline with control points initialized from LS fit to radar integration
     """
     pos_bspline = UniformBSpline(np.zeros((n_pos_points, 3)), bspline_degree, dt_pos)
     pos_bspline.t_ref = t_ref
 
-    # Evaluate at control point times (use uniform sampling over spline domain)
     radar_times_rel = radar_times - t_ref
-    init_times = np.linspace(pos_bspline.t_start, pos_bspline.t_end, n_pos_points)
 
-    # Clamp to radar data range
-    r_start = radar_times_rel[0]
-    r_end   = radar_times_rel[-1]
-
-    if r_end > r_start:
-        pos_interp = interp1d(radar_times_rel, radar_ps, axis=0,
-                              kind='linear', fill_value='extrapolate')
-        ctrl_pts = pos_interp(np.clip(init_times, r_start, r_end))
-    else:
-        # Degenerate: all radar frames at same time; use flat trajectory
+    # Clamp sample times to spline domain (exclude t_end: basis is zero there for uniform splines)
+    t_start = pos_bspline.t_start
+    t_end   = pos_bspline.t_end
+    mask = (radar_times_rel >= t_start) & (radar_times_rel < t_end)
+    if mask.sum() < bspline_degree + 1:
+        # Degenerate: too few points inside domain; fall back to flat trajectory
         ctrl_pts = np.tile(radar_ps[0], (n_pos_points, 1))
+        pos_bspline.control_points = ctrl_pts
+        return pos_bspline
+
+    t_samples = radar_times_rel[mask]
+    p_samples = radar_ps[mask]          # (M, 3)
+
+    # Build design matrix B: (M, n_pos_points)
+    M = len(t_samples)
+    rows, cols, vals = [], [], []
+    for i, t in enumerate(t_samples):
+        k = pos_bspline.find_knot_span(t)
+        b = pos_bspline.basis_functions(t, k)  # (degree+1,) — support [k-degree, ..., k]
+        col_start = k - bspline_degree
+        for j, bval in enumerate(b):
+            rows.append(i)
+            cols.append(col_start + j)
+            vals.append(bval)
+
+    B = sparse.csr_matrix((vals, (rows, cols)), shape=(M, n_pos_points))
+
+    # Solve: min ||B @ c - p_samples||^2  →  (B^T B) c = B^T p_samples
+    # scipy.sparse.linalg.lsqr solves each coordinate independently
+    ctrl_pts = np.zeros((n_pos_points, 3))
+    for dim in range(3):
+        result = sparse.linalg.lsqr(B, p_samples[:, dim])
+        ctrl_pts[:, dim] = result[0]
 
     pos_bspline.control_points = ctrl_pts
     return pos_bspline
@@ -452,7 +476,14 @@ def main():
             noise_deg_per_sqrts = float(sys.argv[idx_n + 1])
     noise_rad_per_sqrts = np.radians(noise_deg_per_sqrts)
 
-    USE_MOCAP_YAW = '--mocap-yaw' in sys.argv
+    # MoCap usage flags (decoupled):
+    #   --mocap-init    : use MoCap position + orientation at t=0 only
+    #   --mocap-heading : build continuous heading priors from MoCap (pseudo-magnetometer)
+    #   --mocap-yaw     : shorthand for --mocap-init --mocap-heading (legacy)
+    _legacy_mocap_yaw = '--mocap-yaw' in sys.argv
+    USE_MOCAP_INIT    = _legacy_mocap_yaw or '--mocap-init' in sys.argv
+    USE_MOCAP_HEADING = _legacy_mocap_yaw or '--mocap-heading' in sys.argv
+
     BIAS_PRESET = None
     if '--bias' in sys.argv:
         idx_b = sys.argv.index('--bias')
@@ -460,12 +491,11 @@ def main():
             BIAS_PRESET = sys.argv[idx_b + 1]
 
     # Init mode string (for display/filenames)
-    if USE_MOCAP_YAW:
-        init_mode_str = "mocap-yaw+gyro"
-    elif BIAS_PRESET:
-        init_mode_str = f"bias={BIAS_PRESET}+gyro"
-    else:
-        init_mode_str = "sensor-only"
+    mode_parts = []
+    if USE_MOCAP_INIT:    mode_parts.append("mocap-init")
+    if USE_MOCAP_HEADING: mode_parts.append("mocap-heading")
+    if BIAS_PRESET:       mode_parts.append(f"bias={BIAS_PRESET}")
+    init_mode_str = "+".join(mode_parts) + "+gyro" if mode_parts else "sensor-only+gyro"
 
     # ==================== Config ====================
     if bag_key in _BAG_TIMING_CFG:
@@ -502,8 +532,8 @@ def main():
     LAMBDA_GRAVITY  = _SOLVER_CFG.get('lambda_gravity', 0.1)  # default 0.1 for live solver
     GRAVITY_ACCEL_THRESHOLD = _SOLVER_CFG.get('gravity_accel_threshold', 3.0)
     LAMBDA_HEADING  = _SOLVER_CFG.get('lambda_heading', 0.0)
-    if USE_MOCAP_YAW and LAMBDA_HEADING == 0.0:
-        LAMBDA_HEADING = 1.0  # default heading weight for --mocap-yaw
+    if USE_MOCAP_HEADING and LAMBDA_HEADING == 0.0:
+        LAMBDA_HEADING = 1.0  # default heading weight for --mocap-heading
     LAMBDA_BIAS_PRIOR = _SOLVER_CFG['lambda_bias_prior']
     LAMBDA_BIAS_PRIOR_ACCEL = _SOLVER_CFG['lambda_bias_prior_accel']
     LAMBDA_BIAS_PRIOR_GYRO  = _SOLVER_CFG['lambda_bias_prior_gyro']
@@ -522,7 +552,8 @@ def main():
     ORI_BASE_JACOBIAN_WINDOW = _SOLVER_CFG.get('ori_base_jacobian_window', 0)
     LAMBDA_BOUNDARY_VEL   = _SOLVER_CFG['lambda_boundary_vel']
     LAMBDA_BOUNDARY_POS   = _SOLVER_CFG['lambda_boundary_pos']
-    LAMBDA_BOUNDARY_ORI   = _SOLVER_CFG['lambda_boundary_ori']
+    LAMBDA_BOUNDARY_ORI     = _SOLVER_CFG['lambda_boundary_ori']
+    LAMBDA_BOUNDARY_ORI_YAW = _SOLVER_CFG.get('lambda_boundary_ori_yaw', None)
     LAMBDA_BOUNDARY_ACCEL = _SOLVER_CFG['lambda_boundary_accel']
     LAMBDA_BOUNDARY_GYRO  = _SOLVER_CFG['lambda_boundary_gyro']
     BOUNDARY_WINDOW       = _SOLVER_CFG['boundary_window']
@@ -658,15 +689,15 @@ def main():
     print(f"  Gravity-derived attitude (Euler xyz): [{init_euler_deg[0]:.2f}, "
           f"{init_euler_deg[1]:.2f}, {init_euler_deg[2]:.2f}] deg  (yaw=0, unobservable)")
 
-    # --mocap-yaw: override initial attitude with MoCap orientation at t=t_ref
-    if USE_MOCAP_YAW and mocap_slerp is not None:
+    # --mocap-init: override initial attitude with MoCap orientation at t=t_ref
+    if USE_MOCAP_INIT and mocap_slerp is not None:
         t_ref_clamped = np.clip(t_ref, _mc_times[0], _mc_times[-1])
         R_init = mocap_slerp(t_ref_clamped).as_matrix()
         mocap_euler_init = np.degrees(Rotation.from_matrix(R_init).as_euler('xyz'))
-        print(f"  [--mocap-yaw] Using MoCap orientation at t_ref:")
+        print(f"  [--mocap-init] Using MoCap orientation at t_ref:")
         print(f"    Euler xyz: [{mocap_euler_init[0]:.2f}, {mocap_euler_init[1]:.2f}, {mocap_euler_init[2]:.2f}] deg")
     else:
-        print(f"  (yaw unobservable; set to 0 — use --mocap-yaw for true yaw init)")
+        print(f"  (yaw unobservable; set to 0 — use --mocap-init for true yaw init)")
 
     # If stationary period is BEFORE the flight window, use R_init directly.
     # If the drone starts in a tilted pose, this will be slightly wrong — acceptable
@@ -724,11 +755,11 @@ def main():
     # ==================== P2: Radar velocity integration ====================
     print(f"\n{'P2: Radar velocity integration':-^80}")
 
-    # --mocap-yaw: use MoCap position at t_ref as position origin
-    if USE_MOCAP_YAW and mocap_pos_arr is not None:
+    # --mocap-init: use MoCap position at t_ref as position origin
+    if USE_MOCAP_INIT and mocap_pos_arr is not None:
         p_init_world = np.array([
             np.interp(t_ref, _mc_times, mocap_pos_arr[:, i]) for i in range(3)])
-        print(f"  [--mocap-yaw] Using MoCap position at t_ref as origin: "
+        print(f"  [--mocap-init] Using MoCap position at t_ref as origin: "
               f"[{p_init_world[0]:.3f}, {p_init_world[1]:.3f}, {p_init_world[2]:.3f}] m")
     else:
         p_init_world = np.zeros(3)
@@ -871,9 +902,9 @@ def main():
         print(f"  Start vel (sensor): [{v0[0]:.2f}, {v0[1]:.2f}, {v0[2]:.2f}] m/s")
         print(f"  Start ori Euler: [{r0_euler[0]:.1f}, {r0_euler[1]:.1f}, {r0_euler[2]:.1f}] deg")
 
-    # ==================== Heading priors (--mocap-yaw pseudo-magnetometer) ====================
+    # ==================== Heading priors (--mocap-heading pseudo-magnetometer) ====================
     heading_priors = []
-    if USE_MOCAP_YAW and LAMBDA_HEADING > 0 and mocap_slerp is not None:
+    if USE_MOCAP_HEADING and LAMBDA_HEADING > 0 and mocap_slerp is not None:
         print(f"\n{'Heading Priors (MoCap pseudo-magnetometer)':-^80}")
         heading_dt = 0.05   # 20 Hz, same as batch solver
         t_spline_start_rel = pos_bspline.t_start
@@ -968,6 +999,7 @@ def main():
         boundary_accel_priors=boundary_accel_priors,
         boundary_gyro_priors=boundary_gyro_priors,
         lambda_boundary_ori=LAMBDA_BOUNDARY_ORI,
+        lambda_boundary_ori_yaw=LAMBDA_BOUNDARY_ORI_YAW,
         lambda_boundary_accel=LAMBDA_BOUNDARY_ACCEL,
         lambda_boundary_gyro=LAMBDA_BOUNDARY_GYRO,
         relinearize_threshold_deg=RELINEARIZE_THRESHOLD_DEG,
@@ -1277,7 +1309,7 @@ def main():
             f"  λ_snap_pos={LAMBDA_SNAP_POS}",
             f"  huber_radar={HUBER_DELTA}  huber_accel={HUBER_DELTA_ACCEL}",
             f"  λ_bnd_vel={LAMBDA_BOUNDARY_VEL}  λ_bnd_pos={LAMBDA_BOUNDARY_POS}",
-            f"  λ_bnd_ori={LAMBDA_BOUNDARY_ORI}  λ_bnd_acc={LAMBDA_BOUNDARY_ACCEL}",
+            f"  λ_bnd_ori={LAMBDA_BOUNDARY_ORI}(yaw={LAMBDA_BOUNDARY_ORI_YAW})  λ_bnd_acc={LAMBDA_BOUNDARY_ACCEL}",
             f"  λ_bnd_gyr={LAMBDA_BOUNDARY_GYRO}",
             f"  bnd_window={BOUNDARY_WINDOW}s (start only)",
             f"  max_iter={MAX_ITERATIONS}  precond={USE_JACOBI_PRECOND}",
@@ -1348,7 +1380,7 @@ def main():
                                transform=_trans, color='#ff4444', linewidth=0.8, alpha=0.85, zorder=0)
 
         noise_tag   = f"_noise{noise_deg_per_sqrts:.0f}" if noise_rad_per_sqrts > 0 else ""
-        mocap_tag   = "_mocap-yaw" if USE_MOCAP_YAW else ""
+        mocap_tag   = ("_mocap-init" if USE_MOCAP_INIT else "") + ("_mocap-heading" if USE_MOCAP_HEADING else "")
         bias_tag    = f"_bias-{BIAS_PRESET}" if BIAS_PRESET else ""
         plots_dir   = Path(__file__).parent.parent / 'plots' / bag_key / 'live_solver'
         plots_dir.mkdir(parents=True, exist_ok=True)

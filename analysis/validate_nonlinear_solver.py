@@ -441,6 +441,7 @@ def compute_jacobian_analytical(
     boundary_accel_priors: list = None,
     boundary_gyro_priors: list = None,
     lambda_boundary_ori: float = 0.0,
+    lambda_boundary_ori_yaw: float = None,
     lambda_boundary_accel: float = 0.0,
     lambda_boundary_gyro: float = 0.0,
     lambda_ori_reg: float = 0.0,
@@ -827,9 +828,14 @@ def compute_jacobian_analytical(
     # ==================== Boundary orientation priors ====================
     # Residual: so3_log(R_target^T @ R_est) penalizes rotation error.
     # Jacobian: ∂r/∂(right tangent) ≈ J_r(phi)^{-1} ≈ I (valid when prior is tight).
+    # lambda_boundary_ori_yaw: optional separate weight for yaw component (k=2 in xyz).
+    # Set to 0 to leave yaw unanchored (free gauge) when no magnetometer is available.
     n_boundary_ori_rows = 0
     if boundary_ori_priors and lambda_boundary_ori > 0:
-        sqrt_lbo = np.sqrt(lambda_boundary_ori)
+        _lbo_per_axis = np.full(3, lambda_boundary_ori)
+        if lambda_boundary_ori_yaw is not None:
+            _lbo_per_axis[2] = lambda_boundary_ori_yaw  # override yaw (z) component
+        sqrt_lbo_per_axis = np.sqrt(np.maximum(_lbo_per_axis, 0.0))
         for entry in boundary_ori_priors:
             # Support both old format (t_abs,) and new format (t_abs, R_target)
             if isinstance(entry, (tuple, list)):
@@ -845,13 +851,15 @@ def compute_jacobian_analytical(
             r_ori = _so3_log_cs(R_target.T @ R_est)  # (3,)
 
             for k in range(3):
-                all_residuals.append(sqrt_lbo * r_ori[k])
+                if sqrt_lbo_per_axis[k] < 1e-15:
+                    continue  # skip zero-weight component (free gauge)
+                all_residuals.append(sqrt_lbo_per_axis[k] * r_ori[k])
                 # ∂r/∂Ω_j ≈ J_R_list[j][k,:]  (J_r^{-1} ≈ I for small residual)
                 for jj, knot_idx in enumerate(active_ori):
                     J_wrt = J_R_list[jj][k, :]  # (3,)
                     for dim in range(3):
                         col = n_pos + knot_idx * 3 + dim
-                        val = sqrt_lbo * J_wrt[dim]
+                        val = sqrt_lbo_per_axis[k] * J_wrt[dim]
                         if abs(val) > 1e-15:
                             rows.append(row_idx); cols.append(col); vals.append(val)
                 row_idx += 1
@@ -1014,6 +1022,7 @@ def compute_residuals_only(
     boundary_accel_priors: list = None,
     boundary_gyro_priors: list = None,
     lambda_boundary_ori: float = 0.0,
+    lambda_boundary_ori_yaw: float = None,
     lambda_boundary_accel: float = 0.0,
     lambda_boundary_gyro: float = 0.0,
     lambda_ori_reg: float = 0.0,
@@ -1181,7 +1190,10 @@ def compute_residuals_only(
 
     # ==================== Boundary orientation priors ====================
     if boundary_ori_priors and lambda_boundary_ori > 0:
-        sqrt_lbo = np.sqrt(lambda_boundary_ori)
+        _lbo_per_axis = np.full(3, lambda_boundary_ori)
+        if lambda_boundary_ori_yaw is not None:
+            _lbo_per_axis[2] = lambda_boundary_ori_yaw
+        sqrt_lbo_per_axis = np.sqrt(np.maximum(_lbo_per_axis, 0.0))
         for entry in boundary_ori_priors:
             if isinstance(entry, (tuple, list)):
                 t_abs, R_target = entry
@@ -1191,7 +1203,8 @@ def compute_residuals_only(
             R_est, _, _, _, _ = state.ori_spline.evaluate_with_jacobians(t_rel_ori)
             r_ori = _so3_log_cs(R_target.T @ R_est)
             for k in range(3):
-                all_residuals.append(sqrt_lbo * r_ori[k])
+                if sqrt_lbo_per_axis[k] >= 1e-15:
+                    all_residuals.append(sqrt_lbo_per_axis[k] * r_ori[k])
 
     # ==================== Boundary acceleration priors ====================
     if boundary_accel_priors and lambda_boundary_accel > 0:
@@ -1289,6 +1302,7 @@ def solve_trajectory_nonlinear(
     boundary_accel_priors: list = None,
     boundary_gyro_priors: list = None,
     lambda_boundary_ori: float = 0.0,
+    lambda_boundary_ori_yaw: float = None,
     lambda_boundary_accel: float = 0.0,
     lambda_boundary_gyro: float = 0.0,
     relinearize_threshold_deg: float = 15.0,
@@ -1403,6 +1417,7 @@ def solve_trajectory_nonlinear(
             boundary_accel_priors=boundary_accel_priors,
             boundary_gyro_priors=boundary_gyro_priors,
             lambda_boundary_ori=lambda_boundary_ori,
+            lambda_boundary_ori_yaw=lambda_boundary_ori_yaw,
             lambda_boundary_accel=lambda_boundary_accel,
             lambda_boundary_gyro=lambda_boundary_gyro,
             lambda_ori_reg=lambda_ori_reg,
@@ -1439,6 +1454,7 @@ def solve_trajectory_nonlinear(
             boundary_accel_priors=boundary_accel_priors,
             boundary_gyro_priors=boundary_gyro_priors,
             lambda_boundary_ori=lambda_boundary_ori,
+            lambda_boundary_ori_yaw=lambda_boundary_ori_yaw,
             lambda_boundary_accel=lambda_boundary_accel,
             lambda_boundary_gyro=lambda_boundary_gyro,
             lambda_ori_reg=lambda_ori_reg,
