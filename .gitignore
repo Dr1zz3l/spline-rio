@@ -23,6 +23,7 @@ analysis/.ipynb_checkpoints/
 
 # Logs
 *.log
+log_*.txt
 rosbags/
 
 *.pyc
