@@ -87,7 +87,60 @@ nor per-sample IMU changes address this root cause.
 initialisation, but the per-frame WLS solve still receives raw (potentially
 aliased) Doppler values.
 
-## Next: IMU-Aided Per-Frame Doppler Unwrapping
+## IMU-Aided Pre-Unwrapping of Radar Frames (implemented, no accuracy gain)
+
+`preunwrap_radar_frames()` was added to `validate_live_solver.py` and wired into
+`main()`.  When `--unwrap` is active it pre-processes all radar frames with the
+same IMU-aided velocity propagation used in `integrate_radar_velocity()`, picks
+the correct Doppler alias per point, and passes unwrapped `RadarVelocity` objects
+to the solver.  The solver's in-loop unwrapping (`v_max` parameter) is kept as a
+safety net.
+
+Results with pre-unwrapping enabled (--mocap-yaw):
+- fast_racing: 1.451 m / 5.68° vs baseline 1.456 m / 5.7°  — **no change**
+- slow_racing: 0.367 m / 9.54° vs baseline 0.349 m / 9.6°  — **no change**
+- fast_racing: 20.9% of points pre-unwrapped; slow_racing: 1.7%
+
+**Finding**: the solver's in-loop unwrapping was already handling all aliased
+points correctly.  Pre-unwrapping is robust infrastructure (protects against
+cascade failures where the very first frame is aliased and the solver has no
+good init velocity), but contributes nothing to accuracy.
+
+## Root cause of fast_racing position error (1.456 m): z-velocity bias
+
+Initial radar residuals before optimisation:
+- slow_racing: mean = +0.06 m/s, std = 0.79 m/s (nearly unbiased)
+- fast_racing: mean = −0.44 m/s, std = 2.74 m/s (systematic bias + 3.5× noise)
+
+The −0.44 m/s mean matches the known z-velocity systematic bias of −0.5 to
+−0.65 m/s caused by limited elevation diversity (2 TX antennas).  At faster
+flight speeds the z-velocity component is larger and changes more rapidly, making
+this bias more impactful.  The optimiser absorbs the bias by adjusting roll/pitch:
+- fast_racing roll RMSE: 7.5°  vs slow_racing: 3.4°
+- fast_racing pitch RMSE: 2.3° vs slow_racing: 1.6°
+
+The higher per-point noise (std 2.74 vs 0.79 m/s) reflects degraded radar return
+quality at high speeds (more aliased returns in ambiguous bins, lower SNR,
+more multi-path).  Fixing this requires better sensor-level modeling, not
+unwrapping improvements.
+
+## Potential next directions
+
+1. **Compensate z-velocity bias explicitly**: add a per-elevation-angle attenuation
+   model or estimate the z-radar bias as an additional optimisation parameter.
+   The `LAMBDA_GRAVITY` factor is already implemented but currently disabled
+   (lambda_gravity=0) — enabling it with a suitable weight might provide an
+   orthogonal constraint that partially counteracts the elevation bias.
+
+2. **Discard high-elevation radar points**: returns at steep elevation angles
+   contribute most to the systematic z-velocity bias.  A per-point elevation
+   cutoff (e.g. |elevation| < 20°) would sacrifice some geometry diversity but
+   reduce the bias-induced corruption.
+
+3. **Estimate radar z-bias as a parameter**: add a scalar `z_bias` to the state
+   (like the existing `radar_extrinsic_delta`) and let the solver absorb it.
+
+## Archived: Old Next: IMU-Aided Per-Frame Doppler Unwrapping
 
 Extend the existing IMU-aided unwrapping from the global init phase to every
 per-frame EgoVelocityWLS call. At each radar frame, propagate an IMU-predicted

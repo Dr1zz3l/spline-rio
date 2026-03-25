@@ -19,6 +19,7 @@ Use this to probe how much init error the solver can tolerate.
 """
 
 import sys
+import dataclasses
 import numpy as np
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / 'lib'))
@@ -329,6 +330,133 @@ def integrate_radar_velocity(
         return np.array([radar_frames[0].timestamp]), np.array([p_init])
 
     return np.array(times), np.array(ps)
+
+
+def preunwrap_radar_frames(
+    radar_frames,
+    imu_times: np.ndarray,
+    imu_Rs: np.ndarray,
+    sensor_rotation: np.ndarray,
+    v_max: float,
+    imu_data_full=None,
+    acc_bias: np.ndarray = None,
+    min_range: float = 0.2,
+    min_points: int = 5,
+) -> tuple:
+    """
+    Pre-unwrap radar Doppler measurements using IMU-aided velocity prediction.
+
+    Mirrors the velocity propagation in integrate_radar_velocity(): an IMU-
+    integrated world-frame velocity is advanced to each radar frame and used to
+    pick the correct Doppler alias for every point.  After each frame the WLS
+    result resets the IMU velocity to prevent accelerometer drift accumulation.
+
+    Returns new RadarVelocity objects with corrected velocities so the solver
+    sees already-unwrapped measurements from iteration 1, removing the circular
+    dependency between alias selection and trajectory accuracy.
+
+    Args:
+        radar_frames    : raw RadarVelocity list
+        imu_times       : (M,) gyro-integrated rotation timestamps
+        imu_Rs          : (M,3,3) R_wb rotation matrices
+        sensor_rotation : (3,3) R_body_from_sensor
+        v_max           : Doppler ambiguity (m/s)
+        imu_data_full   : full-rate IMU samples for accel integration
+        acc_bias        : (3,) accelerometer bias
+
+    Returns:
+        (unwrapped_frames, n_total_pts, n_unwrapped_pts)
+    """
+    from rosbag_loader.structures import RadarVelocity  # local import to avoid circular
+
+    unwrapped_frames = []
+    v_prev_wls = None
+    n_total_pts = 0
+    n_unwrapped_pts = 0
+
+    use_imu = (imu_data_full is not None and acc_bias is not None)
+    v_imu = np.zeros(3)
+    _g_world = np.array([0.0, 0.0, -9.81])
+    if use_imu:
+        _imu_t = np.array([d.timestamp for d in imu_data_full])
+        _imu_a = np.array([d.linear_acceleration for d in imu_data_full])
+        _imu_next_idx = 0
+        _t_imu_prev = imu_times[0]
+
+    for frame in sorted(radar_frames, key=lambda f: f.timestamp):
+        if frame.positions is None or frame.velocities is None or frame.intensities is None:
+            unwrapped_frames.append(frame)
+            continue
+
+        t = frame.timestamp
+
+        # Advance IMU velocity to this frame's timestamp
+        if use_imu:
+            while _imu_next_idx < len(_imu_t) and _imu_t[_imu_next_idx] <= t:
+                t_cur = _imu_t[_imu_next_idx]
+                dt_imu = t_cur - _t_imu_prev
+                if 0 < dt_imu < 0.1:
+                    idx_r = min(np.searchsorted(imu_times, t_cur), len(imu_times) - 1)
+                    a_db = _imu_a[_imu_next_idx] - acc_bias
+                    v_imu += (imu_Rs[idx_r] @ a_db + _g_world) * dt_imu
+                _t_imu_prev = t_cur
+                _imu_next_idx += 1
+
+        # Rotation at this frame (SLERP from gyro chain)
+        idx = np.searchsorted(imu_times, t)
+        if idx == 0:
+            R_wb = imu_Rs[0]
+        elif idx >= len(imu_times):
+            R_wb = imu_Rs[-1]
+        else:
+            alpha = (t - imu_times[idx - 1]) / (imu_times[idx] - imu_times[idx - 1])
+            dw = so3_log(imu_Rs[idx - 1].T @ imu_Rs[idx])
+            R_wb = imu_Rs[idx - 1] @ so3_exp(alpha * dw)
+
+        # Prediction in WLS sensor frame: u · v_wls = v_meas = -u · v_sensor
+        #   v_wls = -v_sensor = -(R_bs^T @ R_wb^T @ v_world)
+        if use_imu:
+            v_unwrap_pred = -(sensor_rotation.T @ R_wb.T @ v_imu)
+        else:
+            v_unwrap_pred = v_prev_wls
+
+        # Per-point unwrapping: pick alias closest to prediction
+        new_velocities = frame.velocities.copy()
+        if v_unwrap_pred is not None:
+            for i in range(len(frame.positions)):
+                rng = np.linalg.norm(frame.positions[i])
+                if rng < min_range:
+                    continue
+                u = frame.positions[i] / rng
+                v_pred_radial = np.dot(u, v_unwrap_pred)
+                v_meas = frame.velocities[i]
+                best, best_err = v_meas, abs(v_meas - v_pred_radial)
+                for k in (-1, 1):
+                    v_shift = v_meas + k * 2.0 * v_max
+                    err = abs(v_shift - v_pred_radial)
+                    if err < best_err:
+                        best_err = err
+                        best = v_shift
+                n_total_pts += 1
+                if best != v_meas:
+                    n_unwrapped_pts += 1
+                new_velocities[i] = best
+
+        # Run WLS on the (now unwrapped) velocities and reset IMU velocity
+        v_wls = solve_ego_velocity_weighted(
+            frame.positions, new_velocities, frame.intensities,
+            min_range=min_range, min_points=min_points,
+        )
+        if v_wls is not None:
+            v_prev_wls = v_wls
+            v_world = R_wb @ (sensor_rotation @ (-v_wls))
+            if use_imu:
+                v_imu = v_world.copy()
+                _t_imu_prev = t
+
+        unwrapped_frames.append(dataclasses.replace(frame, velocities=new_velocities))
+
+    return unwrapped_frames, n_total_pts, n_unwrapped_pts
 
 
 # ==================== Init helpers ====================
@@ -972,8 +1100,30 @@ def main():
     print(f"  Median |r|: {np.median(np.abs(init_residuals)):.4f} m/s")
     print(f"  Max |r|: {np.abs(init_residuals).max():.4f} m/s")
 
+    # ==================== Pre-unwrap radar frames ====================
+    # Use IMU-aided velocity propagation to pick the correct Doppler alias for
+    # every radar point BEFORE the solver starts.  This breaks the circular
+    # dependency where alias selection requires an accurate trajectory and the
+    # trajectory requires correct alias selection.  The solver's in-loop
+    # unwrapping (via v_max) remains as a safety net for residual errors.
+    if NO_RADAR:
+        solver_radar_frames = []
+    elif USE_UNWRAP and V_MAX is not None:
+        solver_radar_frames, _n_pts, _n_unwrapped = preunwrap_radar_frames(
+            radar_frames,
+            gyro_times, gyro_Rs,
+            SENSOR_ROTATION,
+            V_MAX,
+            imu_data_full=imu_data_full,
+            acc_bias=acc_bias,
+            min_range=MIN_RANGE,
+        )
+        print(f"\n  Pre-unwrapped {_n_unwrapped}/{_n_pts} radar points "
+              f"({100 * _n_unwrapped / max(1, _n_pts):.1f}%)")
+    else:
+        solver_radar_frames = radar_frames
+
     # ==================== Optimize ====================
-    solver_radar_frames = [] if NO_RADAR else radar_frames
 
     # Build preintegrated IMU factors (one per consecutive radar frame interval).
     # When active, these REPLACE the per-sample accel+gyro residuals: imu_data is
