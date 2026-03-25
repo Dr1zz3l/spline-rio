@@ -58,5 +58,5 @@ ori_base_jacobian_window: 20      # Max base knots to include per measurement fo
 
 # Extrinsics (radar-to-body)
 lock_extrinsics: false      # Lock radar extrinsics to config/extrinsics.yaml values
-optimize_pitch_only: false  # Only optimize pitch extrinsic; roll/yaw unobservable
+optimize_pitch_only: true   # Only optimize pitch extrinsic; roll/yaw unobservable from Doppler (prevents trash-can drift)
 lambda_extrinsic_prior: 10.0

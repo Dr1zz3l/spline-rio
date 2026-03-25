@@ -35,7 +35,7 @@ MoCap flags:
 - `--mocap-heading` — heading (yaw) priors from MoCap (pseudo-magnetometer)
 - `--mocap-yaw`     — both of the above
 
-## Benchmark results (--mocap-yaw, 2026-03-25)
+## Benchmark results (--mocap-yaw, 2026-03-25, `optimize_pitch_only=true`)
 
 Both bags fly the same racing loop path.  `fast_racing` is more aggressive
 (higher speeds, more Doppler aliasing, higher angular velocity).
@@ -45,25 +45,28 @@ Both bags hover from t≈16s, racing begins at t≈19.1s.
 
 | Variant | slow_racing pos | slow_racing vel | slow_racing ori | fast_racing pos | fast_racing vel | fast_racing ori |
 |---|---|---|---|---|---|---|
-| Baseline (per-sample IMU ~200 Hz) | **0.349 m** | 0.221 m/s | 9.6° | 1.456 m | ~0.483 m/s | **5.7°** |
-| Preint replaces accel (--preintegrate) | 0.366 m | — | **3.2°** | 1.48 m | — | 11.8° |
-| GNC (--gnc, μ_final=1) | 0.365 m | 0.244 m/s | **6.5°** | 1.479 m | 0.485 m/s | 8.6° |
+| **Baseline (Huber, pitch-only extr.)** | **0.346 m** | **0.219 m/s** | **5.8°** | **1.417 m** | **0.411 m/s** | **4.2°** |
+| Preint replaces accel (--preintegrate) | 0.346 m | 0.274 m/s | **4.8°** | 1.494 m | 0.488 m/s | 4.9° |
+| GNC (--gnc, μ_final=1) | 0.396 m | 0.243 m/s | 7.4° | 1.476 m | 0.472 m/s | 5.7° |
+
+**Note:** Old benchmark (2026-03-25, free extrinsics) showed 9.6°/5.7° but was corrupted by
+roll/yaw extrinsic drift (+5–7°). See "Extrinsic observability" section below.
 
 Preintegration (`--preintegrate`):
 - Replaces per-sample accel residuals with Forster TRO-2017 9D factors
 - Keeps per-sample gyro at ~200 Hz (orientation knots need dense pinning)
 - Jacobian 32% smaller, fast_racing solve 3.3× faster
-- Helps slow_racing orientation (vibration noise removed); hurts fast_racing
-  orientation (accel coupling needed for rapid dynamics)
+- **Helps slow_racing** orientation (5.8° → 4.8°, -17%), removes vibration noise
+- **Hurts fast_racing** orientation (4.2° → 4.9°, +17%) and velocity (0.41 → 0.49 m/s, +19%)
+- For fast flight, per-sample accel provides sub-interval coupling lost in preintegration
 
 GNC (`--gnc`, Geman-McClure loss, Yang et al. RA-L 2020):
 - Replaces Huber loss with GM loss `ρ(r; μ) = μr²/(μ+r²)`, annealing μ over phases
 - μ_init = (30δ)² = 900 (≈L2), μ_final = δ² = 1 (~TLS at δ); ~10 phases at div=2
 - Only applied to radar Doppler residuals; IMU/regularization stay L2
-- **Helps slow_racing**: orientation 9.5° → 6.5° (random 1.7% aliasing benefits from hard rejection)
-- **Hurts fast_racing**: orientation 5.7° → 8.6° (systematic z-velocity bias treated as outliers, removing roll/pitch signal)
-- Note: GM has no flat inlier region (unlike Huber) — even near-δ residuals are down-weighted
-- ~3× slower than Huber due to phase-based annealing loop
+- **Hurts both bags** with corrected extrinsics (5.8°→7.4° slow, 4.2°→5.7° fast)
+- Previously appeared to help slow_racing because it was compensating for extrinsic corruption
+- ~3× slower than Huber due to phase-based annealing loop; not recommended
 
 ## Architecture
 
@@ -124,15 +127,40 @@ before t=19.1 s gives a good accelerometer and gyroscope bias seed.
 Biases are optimised freely (λ_bias_prior = 1.0 — relaxed from legacy
 values of 1000/10000 that prevented bias from moving).
 
+## Extrinsic observability
+
+### Only pitch is observable from Doppler
+
+The radar is mounted at 30° downtilt (roll=180°, yaw≈0°).  From Doppler
+measurements alone, **only the pitch extrinsic is observable** — rotating the
+radar about its boresight (roll/yaw perturbations) does not meaningfully change
+radial velocity predictions.
+
+`optimize_pitch_only: true` (default) locks roll and yaw to their initial values
+and only optimises pitch.  This prevents 5–7° roll/yaw drift that acts as a
+"trash can" for unexplained residuals, which would corrupt the trajectory
+(previously caused yaw RMSE to blow up to 8–9°).
+
+With `optimize_pitch_only: false`, the solver drifts to:
+- slow_racing: Δroll=+5.4°, Δyaw=+4.5° → yaw RMSE 8.7°
+- fast_racing: Δroll=+6.7°, Δyaw=+3.5° → yaw RMSE 8.3°
+
+The physical mount is 30° pitch; solver self-calibrates to:
+- slow_racing: pitch ≈ 25.3° (barely moves from 25.5° init)
+- fast_racing: pitch ≈ 27.0° (moves ~1.5° toward physical mount)
+
+The partial pitch correction for fast_racing partly absorbs the systematic
+z-velocity bias from limited elevation diversity.
+
 ## Known limitations
 
-### fast_racing position error (1.456 m)
+### fast_racing position error (~1.42 m)
 
 Root cause is the radar's limited elevation diversity (2 TX antennas), which
 causes a systematic z-velocity underestimate of ~0.5–0.65 m/s.  At fast
 racing speeds, z-velocity is larger and changes more rapidly, amplifying this
 bias.  The optimiser absorbs it by distorting roll/pitch (fast_racing roll
-RMSE 7.5° vs slow_racing 3.4°), which propagates into position error.
+RMSE 5.7° vs slow_racing 3.0°), which propagates into position error.
 
 Initial residual stats confirm this: fast_racing mean = −0.44 m/s, std = 2.74 m/s
 vs slow_racing mean = +0.06 m/s, std = 0.79 m/s.
@@ -144,9 +172,10 @@ modelling of the z-velocity bias as an optimised parameter.
 
 Yaw is unobservable from Doppler alone (all yaw-equivalent trajectories give
 the same Doppler predictions for pure rotation about gravity).  The
-`--mocap-heading` flag provides the only yaw reference.  Yaw RMSE is ~8–9°
-for both bags; the `lambda_boundary_ori_yaw = 0.0` setting keeps yaw as a
-free gauge (no boundary prior on yaw).
+`--mocap-heading` flag provides the only yaw reference.  Yaw RMSE is ~5°
+for both bags with `optimize_pitch_only=true`; the
+`lambda_boundary_ori_yaw = 0.0` setting keeps yaw as a free gauge
+(no boundary prior on yaw).
 
 ### Orientation jump at iteration 1
 
