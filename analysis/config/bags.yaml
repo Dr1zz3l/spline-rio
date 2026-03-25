@@ -43,5 +43,5 @@ timing:
   backflips_best_velocity:                  [15.6, 10.0]
   circle_best_velocity:                     [22.2, 8.4]
   fast_racing_best_velocity_no_clustering:  [16.9, 10.0]
-  fast_racing_best_velocity:                [19.1, 18.0]
+  fast_racing_best_velocity:                [16.1, 18.0]
   slow_racing_best_velocity:                [16.1, 25.8]# 25.8]

@@ -389,10 +389,15 @@ def build_position_spline_from_radar_integration(
     t_ref: float,
 ) -> UniformBSpline:
     """
-    Fit position B-spline control points by least-squares to the integrated radar trajectory.
+    Fit position B-spline control points from the integrated radar trajectory.
 
-    Uses a proper LS fit (B @ c = p_samples) instead of interpolating at control point times,
-    which would produce a systematic error for a quintic B-spline (spline != control points).
+    Interpolates the radar-integrated positions at uniform control-point times.
+    This is approximate (for quintic B-splines, ctrl_pts[i] ≠ spline(knot[i])), but
+    produces smooth initial control points from which the LM solver converges well.
+
+    The initial snap cost will be high (O(10^10) for dt_pos=0.005s) due to velocity
+    discontinuities in the piecewise-linear radar dead-reckoning. The first LM step
+    reduces snap rapidly; the solver recovers within ~25 iterations.
 
     Args:
         radar_times    : (K,) absolute timestamps of integrated positions
@@ -403,7 +408,7 @@ def build_position_spline_from_radar_integration(
         t_ref          : absolute time reference
 
     Returns:
-        UniformBSpline with control points initialized from LS fit to radar integration
+        UniformBSpline with control points initialized from radar integration
     """
     pos_bspline = UniformBSpline(np.zeros((n_pos_points, 3)), bspline_degree, dt_pos)
     pos_bspline.t_ref = t_ref
@@ -423,26 +428,14 @@ def build_position_spline_from_radar_integration(
     t_samples = radar_times_rel[mask]
     p_samples = radar_ps[mask]          # (M, 3)
 
-    # Build design matrix B: (M, n_pos_points)
-    M = len(t_samples)
-    rows, cols, vals = [], [], []
-    for i, t in enumerate(t_samples):
-        k = pos_bspline.find_knot_span(t)
-        b = pos_bspline.basis_functions(t, k)  # (degree+1,) — support [k-degree, ..., k]
-        col_start = k - bspline_degree
-        for j, bval in enumerate(b):
-            rows.append(i)
-            cols.append(col_start + j)
-            vals.append(bval)
-
-    B = sparse.csr_matrix((vals, (rows, cols)), shape=(M, n_pos_points))
-
-    # Solve: min ||B @ c - p_samples||^2  →  (B^T B) c = B^T p_samples
-    # scipy.sparse.linalg.lsqr solves each coordinate independently
-    ctrl_pts = np.zeros((n_pos_points, 3))
-    for dim in range(3):
-        result = sparse.linalg.lsqr(B, p_samples[:, dim])
-        ctrl_pts[:, dim] = result[0]
+    # Initialize control points by linearly interpolating the radar-integrated trajectory
+    # at uniformly-spaced control-point times. This is an approximation for degree-5
+    # B-splines (ctrl_pts[i] ≠ spline(knot[i])), but produces smooth starting control
+    # points and the LM solver corrects the mismatch in the first few iterations.
+    init_times = np.linspace(t_start, t_end, n_pos_points)
+    pos_interp = interp1d(t_samples, p_samples, axis=0,
+                          kind='linear', fill_value='extrapolate')
+    ctrl_pts = pos_interp(np.clip(init_times, t_samples[0], t_samples[-1]))
 
     pos_bspline.control_points = ctrl_pts
     return pos_bspline
@@ -802,9 +795,9 @@ def main():
 
     pos_bspline = build_position_spline_from_radar_integration(
         radar_int_times, radar_int_ps,
-        n_pos_points, BSPLINE_DEGREE, DT_POS, t_ref
+        n_pos_points, BSPLINE_DEGREE, DT_POS, t_ref,
     )
-    print(f"  Position spline: {n_pos_points} control points, dt={DT_POS:.4f}s  (from radar WLS)")
+    print(f"  Position spline: {n_pos_points} control points, dt={DT_POS:.4f}s  (interp init)")
 
     # Compare integrated trajectory to MoCap (eval only)
     if agiros_states:
