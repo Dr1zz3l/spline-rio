@@ -39,6 +39,11 @@ lambda_boundary_ori_yaw: 0.0   # Yaw component weight (null = same as lambda_bou
 lambda_boundary_accel: 0.001
 lambda_boundary_gyro: 1000.0
 
+# GNC (Graduated Non-Convexity) — pass --gnc flag to enable
+# Uses Geman-McClure loss; anneals μ from (30*huber_delta)^2 to huber_delta^2 over accepted steps.
+gnc_div_factor: 2.0   # μ division factor per GNC phase; 2.0 → ~10 phases (900→1), 1.4 → ~17 phases
+gnc_mu_final: 1.0    # Final μ for GNC. δ²=1.0 (aggressive, ~TLS at δ); 9*δ²=9 (Huber-like for inliers, more aggressive for big outliers)
+
 # Optimizer
 max_iterations: 40
 early_stop_patience: 20  # Stop after this many consecutive rejected LM steps; -1 = disabled

@@ -43,10 +43,11 @@ Both bags fly the same racing loop path.  `fast_racing` is more aggressive
 Bag timing convention in `bags.yaml`: `[start_offset_sec, duration_sec]`.
 Both bags hover from t≈16s, racing begins at t≈19.1s.
 
-| Variant | slow_racing pos | slow_racing ori | fast_racing pos | fast_racing ori |
-|---|---|---|---|---|
-| Baseline (per-sample IMU ~200 Hz) | **0.349 m** | 9.6° | 1.456 m | **5.7°** |
-| Preint replaces accel (--preintegrate) | 0.366 m | **3.2°** | 1.48 m | 11.8° |
+| Variant | slow_racing pos | slow_racing vel | slow_racing ori | fast_racing pos | fast_racing vel | fast_racing ori |
+|---|---|---|---|---|---|---|
+| Baseline (per-sample IMU ~200 Hz) | **0.349 m** | 0.221 m/s | 9.6° | 1.456 m | ~0.483 m/s | **5.7°** |
+| Preint replaces accel (--preintegrate) | 0.366 m | — | **3.2°** | 1.48 m | — | 11.8° |
+| GNC (--gnc, μ_final=1) | 0.365 m | 0.244 m/s | **6.5°** | 1.479 m | 0.485 m/s | 8.6° |
 
 Preintegration (`--preintegrate`):
 - Replaces per-sample accel residuals with Forster TRO-2017 9D factors
@@ -54,6 +55,15 @@ Preintegration (`--preintegrate`):
 - Jacobian 32% smaller, fast_racing solve 3.3× faster
 - Helps slow_racing orientation (vibration noise removed); hurts fast_racing
   orientation (accel coupling needed for rapid dynamics)
+
+GNC (`--gnc`, Geman-McClure loss, Yang et al. RA-L 2020):
+- Replaces Huber loss with GM loss `ρ(r; μ) = μr²/(μ+r²)`, annealing μ over phases
+- μ_init = (30δ)² = 900 (≈L2), μ_final = δ² = 1 (~TLS at δ); ~10 phases at div=2
+- Only applied to radar Doppler residuals; IMU/regularization stay L2
+- **Helps slow_racing**: orientation 9.5° → 6.5° (random 1.7% aliasing benefits from hard rejection)
+- **Hurts fast_racing**: orientation 5.7° → 8.6° (systematic z-velocity bias treated as outliers, removing roll/pitch signal)
+- Note: GM has no flat inlier region (unlike Huber) — even near-δ residuals are down-weighted
+- ~3× slower than Huber due to phase-based annealing loop
 
 ## Architecture
 

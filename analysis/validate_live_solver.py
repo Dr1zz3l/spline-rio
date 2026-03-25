@@ -608,6 +608,7 @@ def main():
 
     NO_PLOT = '--no-plot' in sys.argv
     USE_PREINTEGRATE = '--preintegrate' in sys.argv
+    USE_GNC = '--gnc' in sys.argv
 
     BIAS_PRESET = None
     if '--bias' in sys.argv:
@@ -682,6 +683,9 @@ def main():
     LAMBDA_BOUNDARY_ACCEL = _SOLVER_CFG['lambda_boundary_accel']
     LAMBDA_BOUNDARY_GYRO  = _SOLVER_CFG['lambda_boundary_gyro']
     BOUNDARY_WINDOW       = _SOLVER_CFG['boundary_window']
+
+    GNC_DIV_FACTOR = _SOLVER_CFG.get('gnc_div_factor', 2.0)
+    GNC_MU_FINAL = _SOLVER_CFG.get('gnc_mu_final', 0.0)
 
     NO_RADAR = '--no-radar' in sys.argv
     USE_JACOBI_PRECOND = '--precond' in sys.argv
@@ -1198,6 +1202,9 @@ def main():
         lambda_heading=LAMBDA_HEADING,
         heading_priors=heading_priors if heading_priors else None,
         preintegrated_factors=preintegrated_factors,
+        use_gnc=USE_GNC,
+        gnc_div_factor=GNC_DIV_FACTOR,
+        gnc_mu_final=GNC_MU_FINAL,
     )
 
     # ==================== Evaluate against MoCap ====================

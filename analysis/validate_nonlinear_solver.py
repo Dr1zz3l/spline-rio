@@ -257,7 +257,7 @@ def huber_loss(r: float, delta: float = 1.0) -> float:
 def huber_weight(r: float, delta: float = 1.0) -> float:
     """
     Weight function for iteratively reweighted least squares.
-    
+
     w(r) = rho'(r) / r
     """
     abs_r = abs(r)
@@ -265,6 +265,19 @@ def huber_weight(r: float, delta: float = 1.0) -> float:
         return 1.0
     else:
         return delta / abs_r
+
+
+def gnc_gm_weight(r: float, mu: float) -> float:
+    """
+    Geman-McClure weight for Graduated Non-Convexity (Yang et al. RA-L 2020).
+
+    w(r; μ) = μ² / (μ + r²)²
+
+    Large μ → w ≈ 1 (L2). Small μ → aggressive rejection.
+    GNC anneals μ from μ_init (large) to μ_final (small) across accepted LM steps.
+    Only applied to radar residuals; IMU/regularization residuals keep L2.
+    """
+    return mu * mu / (mu + r * r) ** 2
 
 
 def compute_radar_residuals_nonlinear(
@@ -465,6 +478,7 @@ def compute_jacobian_analytical(
     lambda_preint_rot: float = 1.0,
     lambda_preint_vel: float = 1.0,
     lambda_preint_pos: float = 1.0,
+    gnc_mu: float = 0.0,
 ) -> Tuple[sparse.csr_matrix, np.ndarray]:
     """
     Compute Jacobian and residual vector analytically using SymForce-generated functions.
@@ -544,7 +558,10 @@ def compute_jacobian_analytical(
                 if k_alias != 0:
                     r += k_alias * 2.0 * v_max
 
-            w = huber_weight(r, delta=huber_delta)
+            if gnc_mu > 0:
+                w = gnc_gm_weight(r, gnc_mu)
+            else:
+                w = huber_weight(r, delta=huber_delta)
             sqrt_w = np.sqrt(w)
             all_residuals.append(r * sqrt_w)
 
@@ -1197,6 +1214,7 @@ def compute_residuals_only(
     lambda_preint_rot: float = 1.0,
     lambda_preint_vel: float = 1.0,
     lambda_preint_pos: float = 1.0,
+    gnc_mu: float = 0.0,
 ) -> np.ndarray:
     """
     Compute residual vector only — no Jacobian construction.
@@ -1252,7 +1270,10 @@ def compute_residuals_only(
                 if k_alias != 0:
                     r += k_alias * 2.0 * v_max
 
-            w = huber_weight(r, delta=huber_delta)
+            if gnc_mu > 0:
+                w = gnc_gm_weight(r, gnc_mu)
+            else:
+                w = huber_weight(r, delta=huber_delta)
             all_residuals.append(r * np.sqrt(w))
 
     # ==================== Accelerometer residuals ====================
@@ -1528,6 +1549,10 @@ def solve_trajectory_nonlinear(
     lambda_preint_rot: float = 1.0,
     lambda_preint_vel: float = 1.0,
     lambda_preint_pos: float = 1.0,
+    use_gnc: bool = False,
+    gnc_div_factor: float = 2.0,
+    gnc_mu_init: float = 0.0,
+    gnc_mu_final: float = 0.0,
 ) -> TrajectoryState:
     """
     Solve for optimal trajectory using Levenberg-Marquardt.
@@ -1582,7 +1607,13 @@ def solve_trajectory_nonlinear(
             print(f"Gravity factor: lambda={lambda_gravity}, sigma={gravity_accel_threshold} m/s²")
         if lambda_heading > 0 and heading_priors:
             print(f"Heading factor: {len(heading_priors)} priors, lambda={lambda_heading}")
-    
+        if use_gnc:
+            _gnc_init_display = gnc_mu_init if gnc_mu_init > 0 else (30 * huber_delta) ** 2
+            _gnc_final_display = gnc_mu_final if gnc_mu_final > 0 else huber_delta ** 2
+            print(f"GNC: ON (Geman-McClure) μ_init={_gnc_init_display:.1f} → μ_final={_gnc_final_display:.2f}, div={gnc_div_factor}")
+        else:
+            print(f"GNC: OFF (Huber δ={huber_delta})")
+
     state = initial_state
     
     # Build regularization matrices once
@@ -1599,12 +1630,32 @@ def solve_trajectory_nonlinear(
     R_snap = sparse.lil_matrix((n_total, n_total))
     R_snap[:n_pos, :n_pos] = lambda_snap_pos * (R_snap_pos.T @ R_snap_pos)
     R_snap = R_snap.tocsr()
-    
+
+    # GNC state: mutable list so closures can read the current μ
+    # μ_final = 0 → auto: δ² (aggressive, ~TLS at δ); or explicit value
+    GNC_MU_FINAL = gnc_mu_final if gnc_mu_final > 0 else huber_delta ** 2
+    _gnc = [gnc_mu_init if gnc_mu_init > 0 else (30.0 * huber_delta) ** 2 if use_gnc else 0.0]
+
+    # GNC budget: compute effective iteration limit and inner patience
+    if use_gnc:
+        import math as _math
+        _n_gnc_phases = _math.ceil(_math.log(_gnc[0] / GNC_MU_FINAL) / _math.log(gnc_div_factor)) + 1
+        GNC_INNER_PATIENCE = 3  # rejects per phase before force-advancing μ
+        # Cap at 3× normal budget to avoid runaway; each phase gets ~3 extra iters
+        effective_max_iterations = min(_n_gnc_phases * (GNC_INNER_PATIENCE + 2) + max_iterations,
+                                       max_iterations * 3)
+        if verbose:
+            print(f"  GNC budget: {_n_gnc_phases} phases (inner_patience={GNC_INNER_PATIENCE}) "
+                  f"= {effective_max_iterations} effective iterations")
+    else:
+        GNC_INNER_PATIENCE = 0  # unused
+        effective_max_iterations = max_iterations
+
     # Helper: build Jacobian with all params
     # Accel warm-up: first 5 iterations use lambda_accel=0 (radar+gyro only for orientation),
     # then ramp to full lambda_accel so the accelerometer doesn't corrupt orientation early.
     ACCEL_WARMUP_ITERS = 0
-    
+
     def _build_jacobian(st, iteration_idx=None):
         la = lambda_accel
         if iteration_idx is not None and iteration_idx < ACCEL_WARMUP_ITERS:
@@ -1643,6 +1694,7 @@ def solve_trajectory_nonlinear(
             lambda_preint_rot=lambda_preint_rot,
             lambda_preint_vel=lambda_preint_vel,
             lambda_preint_pos=lambda_preint_pos,
+            gnc_mu=_gnc[0],
         )
 
     def _compute_residuals(st, iteration_idx=None):
@@ -1683,6 +1735,7 @@ def solve_trajectory_nonlinear(
             lambda_preint_rot=lambda_preint_rot,
             lambda_preint_vel=lambda_preint_vel,
             lambda_preint_pos=lambda_preint_pos,
+            gnc_mu=_gnc[0],
         )
 
     lambda_lm = 1e-3
@@ -1694,7 +1747,7 @@ def solve_trajectory_nonlinear(
     _j_cache = None
     accepted_costs = []  # Costs at each accepted step, for plateau detection
 
-    for iteration in range(max_iterations):
+    for iteration in range(effective_max_iterations):
         # Reset LM state when transitioning from warmup to full accel
         if iteration == ACCEL_WARMUP_ITERS:
             prev_cost = None
@@ -1863,8 +1916,9 @@ def solve_trajectory_nonlinear(
             accepted_costs.append(new_cost)
             if verbose:
                 omega_norms = np.linalg.norm(state.ori_spline.omega_knots, axis=1)
+                gnc_str = f" μ={_gnc[0]:.3f}" if use_gnc else ""
                 print(f"  Accepted: cost {cost_total:.1f} -> {new_cost:.1f} "
-                      f"rho={rho:.3f} (max |Ω|={np.degrees(omega_norms.max()):.1f}°)")
+                      f"rho={rho:.3f} (max |Ω|={np.degrees(omega_norms.max()):.1f}°){gnc_str}")
         else:
             # Reject step — restore state and increase damping
             state.from_vector(x_current)
@@ -1884,26 +1938,43 @@ def solve_trajectory_nonlinear(
             print(f"LM damping: {lambda_lm:.2e}")
             print(f"Iteration time: {time.time() - t_start:.3f}s")
 
+        # GNC helper: advance to next phase (anneal μ, reset LM, rebuild J)
+        def _gnc_advance(reason: str):
+            _gnc[0] = max(_gnc[0] / gnc_div_factor, GNC_MU_FINAL)
+            nonlocal lambda_lm, n_consecutive_rejects, _j_cache
+            lambda_lm = 1e-3
+            n_consecutive_rejects = 0
+            _j_cache = None
+            if verbose:
+                print(f"\n  [GNC] Phase advance: μ → {_gnc[0]:.4f} ({reason})")
+
         if delta_norm < 1e-4:
+            if use_gnc and _gnc[0] > GNC_MU_FINAL:
+                _gnc_advance("delta_norm < 1e-4")
+                continue
             if verbose:
                 print("\n[OK] Converged (delta_norm < 1e-4)!")
             break
 
-        if MAX_CONSECUTIVE_REJECTS != -1 and n_consecutive_rejects >= MAX_CONSECUTIVE_REJECTS:
+        if use_gnc and _gnc[0] > GNC_MU_FINAL:
+            # During GNC annealing: use inner patience instead of normal stopping
+            if n_consecutive_rejects >= GNC_INNER_PATIENCE:
+                _gnc_advance(f"inner patience {GNC_INNER_PATIENCE}")
+        elif MAX_CONSECUTIVE_REJECTS != -1 and n_consecutive_rejects >= MAX_CONSECUTIVE_REJECTS:
             if verbose:
                 print(f"\n[OK] Early stop: {MAX_CONSECUTIVE_REJECTS} consecutive rejected steps.")
             break
 
-        # Sliding-window plateau detection: stop if total decrease over last K accepted steps
-        # falls below rtol_converge fraction of the older cost.
-        if converge_window > 0 and len(accepted_costs) >= converge_window:
-            old_cost = accepted_costs[-converge_window]
-            window_rtol = (old_cost - accepted_costs[-1]) / old_cost
-            if window_rtol < rtol_converge:
-                if verbose:
-                    print(f"\n[OK] Converged (window rtol={window_rtol:.4f} < {rtol_converge} "
-                          f"over last {converge_window} accepted steps).")
-                break
+        # Plateau detection: only apply after GNC fully annealed
+        if not (use_gnc and _gnc[0] > GNC_MU_FINAL):
+            if converge_window > 0 and len(accepted_costs) >= converge_window:
+                old_cost = accepted_costs[-converge_window]
+                window_rtol = (old_cost - accepted_costs[-1]) / old_cost
+                if window_rtol < rtol_converge:
+                    if verbose:
+                        print(f"\n[OK] Converged (window rtol={window_rtol:.4f} < {rtol_converge} "
+                              f"over last {converge_window} accepted steps).")
+                    break
     
     if verbose:
         print(f"\n{'Optimization Complete':#^80}")
