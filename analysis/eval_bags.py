@@ -55,8 +55,8 @@ def parse_rmse_from_output(stdout: str) -> dict:
         'vel_rmse_mps':     r'Velocity RMSE:\s*([\d.]+)\s*m/s',
         'angvel_rmse_rads': r'Angular vel RMSE:\s*([\d.]+)\s*rad/s',
         'accel_rmse_mps2':  r'Acceleration RMSE:\s*([\d.]+)\s*m/s',
-        'ori_rmse_deg':     r'Orientation RMSE:\s*([\d.]+)\s*deg',
-        'ori_max_deg':      r'Orientation RMSE:.*max:\s*([\d.]+)\s*deg',
+        'ori_rmse_deg':     r'Orientation RMSE:\s*([\d.]+)\s*deg\s+\(max:',
+        'ori_max_deg':      r'Orientation RMSE:.*\(max:\s*([\d.]+)\s*deg\)',
     }
 
     for key, pat in patterns.items():
