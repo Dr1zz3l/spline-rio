@@ -29,12 +29,19 @@ All scripts run from `analysis/` and take a bag name as the first argument:
 ```bash
 cd analysis/
 
-# Bag name aliases: original, circle, circle_fast, circle_fwd, loopings, backflips
-# (plus newer bags: backflips_best_velocity, circle_best_velocity, fast_racing_*, slow_racing_*)
-python validate_physics.py original          # Ground truth forward model validation (no optimization)
-python validate_forward_model.py             # Doppler prediction accuracy
-python validate_linear_solver.py             # Phase 2: sparse linear LS for position only
-python validate_nonlinear_solver.py          # Phase 3: full LM solver (main script)
+# Live RIO solver — MoCap-free init, MoCap used only for eval (MAIN ENTRY POINT)
+../.venv/bin/python3 validate_live_solver.py slow_racing_best_velocity --mocap-yaw
+../.venv/bin/python3 validate_live_solver.py fast_racing_best_velocity --mocap-yaw
+# Flags: --mocap-yaw (heading+pos priors), --no-plot, --gnc, --preintegrate
+# Multi-bag eval: ../.venv/bin/python3 eval_bags.py --label baseline --flags "--mocap-yaw"
+
+# Batch solver (MoCap-initialized, older pipeline)
+python validate_nonlinear_solver.py circle_fwd   # Phase 3: full LM solver
+
+# Earlier pipeline phases
+python validate_physics.py original              # Ground truth forward model validation (no optimization)
+python validate_forward_model.py                 # Doppler prediction accuracy
+python validate_linear_solver.py                 # Phase 2: sparse linear LS for position only
 
 # Diagnostics (in diagnostics/ subdir — run from analysis/)
 python diagnostics/diagnose_doppler.py circle
@@ -77,16 +84,19 @@ Flags: `--no-flip` (override per-bag yaw flip), `--flip` (force flip on), `--no-
 
 | File | Role |
 |------|------|
+| `validate_live_solver.py` | **Live RIO: MoCap-free P1-P3 init + LM solver (main entry point)** |
+| `validate_nonlinear_solver.py` | Batch solver: full LM with MoCap init (shared solver core) |
 | `lib/radar_velocity_utils.py` | Forward model, WLS ego-velocity solver, Huber loss, extrinsic calibration |
 | `lib/bspline_utils.py` | Uniform B-splines (Cox-de Boor), derivatives, min-snap regularization |
 | `lib/cumulative_so3_bspline.py` | Cumulative SO(3) B-spline on Lie groups: evaluate R(t), body-rate ω(t), Jacobians, initialization from rotation samples |
+| `lib/imu_preintegration.py` | Forster TRO-2017 on-manifold preintegration (--preintegrate flag) |
 | `codegen/generated_jacobians.py` | SymForce-generated residuals + Jacobians for radar, accel, gyro factors |
 | `codegen/derive_jacobians_symforce.py` | Source for regenerating `generated_jacobians.py` |
 | `lib/rosbag_loader/loader.py` | Unified API to load 7 ROS topics into typed dataclasses |
 | `config_loader.py` | Loads all YAML configs from `config/` as a dict-of-dicts |
-| `config/extrinsics.yaml` | Canonical extrinsics: rotation [180,30,0] deg, translation [0.08,0.02,-0.01] m |
+| `config/extrinsics.yaml` | Extrinsics: current [180, 25.5, 1.30] deg (solver-calibrated from physical 30°), translation [0.08,0.02,-0.01] m |
 | `config/bags.yaml` | Bag aliases → paths, flipped bag set, per-bag timing windows |
-| `config/solver.yaml` | LM hyperparameters, B-spline config |
+| `config/solver.yaml` | LM hyperparameters, B-spline config, extrinsic optimization mode |
 | `diagnostics/diagnose_doppler_sign.py` | Compares both Doppler code paths at MoCap ground truth; tests sign convention |
 
 ### State Representation
@@ -117,29 +127,32 @@ Located at `../rosbags/`. Alias → filename mapping is in `config/bags.yaml`. S
 ### Coordinate Frames & Calibration
 
 Extrinsic calibration lives in `config/extrinsics.yaml` (single source of truth):
-- **Rotation**: `[roll=180°, pitch=30°, yaw=0°]` — 180° roll (upside-down mount) + 30° downtilt
+- **Rotation**: current `[roll=180°, pitch=25.5°, yaw=1.3°]` — solver-calibrated from physical 30° downtilt
 - **Translation**: `[0.08, +0.02, -0.01]` m in body frame (8 cm forward, 2 cm left, 1 cm down)
 - Body frame: x=forward, y=left, z=up
 
+**Critical**: `optimize_pitch_only: true` in `solver.yaml` must stay enabled. Only pitch is
+observable from Doppler; free roll/yaw optimization drifts 5–7° and corrupts orientation.
+
 The radar has limited elevation diversity (2 TX antennas), causing a systematic z-velocity bias of −0.5 to −0.65 m/s. Doppler quantization is 0.63 m/s per bin — keep Huber δ ≥ 1.0 m/s.
 
-## Key Hyperparameters (in `validate_nonlinear_solver.py` and `config/solver.yaml`)
+## Key Hyperparameters (`config/solver.yaml` — used by live solver)
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| `HUBER_DELTA` | 1.0 m/s | Must be ≥ radar Doppler bin size (0.63 m/s) |
-| `IMU_MOCAP_OFFSET` | +0.020 s | Empirically determined time alignment |
-| `LAMBDA_ACCEL` | 0.01 | Accelerometer weight |
-| `LAMBDA_GYRO` | 1.0 | Gyroscope weight (primary orientation sensor) |
-| `LAMBDA_ORI_REG` | 0.001 | Orientation increment regularization (penalizes `‖Ω_j‖²` per knot) |
-| `ORI_BASE_JACOBIAN_WINDOW` | 20 | Max base knots per measurement for orientation Jacobian (~1 s); 0 = full exact |
-| `LAMBDA_BIAS_PRIOR_ACCEL` | 1000.0 | Strong prior prevents gravity leakage into bias |
-| `LAMBDA_BIAS_PRIOR_GYRO` | 10000.0 | Very strong prior on gyro bias |
-| `LAMBDA_BOUNDARY_VEL/POS` | 1000.0 | Anchor start of trajectory to MoCap |
-| `LAMBDA_BOUNDARY_ORI` | 10000.0 | Anchor start orientation to MoCap |
-| `early_stop_patience` | 10 | Stop after N consecutive rejected LM steps; -1 = disabled |
-| `converge_window` | 5 | Sliding window (accepted steps) for plateau detection |
-| `rtol_converge` | 0.01 | Relative cost decrease threshold over window; stop if below |
+| `huber_delta` | 1.0 m/s | Must be ≥ radar Doppler bin size (0.63 m/s) |
+| `lambda_accel` | 0.01 | Accelerometer weight |
+| `lambda_gyro` | 1.0 | Gyroscope weight (primary orientation sensor) |
+| `lambda_ori_reg` | 0.001 | Orientation increment regularization (penalizes `‖Ω_j‖²` per knot) |
+| `ori_base_jacobian_window` | 20 | Max base knots per measurement for orientation Jacobian (~1 s); 0 = full exact |
+| `lambda_bias_prior_accel` | 1.0 | Relaxed prior — biases free to optimize (not a trash can) |
+| `lambda_bias_prior_gyro` | 1.0 | Same reasoning |
+| `lambda_boundary_vel/pos` | 1000.0 | Anchor start of trajectory |
+| `lambda_boundary_ori` | 1000.0 | Anchor start orientation |
+| `optimize_pitch_only` | **true** | **Must stay true** — only pitch is Doppler-observable |
+| `early_stop_patience` | 20 | Stop after N consecutive rejected LM steps |
+| `converge_window` | 50 | Sliding window (accepted steps) for plateau detection |
+| `rtol_converge` | 0.01 | Relative cost decrease threshold over window |
 
 ## ROS Topics
 
