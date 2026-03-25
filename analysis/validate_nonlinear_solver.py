@@ -586,7 +586,7 @@ def compute_jacobian_analytical(
     use_huber_accel = huber_delta_accel > 0
     g_world = np.array([0, 0, -9.81])
 
-    for imu_msg in imu_data:
+    for imu_msg in (imu_data if lambda_accel > 0 else []):
         t = imu_msg.timestamp
         t_rel_pos = t - state.pos_bspline.t_ref
         t_rel_ori = t - state.ori_spline.t_ref
@@ -1260,7 +1260,7 @@ def compute_residuals_only(
     use_huber_accel = huber_delta_accel > 0
     g_world = np.array([0, 0, -9.81])
 
-    for imu_msg in imu_data:
+    for imu_msg in (imu_data if lambda_accel > 0 else []):
         t = imu_msg.timestamp
         t_rel_ori = t - state.ori_spline.t_ref
 

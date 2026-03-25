@@ -975,18 +975,31 @@ def main():
     # ==================== Optimize ====================
     solver_radar_frames = [] if NO_RADAR else radar_frames
 
-    # Build preintegrated IMU factors (one per consecutive radar frame interval)
+    # Build preintegrated IMU factors (one per consecutive radar frame interval).
+    # When active, these REPLACE the per-sample accel+gyro residuals: imu_data is
+    # set to [] so the solver only sees the preintegrated 9-residual factors.
+    # This reduces the Jacobian from O(N_imu) rows to O(N_radar) rows.
     preintegrated_factors = None
     if USE_PREINTEGRATE:
         radar_times_for_preint = np.array([f.timestamp for f in radar_frames])
         preintegrated_factors = build_preintegrated_factors(
             imu_data_full, radar_times_for_preint, acc_bias, gyr_bias)
         print(f"  Preintegrated IMU factors: {len(preintegrated_factors)}")
+        print(f"  [--preintegrate] Accel replaced by {len(preintegrated_factors)} preintegrated factors "
+              f"(gyro kept: {len(imu_data)} samples for orientation stability)")
 
     # MoCap data for solver verbose RMSE display only (does not affect optimization)
     mocap_times_abs = np.array([s.timestamp for s in agiros_states]) if agiros_states else None
     mocap_rots_eval = (np.array([quat_to_rotation_matrix(s.orientation) for s in agiros_states])
                        if agiros_states else None)
+
+    # When preintegrating: preintegrated factors replace the accel residuals
+    # (position/velocity dynamics), but gyro residuals are kept at full rate to
+    # prevent orientation knots from oscillating freely between radar frames.
+    # With our B-spline representation, each knot Ω_j is only constrained by
+    # preintegration at the radar frame endpoints (~90ms apart), leaving
+    # intermediate knots unconstrained — gyro pins them at 1kHz.
+    solver_lambda_accel = 0.0 if USE_PREINTEGRATE else LAMBDA_ACCEL
 
     optimized_state = solve_trajectory_nonlinear(
         initial_state=initial_state,
@@ -994,7 +1007,7 @@ def main():
         imu_data=imu_data,
         sensor_translation=TRANSLATION,
         sensor_rotation=SENSOR_ROTATION,
-        lambda_accel=LAMBDA_ACCEL,
+        lambda_accel=solver_lambda_accel,
         lambda_gyro=LAMBDA_GYRO,
         lambda_snap_pos=LAMBDA_SNAP_POS,
         huber_delta=HUBER_DELTA,
