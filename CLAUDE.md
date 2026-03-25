@@ -94,7 +94,7 @@ Flags: `--no-flip` (override per-bag yaw flip), `--flip` (force flip on), `--no-
 | `codegen/derive_jacobians_symforce.py` | Source for regenerating `generated_jacobians.py` |
 | `lib/rosbag_loader/loader.py` | Unified API to load 7 ROS topics into typed dataclasses |
 | `config_loader.py` | Loads all YAML configs from `config/` as a dict-of-dicts |
-| `config/extrinsics.yaml` | Extrinsics: current [180, 25.5, 1.30] deg (solver-calibrated from physical 30°), translation [0.08,0.02,-0.01] m |
+| `config/extrinsics.yaml` | Extrinsics: [180, 25.5, 0] deg (solver-calibrated pitch, physical 30°), translation [0.08,0.02,-0.01] m |
 | `config/bags.yaml` | Bag aliases → paths, flipped bag set, per-bag timing windows |
 | `config/solver.yaml` | LM hyperparameters, B-spline config, extrinsic optimization mode |
 | `diagnostics/diagnose_doppler_sign.py` | Compares both Doppler code paths at MoCap ground truth; tests sign convention |
@@ -127,7 +127,7 @@ Located at `../rosbags/`. Alias → filename mapping is in `config/bags.yaml`. S
 ### Coordinate Frames & Calibration
 
 Extrinsic calibration lives in `config/extrinsics.yaml` (single source of truth):
-- **Rotation**: current `[roll=180°, pitch=25.5°, yaw=1.3°]` — solver-calibrated from physical 30° downtilt
+- **Rotation**: `[roll=180°, pitch=25.5°, yaw=0°]` — solver-calibrated pitch (physical mount 30°, self-adjusts per run when optimize_pitch_only=true)
 - **Translation**: `[0.08, +0.02, -0.01]` m in body frame (8 cm forward, 2 cm left, 1 cm down)
 - Body frame: x=forward, y=left, z=up
 
