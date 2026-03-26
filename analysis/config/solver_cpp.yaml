@@ -16,3 +16,11 @@ lambda_gyro: 4.0
 lambda_snap_pos: 0.00002
 lambda_bias_prior_accel: 10000.0
 lambda_bias_prior_gyro: 10000.0
+
+# Sliding window (used when --sliding-window is active)
+# Results on slow_racing (--mocap-yaw): 3.0s window → 0.358m pos / 1.34° ori (vs batch 0.146m / 0.96°)
+# Larger window → better accuracy; 5.0s → 0.262m / 1.15°.  Tradeoff: ~1.1s/window (3s) vs ~2.5s (5s).
+window_duration: 3.0    # seconds of history per solve (larger = more accurate, slower per window)
+window_stride: 0.3      # advance interval (seconds) → ~3 Hz update rate
+n_fix_leading_pos: 0    # 0 = rely on boundary priors only (better than hard-fixing); N_POS=6 to freeze
+n_fix_leading_ori: 0    # 0 = rely on boundary priors only; N_ORI=4 to freeze

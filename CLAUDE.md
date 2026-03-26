@@ -29,12 +29,20 @@ All scripts run from `analysis/` and take a bag name as the first argument:
 ```bash
 cd analysis/
 
-# Live RIO solver — C++ backend (CURRENT BEST, ~15-20s, 2-3× better than Python)
+# Live RIO solver — C++ backend, batch (CURRENT BEST, ~15-20s, 2-3× better than Python)
 ../.venv/bin/python3 validate_live_solver.py slow_racing_best_velocity --mocap-yaw --cpp
 ../.venv/bin/python3 validate_live_solver.py fast_racing_best_velocity --mocap-yaw --cpp
 # --cpp loads config/solver_cpp.yaml overrides automatically (full-rate IMU, tighter priors)
 # --set key=value overrides any solver.yaml param at runtime (repeatable)
 # --imu-hz N overrides IMU rate (default: 1000 for --cpp, 200 for Python)
+
+# Live RIO solver — C++ sliding window (Phase 4a fixed-lag smoother)
+../.venv/bin/python3 validate_live_solver.py slow_racing_best_velocity --mocap-yaw --cpp --sliding-window
+# --sliding-window: fixed-lag smoother, re-solves last window_duration s every window_stride s
+# Default: window=3.0s, stride=0.3s, n_fix_leading=0 (boundary priors anchor leading edge)
+# slow_racing: 0.358m pos / 1.34° ori (vs batch 0.146m / 0.96°); each window ~1.1s (3s window)
+# Tune: --set window_duration=5.0  →  0.262m / 1.15° at ~2.5s/window
+# Requires --cpp; requires phase 4b (marginalization) to match batch accuracy
 
 # Live RIO solver — Python backend (~10 min)
 ../.venv/bin/python3 validate_live_solver.py slow_racing_best_velocity --mocap-yaw

@@ -72,6 +72,10 @@ struct SolverConfig {
 
     // Optimizer
     int max_iterations{40};
+
+    // Sliding window: fix leading knots constant (previously solved, trusted)
+    int n_fix_leading_pos{0};   // number of leading pos CPs to freeze
+    int n_fix_leading_ori{0};   // number of leading ori knots to freeze
 };
 
 // ============================================================================

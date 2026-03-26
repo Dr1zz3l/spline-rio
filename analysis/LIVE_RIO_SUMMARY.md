@@ -319,6 +319,45 @@ so expect a much larger than 9× speedup on the linear solve alone.
 **Combined target**: analytic Jacobians + sliding window → estimated <2s/window
 at real-time rates.
 
+## Sliding Window (Phase 4a)
+
+Implemented as a fixed-lag smoother in `validate_live_solver.py` (`--sliding-window`).
+Re-solves the last `window_duration` seconds every `window_stride` seconds.
+No marginalization — global CP arrays serve as warm-start cache; boundary priors
+(λ=1000) anchor the leading edge to the previous window's solution.
+
+### Results on slow_racing (--mocap-yaw)
+
+| Config | Pos RMSE | Ori RMSE | Time/window |
+|--------|----------|----------|-------------|
+| Batch (--cpp, baseline) | **0.146m** | **0.96°** | 12.6s total |
+| SW window=1.5s, n_fix=6 | 1.149m | 2.29° | 0.5–1.8s |
+| SW window=1.5s, n_fix=0 | 1.000m | 1.34° | 0.5–1.8s |
+| SW window=3.0s, n_fix=0 | 0.358m | 1.34° | ~1.1s |
+| SW window=5.0s, n_fix=0 | 0.262m | 1.15° | ~2.5s |
+
+**Key observations:**
+- Larger window → better accuracy (monotonic trend; no hard floor visible yet)
+- Ceres converges in 2 LM iterations per window (warm start from prev window)
+- Hard-fixing leading knots (`n_fix>0`) is WORSE than boundary-prior anchoring (`n_fix=0`)
+  — fixing freezes bad state if previous window wasn't perfectly accurate
+- 3.0s window is the default (best accuracy/speed balance)
+- Accuracy gap vs batch (~2.5×) due to missing marginalization: no forward propagation
+  of global corrections. Batch solver benefits from seeing all heading priors jointly.
+
+### Why the sliding window is worse than batch
+
+Without marginalization, each window independently estimates position from local
+Doppler + heading priors.  The batch solver uses ALL heading priors simultaneously
+to correct yaw (and thus position direction) across the full trajectory.  In the
+sliding window, yaw corrections at t=20s cannot retroactively fix position at t=5s.
+
+### Phase 4b: True Marginalization
+
+To close the accuracy gap, marginalize out old CPs/knots via Schur complement
+into a `ceres::NormalPrior` factor.  This carries forward the information content
+of discarded measurements.  Planned but not yet implemented.
+
 ## Files
 
 | File | Role |

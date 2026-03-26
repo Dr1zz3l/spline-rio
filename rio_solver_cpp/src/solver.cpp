@@ -105,6 +105,12 @@ SolverResult solve(
     // Add bias block
     problem.AddParameterBlock(traj.bias_data(), 6);
 
+    // Sliding window: freeze leading knots (trusted from previous window solve)
+    for (int i = 0; i < cfg.n_fix_leading_pos && i < n_pos; ++i)
+        problem.SetParameterBlockConstant(traj.pos_cp_data(i));
+    for (int i = 0; i < cfg.n_fix_leading_ori && i < n_ori; ++i)
+        problem.SetParameterBlockConstant(traj.ori_knot_data(i));
+
     const double inv_dt_pos = 1.0 / cfg.dt_pos;
     const double inv_dt_ori = 1.0 / cfg.dt_ori;
 

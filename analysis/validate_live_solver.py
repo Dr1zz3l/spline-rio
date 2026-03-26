@@ -212,6 +212,198 @@ def _solve_cpp(initial_state, solver_radar_frames, imu_data,
     )
 
 
+# ==================== C++ sliding window bridge ====================
+
+def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
+                               extrinsics_cfg, solver_cfg,
+                               heading_priors=None):
+    """
+    Fixed-lag smoother: re-solve the last window_duration seconds every
+    window_stride seconds.  Uses the C++ Ceres solver for each window.
+
+    Global pos/ori arrays are updated in-place after each window, providing
+    warm-start for the overlapping region of the next window.  Leading knots
+    can be frozen (n_fix_leading_pos/ori) to anchor the window to the previous
+    solution.
+
+    Config keys read from solver_cfg:
+      window_duration   (float, default 1.5 s)
+      window_stride     (float, default 0.3 s)
+      n_fix_leading_pos (int, default 6 — one pos B-spline segment)
+      n_fix_leading_ori (int, default 4 — one ori B-spline segment)
+    """
+    import sys as _sys, os as _os
+    _build_dirs = [
+        _os.path.join(_os.path.dirname(__file__), '..', 'rio_solver_cpp', 'build_release'),
+        _os.path.join(_os.path.dirname(__file__), '..', 'rio_solver_cpp', 'build_debug'),
+        _os.path.dirname(__file__),
+    ]
+    for d in _build_dirs:
+        d = _os.path.abspath(d)
+        if d not in _sys.path:
+            _sys.path.insert(0, d)
+    import rio_solver
+
+    N_POS = 6  # quintic spline order
+    N_ORI = 4  # cubic spline order
+
+    window_duration = solver_cfg.get('window_duration', 1.5)
+    window_stride   = solver_cfg.get('window_stride', 0.3)
+    n_fix_pos       = int(solver_cfg.get('n_fix_leading_pos', 6))
+    n_fix_ori       = int(solver_cfg.get('n_fix_leading_ori', 4))
+    dt_pos          = solver_cfg.get('dt_pos', 0.005)
+    dt_ori          = solver_cfg.get('dt_ori', 0.008)
+
+    ori_spline  = initial_state.ori_spline
+    pos_bspline = initial_state.pos_bspline
+    t_ref = pos_bspline.t_ref
+
+    # Global arrays — updated in-place as windows are solved
+    all_pos_cps   = pos_bspline.control_points.copy()   # (N_total_pos, 3)
+    all_ori_quats = Rotation.from_matrix(              # (N_total_ori, 4) xyzw
+        ori_spline._base_rotations).as_quat()
+    biases = np.concatenate([initial_state.acc_bias, initial_state.gyr_bias])
+
+    # Extrinsics (constant across all windows)
+    euler_deg = extrinsics_cfg.get('rotation_euler_deg', [180.0, 25.5, 0.0])
+    ext = rio_solver.ExtrinsicConfig()
+    ext.roll_deg, ext.pitch_deg, ext.yaw_deg = euler_deg
+    t_body = extrinsics_cfg.get('translation_body_m', [0.08, 0.02, -0.01])
+    ext.tx, ext.ty, ext.tz = t_body
+
+    # Convert radar frames once; keep (timestamp, RadarFrame) for slicing
+    cpp_radar_all = []
+    for frame in solver_radar_frames:
+        n = frame.num_points()
+        if n == 0:
+            continue
+        pts = np.zeros((n, 4))
+        pts[:, :3] = frame.positions[:n]
+        pts[:, 3]  = frame.velocities[:n] if frame.velocities is not None else 0.0
+        cpp_radar_all.append((frame.timestamp, rio_solver.make_radar_frame(frame.timestamp, pts)))
+
+    # Convert IMU once; keep numpy array for fast time-based slicing
+    imu_np = np.zeros((len(imu_data), 7))
+    for i, s in enumerate(imu_data):
+        imu_np[i, 0]   = s.timestamp
+        imu_np[i, 1:4] = s.linear_acceleration
+        imu_np[i, 4:7] = s.angular_velocity
+    imu_times = imu_np[:, 0]
+
+    # Heading priors (constant list; sliced per window)
+    all_heading = []
+    if heading_priors:
+        all_heading = [(float(t), float(np.arctan2(R[1, 0], R[0, 0])))
+                       for t, R in heading_priors]
+
+    # Index helpers: absolute time → global CP/knot index
+    def _pidx(t):
+        return max(0, round((t - t_ref) / dt_pos))
+    def _oidx(t):
+        return max(0, round((t - t_ref) / dt_ori))
+
+    t_data_start = cpp_radar_all[0][0]  if cpp_radar_all else t_ref
+    t_data_end   = cpp_radar_all[-1][0] if cpp_radar_all else t_ref
+    n_expected = max(1, int((t_data_end - t_data_start - window_duration) / window_stride) + 1)
+
+    print(f"  [--sliding-window] window={window_duration:.1f}s  stride={window_stride:.1f}s"
+          f"  ~{n_expected} windows  fix_pos={n_fix_pos}  fix_ori={n_fix_ori}")
+
+    t_solve = t_data_start + window_duration
+    first_window = True
+    n_windows = 0
+
+    while t_solve <= t_data_end + 1e-6:
+        t_w_start = t_solve - window_duration
+        t_w_end   = t_solve
+
+        # Map window times to global CP/knot index ranges
+        pi0 = _pidx(t_w_start)
+        pi1 = min(_pidx(t_w_end) + N_POS - 1, len(all_pos_cps) - 1)
+        oi0 = _oidx(t_w_start)
+        oi1 = min(_oidx(t_w_end) + N_ORI - 1, len(all_ori_quats) - 1)
+        t_w_ref = t_ref + pi0 * dt_pos
+
+        window_pos_init = all_pos_cps[pi0:pi1+1].copy()
+        window_ori_init = all_ori_quats[oi0:oi1+1].copy()
+
+        # Slice sensor data
+        window_radar   = [rf for ts, rf in cpp_radar_all if t_w_start <= ts <= t_w_end]
+        imu_mask       = (imu_times >= t_w_start) & (imu_times <= t_w_end)
+        window_imu     = rio_solver.make_imu_samples(imu_np[imu_mask])
+        window_heading = [(t, y) for t, y in all_heading if t_w_start <= t <= t_w_end]
+
+        if not window_radar or not imu_mask.any():
+            t_solve += window_stride
+            continue
+
+        # Build per-window config
+        cfg = rio_solver.SolverConfig()
+        cfg.dt_pos                  = dt_pos
+        cfg.dt_ori                  = dt_ori
+        cfg.huber_delta             = solver_cfg.get('huber_delta', 1.0)
+        cfg.min_range               = solver_cfg.get('min_range', 0.2)
+        cfg.lambda_accel            = solver_cfg.get('lambda_accel', 0.01)
+        cfg.lambda_gyro             = solver_cfg.get('lambda_gyro', 1.0)
+        cfg.huber_delta_accel       = solver_cfg.get('huber_delta_accel', 2.0)
+        cfg.lambda_snap_pos         = solver_cfg.get('lambda_snap_pos', 0.0001)
+        cfg.lambda_ori_reg          = solver_cfg.get('lambda_ori_reg', 0.001)
+        cfg.lambda_gravity          = solver_cfg.get('lambda_gravity', 0.001)
+        cfg.gravity_accel_threshold = solver_cfg.get('gravity_accel_threshold', 3.0)
+        cfg.lambda_heading          = solver_cfg.get('lambda_heading', 3.0)
+        cfg.lambda_bias_prior_accel = solver_cfg.get('lambda_bias_prior_accel', 1.0)
+        cfg.lambda_bias_prior_gyro  = solver_cfg.get('lambda_bias_prior_gyro', 1.0)
+        cfg.lambda_boundary_pos     = solver_cfg.get('lambda_boundary_pos', 1000.0)
+        cfg.lambda_boundary_vel     = solver_cfg.get('lambda_boundary_vel', 1000.0)
+        cfg.lambda_boundary_ori     = solver_cfg.get('lambda_boundary_ori', 1000.0)
+        cfg.lambda_boundary_ori_yaw = solver_cfg.get('lambda_boundary_ori_yaw', 0.0)
+        cfg.lock_extrinsics         = solver_cfg.get('lock_extrinsics', False)
+        cfg.optimize_pitch_only     = solver_cfg.get('optimize_pitch_only', True)
+        cfg.lambda_extrinsic_prior  = solver_cfg.get('lambda_extrinsic_prior', 10.0)
+        cfg.max_iterations          = solver_cfg.get('max_iterations', 400)
+        # First window: allow leading knots to move (no previous solution to trust)
+        cfg.n_fix_leading_pos       = 0 if first_window else n_fix_pos
+        cfg.n_fix_leading_ori       = 0 if first_window else n_fix_ori
+
+        t0 = time.time()
+        result = rio_solver.solve(
+            window_radar, window_imu, cfg, ext,
+            window_pos_init, window_ori_init, biases,
+            t_w_ref, window_heading)
+        dt_w = time.time() - t0
+
+        # Write back to global arrays (warm-start next window)
+        all_pos_cps[pi0:pi1+1]   = result.pos_cps
+        all_ori_quats[oi0:oi1+1] = result.ori_knots
+        biases = result.biases
+
+        cost_str = f"{result.cost_history[-1]:.3f}" if result.cost_history else "n/a"
+        print(f"  [sw {n_windows+1:3d}] t={t_w_start:.2f}–{t_w_end:.2f}s"
+              f"  {len(window_radar):3d}fr  {int(imu_mask.sum()):4d}imu"
+              f"  cost={cost_str}  iter={len(result.cost_history)}  dt={dt_w:.2f}s")
+
+        t_solve += window_stride
+        first_window = False
+        n_windows += 1
+
+    print(f"  [--sliding-window] Done: {n_windows} windows solved")
+
+    # Reconstruct full TrajectoryState from updated global arrays
+    new_ori_spline = CumulativeSO3BSpline.from_rotation_samples(
+        Rotation.from_quat(all_ori_quats).as_matrix(),
+        dt=ori_spline.dt, t_ref=ori_spline.t_ref)
+    new_pos_bspline = UniformBSpline(all_pos_cps, pos_bspline.degree, pos_bspline.dt)
+    new_pos_bspline.t_ref = t_ref
+
+    return TrajectoryState(
+        pos_bspline=new_pos_bspline,
+        ori_spline=new_ori_spline,
+        acc_bias=np.array(biases[:3]),
+        gyr_bias=np.array(biases[3:]),
+        radar_extrinsic_delta=np.zeros(3),
+    )
+
+
 # ==================== Config ====================
 _cfg = load_config()
 BAGS = _cfg['bags']['bags']
@@ -760,6 +952,11 @@ def main():
     USE_PREINTEGRATE = '--preintegrate' in sys.argv
     USE_GNC = '--gnc' in sys.argv
     USE_CPP = '--cpp' in sys.argv
+    USE_SLIDING_WINDOW = '--sliding-window' in sys.argv
+
+    if USE_SLIDING_WINDOW and not USE_CPP:
+        print("ERROR: --sliding-window requires --cpp", file=sys.stderr)
+        sys.exit(1)
 
     # Default: full rate for --cpp (fast enough + better results), 200 Hz for Python solver
     IMU_TARGET_HZ = 1000 if USE_CPP else 200
@@ -1330,7 +1527,16 @@ def main():
     # intermediate knots unconstrained — gyro pins them at 1kHz.
     solver_lambda_accel = 0.0 if USE_PREINTEGRATE else LAMBDA_ACCEL
 
-    if USE_CPP:
+    if USE_CPP and USE_SLIDING_WINDOW:
+        optimized_state = _solve_cpp_sliding_window(
+            initial_state=initial_state,
+            solver_radar_frames=solver_radar_frames,
+            imu_data=imu_data,
+            extrinsics_cfg=_EXTRINSICS_CFG,
+            solver_cfg=_SOLVER_CFG,
+            heading_priors=heading_priors if heading_priors else None,
+        )
+    elif USE_CPP:
         optimized_state = _solve_cpp(
             initial_state=initial_state,
             solver_radar_frames=solver_radar_frames,
