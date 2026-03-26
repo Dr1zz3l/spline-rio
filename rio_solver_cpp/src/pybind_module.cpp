@@ -168,7 +168,10 @@ PYBIND11_MODULE(rio_solver, m) {
             })
         .def_readonly("cost_history", &SolverResult::cost_history)
         .def_readonly("solve_time_s", &SolverResult::solve_time_s)
-        .def_readonly("solver_summary", &SolverResult::solver_summary);
+        .def_readonly("solver_summary", &SolverResult::solver_summary)
+        .def_readonly("time_residual_eval_s", &SolverResult::time_residual_eval_s)
+        .def_readonly("time_jacobian_eval_s", &SolverResult::time_jacobian_eval_s)
+        .def_readonly("time_linear_solver_s", &SolverResult::time_linear_solver_s);
 
     // ---- Main solve() interface (numpy-friendly) ----------------------------
     m.def("solve",

@@ -178,7 +178,15 @@ def _solve_cpp(initial_state, solver_radar_frames, imu_data,
         init_pos_cps, init_ori_quats, init_biases,
         t_ref, cpp_heading)
     dt_cpp = time.time() - t0_cpp
+    t_jac  = result.time_jacobian_eval_s
+    t_res  = result.time_residual_eval_s
+    t_lin  = result.time_linear_solver_s
+    t_misc = dt_cpp - t_jac - t_res - t_lin
     print(f"  [--cpp] Done in {dt_cpp:.2f}s  |  {result.solver_summary}")
+    print(f"  [--cpp] Time breakdown:  jacobian={t_jac:.2f}s ({100*t_jac/dt_cpp:.0f}%)"
+          f"  residual={t_res:.2f}s ({100*t_res/dt_cpp:.0f}%)"
+          f"  linear_solve={t_lin:.2f}s ({100*t_lin/dt_cpp:.0f}%)"
+          f"  other={t_misc:.2f}s ({100*t_misc/dt_cpp:.0f}%)")
 
     # --- Convert result back to TrajectoryState ---
     # Quaternion knots → absolute rotation matrices → omega_knots

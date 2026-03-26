@@ -100,6 +100,11 @@ struct SolverResult {
     std::vector<double> cost_history;   // one entry per accepted iteration
     double solve_time_s{0.0};
     std::string solver_summary;
+
+    // Ceres timing breakdown (seconds)
+    double time_residual_eval_s{0.0};   // evaluating residuals (r)
+    double time_jacobian_eval_s{0.0};   // autodiff Jacobians (J)
+    double time_linear_solver_s{0.0};   // sparse Cholesky  (J'J + λI)Δx = -J'r
 };
 
 // ============================================================================

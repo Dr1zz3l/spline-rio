@@ -436,6 +436,10 @@ SolverResult solve(
     result.cost_history.push_back(summary.initial_cost);
     result.cost_history.push_back(summary.final_cost);
 
+    result.time_residual_eval_s = summary.residual_evaluation_time_in_seconds;
+    result.time_jacobian_eval_s = summary.jacobian_evaluation_time_in_seconds;
+    result.time_linear_solver_s = summary.linear_solver_time_in_seconds;
+
     std::ostringstream oss;
     oss << summary.BriefReport();
     result.solver_summary = oss.str();
