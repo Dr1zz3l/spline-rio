@@ -270,6 +270,55 @@ is the snap regularisation forcing the initial piecewise-linear control points
 smooth, temporarily distorting orientation before it recovers.  Expected
 behaviour, not a bug.
 
+## C++ Solver Performance Profile
+
+Measured via Ceres `Solver::Summary` timing fields, exposed on `result.time_*_s`.
+Printed automatically after each `--cpp` solve.
+
+### Batch solve (full trajectory, ~18-26s of data)
+
+| Phase | slow_racing | fast_racing | Share |
+|-------|------------|------------|-------|
+| Jacobian eval (autodiff Jet<double,N>) | 4.95s | 3.85s | **39%** |
+| Residual eval | 0.46s | 0.37s | 4% |
+| Linear solve (sparse Cholesky) | 6.00s | 4.87s | **48%** |
+| Other (preprocessing, callbacks) | 1.14s | 0.88s | 9% |
+| **Total** | **12.55s** | **9.96s** | |
+
+Both the autodiff and the linear solve are significant — neither dominates overwhelmingly.
+
+### How Ceres autodiff works
+
+Ceres autodiff is **not** symbolic or one-time — it runs at every LM iteration
+for every residual block using dual-number (Jet) arithmetic.  Each functor is
+called with `T = Jet<double, N>` where N = number of parameter dimensions in
+the block (e.g. 40 for the accel factor: 4 ori knots×4 + 6 pos CPs×3 + 6 bias).
+Every scalar op carries an N-vector of partial derivatives alongside the value,
+so cost ≈ N× plain-double arithmetic.
+
+With 25k IMU samples × 3 factors × 35 iterations, this adds up to the 39% above.
+
+### Paths to further speedup
+
+**Analytic Jacobians (→ −39%)**: replace Jet evaluation with closed-form Eigen
+expressions.  Path: swap `PythonConfig()` → `CppConfig()` in
+`codegen/derive_jacobians_symforce.py` to emit C++ instead of NumPy, then
+implement as `ceres::SizedCostFunction` subclasses.  basalt's own VIO uses
+this approach for its spline factors.
+
+**Variable ordering / fill-in reduction (→ part of −48%)**: Ceres uses
+automatic variable ordering for the Cholesky factorisation.  For a B-spline
+problem, the natural ordering (knots in time order) is already near-optimal,
+but the combined pos+ori+bias block structure may not be.  Try
+`options.linear_solver_ordering` with explicit elimination groups.
+
+**Sliding window (→ smaller n)**: a 1–2s window has ~400 pos CPs + 250 ori
+knots ≈ 3000 parameters vs the current ~27000.  Cholesky scales super-linearly,
+so expect a much larger than 9× speedup on the linear solve alone.
+
+**Combined target**: analytic Jacobians + sliding window → estimated <2s/window
+at real-time rates.
+
 ## Files
 
 | File | Role |
