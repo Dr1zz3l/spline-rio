@@ -35,8 +35,9 @@ MoCap flags:
 - `--mocap-heading` — heading (yaw) priors from MoCap (pseudo-magnetometer)
 - `--mocap-yaw`     — both of the above
 
-## Benchmark results (--mocap-yaw, 2026-03-25, `optimize_pitch_only=true`)
+## Benchmark results (--mocap-yaw, 2026-03-26)
 
+Config: `optimize_pitch_only=true`, `lambda_gravity=0.001`.
 Both bags fly the same racing loop path.  `fast_racing` is more aggressive
 (higher speeds, more Doppler aliasing, higher angular velocity).
 
@@ -45,12 +46,23 @@ Both bags hover from t≈16s, racing begins at t≈19.1s.
 
 | Variant | slow_racing pos | slow_racing vel | slow_racing ori | fast_racing pos | fast_racing vel | fast_racing ori |
 |---|---|---|---|---|---|---|
-| **Baseline (Huber, pitch-only extr.)** | **0.346 m** | **0.219 m/s** | **5.8°** | **1.417 m** | **0.411 m/s** | **4.2°** |
-| Preint replaces accel (--preintegrate) | 0.346 m | 0.274 m/s | **4.8°** | 1.494 m | 0.488 m/s | 4.9° |
+| **Baseline (Huber + gravity, pitch-only extr.)** | 0.374 m | 0.226 m/s | **3.3°** | **1.397 m** | **0.412 m/s** | 4.4° |
+| No gravity (λ=0, pitch-only) | **0.346 m** | **0.219 m/s** | 5.8° | 1.417 m | 0.411 m/s | **4.2°** |
+| Preint replaces accel (--preintegrate) | 0.346 m | 0.274 m/s | 4.8° | 1.494 m | 0.488 m/s | 4.9° |
 | GNC (--gnc, μ_final=1) | 0.396 m | 0.243 m/s | 7.4° | 1.476 m | 0.472 m/s | 5.7° |
 
 **Note:** Old benchmark (2026-03-25, free extrinsics) showed 9.6°/5.7° but was corrupted by
 roll/yaw extrinsic drift (+5–7°). See "Extrinsic observability" section below.
+
+Gravity-direction factor (`lambda_gravity=0.001`, default enabled):
+- Mahony-style roll/pitch constraint: `r = normalize(a_debiased)·g - R^T·[0,0,g]`
+- Down-weighted when `‖a_debiased‖ deviates from g by > gravity_accel_threshold` (3.0 m/s²)
+- Applied at every IMU sample (~200 Hz after downsampling)
+- **Dramatically improves slow_racing** orientation (5.8°→3.3°, −43%), especially yaw (4.9°→2.6°)
+  — gravity anchors roll/pitch absolutely, which lets the heading prior work more effectively for yaw
+- **Small regression for fast_racing** (4.2°→4.4°, +5%) — systematic z-velocity bias causes large
+  accelerations that the factor partially fights even with the dynamic threshold
+- λ=0.001 is the sweet spot; λ≥0.01 diverges fast_racing; λ=0 disables
 
 Preintegration (`--preintegrate`):
 - Replaces per-sample accel residuals with Forster TRO-2017 9D factors

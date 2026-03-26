@@ -17,7 +17,7 @@ lambda_snap_pos: 0.0001    # Position minimum-snap weight
 lambda_ori_reg: 0.001      # Orientation increment regularization (penalizes ||Omega_j||^2 per knot); sole orientation regularizer
 
 # Gravity-direction factor (absolute roll/pitch from accelerometer, Mahony-style)
-lambda_gravity: 0.0            # Weight for gravity-direction residual; 0 = disabled
+lambda_gravity: 0.001          # Weight for gravity-direction residual; 0 = disabled
 gravity_accel_threshold: 3.0   # Dynamic trust sigma (m/s²): down-weight when ||a_debiased|| deviates from g
 
 # Heading factor (yaw constraint from MoCap pseudo-magnetometer)
