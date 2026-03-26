@@ -1,4 +1,4 @@
-# Live RIO Solver — Summary (2026-03-25)
+# Live RIO Solver — Summary (2026-03-26)
 
 ## What it does
 
@@ -26,6 +26,9 @@ cd analysis/
 # With MoCap heading prior + position boundary (best accuracy)
 ../.venv/bin/python3 validate_live_solver.py slow_racing_best_velocity --mocap-yaw
 
+# C++ Ceres solver (much faster, better results)
+../.venv/bin/python3 validate_live_solver.py slow_racing_best_velocity --mocap-yaw --cpp
+
 # Multi-bag evaluation → eval_results/<label>_<timestamp>.json
 ../.venv/bin/python3 eval_bags.py --label baseline --flags "--mocap-yaw"
 ```
@@ -35,21 +38,44 @@ MoCap flags:
 - `--mocap-heading` — heading (yaw) priors from MoCap (pseudo-magnetometer)
 - `--mocap-yaw`     — both of the above
 
+C++ flags:
+- `--cpp`           — use C++ Ceres solver (loads `config/solver_cpp.yaml` overrides automatically)
+- `--imu-hz N`      — override IMU rate (default: 1000 for `--cpp`, 200 for Python)
+- `--set key=value` — override any solver.yaml key at runtime (repeatable)
+
 ## Benchmark results (--mocap-yaw, 2026-03-26)
 
+### C++ solver (current best)
+
+Uses full-rate IMU (~1000 Hz), `config/solver_cpp.yaml` overrides:
+`lambda_gyro=4.0, lambda_snap_pos=2e-5, lambda_bias_prior=10000`
+
+| Solver | slow pos | slow vel | slow ori | fast pos | fast vel | fast ori | time |
+|--------|---------|---------|---------|---------|---------|---------|------|
+| **C++ (current)** | **0.146 m** | **0.147 m/s** | **0.96°** | **0.925 m** | **0.371 m/s** | **2.35°** | 15–19 s |
+| Python baseline | 0.374 m | 0.226 m/s | 3.32° | 1.397 m | 0.412 m/s | 4.38° | ~10 min |
+
+C++ is **2–3× better than Python** on all metrics, and **30× faster**.
+
+Key config findings (all with full-rate IMU, `--cpp`):
+
+| Change | Effect |
+|--------|--------|
+| IMU 200 Hz → ~1000 Hz (raw rate) | slow: 0.358→0.147m; fast: 1.52→0.925m; faster convergence |
+| lambda_snap_pos: 1e-4 → 2e-5 | min-snap was over-constraining racing dynamics |
+| lambda_gyro: 1.0 → 4.0 | better orientation tracking, reduces acc_bias blow-up |
+| lambda_bias_prior: 1.0 → 10000 | prevents bias "trash-can" at full IMU rate; critical for backflips |
+
+### Python solver variants (200 Hz IMU)
+
 Config: `optimize_pitch_only=true`, `lambda_gravity=0.001`.
-Both bags fly the same racing loop path.  `fast_racing` is more aggressive
-(higher speeds, more Doppler aliasing, higher angular velocity).
 
-Bag timing convention in `bags.yaml`: `[start_offset_sec, duration_sec]`.
-Both bags hover from t≈16s, racing begins at t≈19.1s.
-
-| Variant | slow_racing pos | slow_racing vel | slow_racing ori | fast_racing pos | fast_racing vel | fast_racing ori |
-|---|---|---|---|---|---|---|
-| **Baseline (Huber + gravity, pitch-only extr.)** | 0.374 m | 0.226 m/s | **3.3°** | **1.397 m** | **0.412 m/s** | 4.4° |
-| No gravity (λ=0, pitch-only) | **0.346 m** | **0.219 m/s** | 5.8° | 1.417 m | 0.411 m/s | **4.2°** |
-| Preint replaces accel (--preintegrate) | 0.346 m | 0.274 m/s | 4.8° | 1.494 m | 0.488 m/s | 4.9° |
-| GNC (--gnc, μ_final=1) | 0.396 m | 0.243 m/s | 7.4° | 1.476 m | 0.472 m/s | 5.7° |
+| Variant | slow pos | slow ori | fast pos | fast ori |
+|---------|---------|---------|---------|---------|
+| Baseline (Huber + gravity) | 0.374 m | 3.3° | 1.397 m | 4.4° |
+| No gravity (λ=0) | **0.346 m** | 5.8° | 1.417 m | **4.2°** |
+| Preintegration (--preintegrate) | 0.346 m | 4.8° | 1.494 m | 4.9° |
+| GNC (--gnc, μ_final=1) | 0.396 m | 7.4° | 1.476 m | 5.7° |
 
 **Note:** Old benchmark (2026-03-25, free extrinsics) showed 9.6°/5.7° but was corrupted by
 roll/yaw extrinsic drift (+5–7°). See "Extrinsic observability" section below.
@@ -121,9 +147,12 @@ already handling aliases correctly from the good initialisation.
 
 ### IMU downsampling
 
-IMU is pre-downsampled to ~200 Hz before the solver:
-`IMU_DOWNSAMPLE = max(1, len(imu_data) // (DURATION * 200))`.
-Full-rate data is kept in `imu_data_full` for preintegration and gyro init.
+Raw IMU rate is ~1000 Hz.  Default target rate is solver-dependent:
+- `--cpp`: full rate (stride=1, ~1000 Hz) — dense constraints enable tight bias priors
+- Python: ~200 Hz — necessary to keep 10-min runtime
+
+Override with `--imu-hz N`.  Full-rate data is always kept in `imu_data_full`
+for preintegration and gyro integration init.
 
 ### Position B-spline initialisation
 
@@ -136,8 +165,10 @@ is 14× underdetermined (3611 CPs, ~258 radar frames at dt_pos=0.005 s).
 
 Stationary detection (`detect_stationary_bias()`) during the hover phase
 before t=19.1 s gives a good accelerometer and gyroscope bias seed.
-Biases are optimised freely (λ_bias_prior = 1.0 — relaxed from legacy
-values of 1000/10000 that prevented bias from moving).
+
+- Python: biases optimised freely (λ_bias_prior = 1.0) — sparse IMU needs freedom
+- C++: tight prior (λ_bias_prior = 10000) — full-rate IMU provides enough constraints that
+  biases don't need flexibility; prevents optimizer from absorbing dynamics into bias
 
 ## Extrinsic observability
 
@@ -163,6 +194,41 @@ The physical mount is 30° pitch; solver self-calibrates to:
 
 The partial pitch correction for fast_racing partly absorbs the systematic
 z-velocity bias from limited elevation diversity.
+
+## Backflips bag
+
+The backflips bag shows the limits of the batch approach for extreme dynamics:
+
+| Solver | pos | vel | ori |
+|--------|-----|-----|-----|
+| Python | 1.88 m | 3.8 m/s | 13° |
+| C++ default config | 3.86 m | 4.9 m/s | 52° |
+| C++ tuned (snap=2e-5, gyro=4, prior=10k) | 2.93 m | 4.6 m/s | 10.7° |
+| C++ snap=1e-6 (backflip-optimised) | 1.56 m | 3.2 m/s | 10.2° |
+
+**Root cause: initialization drift from large gyro bias**
+
+Gyro bias z = +0.152 rad/s (8.7°/s).  Over the 5s trajectory the orientation
+init already drifts 10.8° by t=2.5s — before optimization starts.
+
+```
+Gyro-init angle error vs MoCap:
+  slow_racing:  0° → 7.7° over 25.8s  (0.30°/s)
+  fast_racing:  0° → 2.4° over 18s    (0.13°/s — stays low, small bias)
+  backflips:    0° → 10.8° at t=2.5s  (4.3°/s — large bias + short window)
+```
+
+The optimizer can compensate if the init is within the basin of attraction
+(~3m position init is similar across bags), but the orientation init for
+backflips is already ~11° wrong *for the wrong spline shape*, so the
+optimizer converges to a local minimum that does not capture the flips.
+
+**Fix: sliding window (Phase 4)**
+
+In a 1–2s sliding window, the gyro integration runs for at most 1-2 knot
+intervals from a known state.  Drift at 4.3°/s over 1s ≤ 5° — recoverable.
+The previous window's optimized orientation initializes the next, so errors
+do not accumulate.  Backflips (~0.25s each) fit entirely within a 1s window.
 
 ## Known limitations
 
