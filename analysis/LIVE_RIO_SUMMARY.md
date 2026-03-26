@@ -206,29 +206,37 @@ The backflips bag shows the limits of the batch approach for extreme dynamics:
 | C++ tuned (snap=2e-5, gyro=4, prior=10k) | 2.93 m | 4.6 m/s | 10.7° |
 | C++ snap=1e-6 (backflip-optimised) | 1.56 m | 3.2 m/s | 10.2° |
 
-**Root cause: initialization drift from large gyro bias**
+**Root cause: position initialization missing flip dynamics**
 
-Gyro bias z = +0.152 rad/s (8.7°/s).  Over the 5s trajectory the orientation
-init already drifts 10.8° by t=2.5s — before optimization starts.
+The gyro bias IS subtracted before integration (`omega = z_gyro - b_g`).
+The orientation error for backflips is oscillating (not monotonically growing):
 
 ```
 Gyro-init angle error vs MoCap:
-  slow_racing:  0° → 7.7° over 25.8s  (0.30°/s)
-  fast_racing:  0° → 2.4° over 18s    (0.13°/s — stays low, small bias)
-  backflips:    0° → 10.8° at t=2.5s  (4.3°/s — large bias + short window)
+  slow_racing:  0° → 7.7° over 25.8s  (monotonic, ~bias drift)
+  fast_racing:  0° → 2.4° over 18s    (low and stable)
+  backflips:    0° → 10.8° at t=2.5s → 6.3° at t=3.75s → 8.4° at t=5.0s
 ```
 
-The optimizer can compensate if the init is within the basin of attraction
-(~3m position init is similar across bags), but the orientation init for
-backflips is already ~11° wrong *for the wrong spline shape*, so the
-optimizer converges to a local minimum that does not capture the flips.
+The oscillating backflips pattern is gyro scale-factor / high-rate integration
+error, not bias accumulation.  The orientation init is roughly correct (the
+flips are tracked), but with some phase/amplitude error.
+
+The bigger problem is the **position initialization**.  During backflips the
+drone undergoes several metres of Z oscillation, but the P2 dead-reckoning
+completely misses this: radar WLS is unreliable when the antenna is rotating
+rapidly (aliased Doppler, wrong body→world projection from orientation error),
+so the initial position trajectory is flat.  Starting from a flat trajectory,
+the min-snap regularization prevents the optimizer from freely reshaping into
+the flip shape — it converges to a local minimum instead.
 
 **Fix: sliding window (Phase 4)**
 
-In a 1–2s sliding window, the gyro integration runs for at most 1-2 knot
-intervals from a known state.  Drift at 4.3°/s over 1s ≤ 5° — recoverable.
-The previous window's optimized orientation initializes the next, so errors
-do not accumulate.  Backflips (~0.25s each) fit entirely within a 1s window.
+In a 1–2s sliding window, the previous window's optimized state (which already
+captured the flip dynamics) provides the initialization for the next window.
+The optimizer only needs a small correction from a position init that is
+already physically correct.  Backflips (~0.25s each) fit entirely within
+one 1s window.
 
 ## Known limitations
 
