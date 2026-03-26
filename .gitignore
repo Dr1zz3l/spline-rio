@@ -28,3 +28,7 @@ rosbags/
 
 *.pyc
 *.png
+
+# C++ build artifacts
+rio_solver_cpp/build_release/
+rio_solver_cpp/build_debug/
