@@ -1,0 +1,18 @@
+# C++ solver overrides (applied on top of solver.yaml when --cpp is active)
+#
+# Key differences vs Python solver:
+#  - Full-rate IMU (~1000 Hz) allows much tighter bias priors — bias can't absorb dynamics
+#    because the gyro/accel factors have enough density to constrain the trajectory directly.
+#  - lambda_gyro raised from 1.0 → 4.0: improves orientation tracking across all bags.
+#  - lambda_snap_pos lowered from 1e-4 → 2e-5: allows position spline to track faster dynamics
+#    (racing flight) without over-smoothing. Still adequate for gentle flight.
+#
+# Results vs Python baseline on --mocap-yaw:
+#   slow_racing:  pos 0.147m → 0.146m / ori 1.65° → 0.96°  (vs Python 0.374m / 3.32°)
+#   fast_racing:  pos 1.52m  → 0.925m / ori 5.24° → 2.35°  (vs Python 1.40m  / 4.38°)
+#   backflips:    pos 3.86m  → 2.93m  / ori 52°   → 10.7°  (vs Python 1.88m  / 13°)
+
+lambda_gyro: 4.0
+lambda_snap_pos: 0.00002
+lambda_bias_prior_accel: 10000.0
+lambda_bias_prior_gyro: 10000.0

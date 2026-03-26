@@ -766,6 +766,23 @@ def main():
         if idx_b + 1 < len(sys.argv):
             BIAS_PRESET = sys.argv[idx_b + 1]
 
+    # Apply C++ solver overrides from config/solver_cpp.yaml (before --set, so --set can further override)
+    if USE_CPP:
+        _cpp_overrides = load_config().get('solver_cpp', {})
+        for k, v in _cpp_overrides.items():
+            _SOLVER_CFG[k] = v
+
+    # --set key=value  (repeatable): override solver.yaml entries at runtime
+    # e.g.: --set lambda_bias_prior_accel=100 --set lambda_gravity=0
+    for i, arg in enumerate(sys.argv):
+        if arg == '--set' and i + 1 < len(sys.argv):
+            k, _, v = sys.argv[i + 1].partition('=')
+            try:
+                _SOLVER_CFG[k] = float(v) if ('.' in v or 'e' in v.lower()) else int(v)
+            except ValueError:
+                _SOLVER_CFG[k] = v
+            print(f"  [--set] {k} = {_SOLVER_CFG[k]}")
+
     # Init mode string (for display/filenames)
     mode_parts = []
     if USE_MOCAP_INIT:    mode_parts.append("mocap-init")
