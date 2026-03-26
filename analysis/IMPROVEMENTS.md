@@ -9,18 +9,8 @@
 | 3 | Position B-spline init from radar dead-reckoning | ✅ Done | Linear interp at CP times; LS fit was 14× underdetermined and reverted |
 | A1 | IMU preintegration (`--preintegrate` flag) | ✅ Done | Forster TRO-2017; replaces accel rows, keeps gyro; see FINDINGS_PREINTEGRATION.md |
 | A2 | Multi-bag evaluation script | ✅ Done | `eval_bags.py`; results in `eval_results/` |
-| A3 | GNC outlier rejection | 🔜 Planned | Yang et al. RA-L 2020; ~50-line change to `solve_trajectory_nonlinear` |
-
----
-
-## A3. GNC Outlier Rejection (not yet started)
-
-Replace fixed Huber loss with Graduated Non-Convexity: anneal shape parameter
-in outer loop over LM iterations. Better rejection of structured Doppler
-outliers (aliased returns that survive unwrapping).
-
-**Literature**: Yang et al., "Graduated Non-Convexity for Robust Spatial
-Perception" (RA-L 2020)
+| A3 | GNC outlier rejection | ✅ Done | `--gnc` flag; Geman-McClure loss with phase annealing. Does NOT improve results with corrected extrinsics — avoid. |
+| A4 | Fix extrinsic roll/yaw drift | ✅ Done | `optimize_pitch_only: true`; was inflating ori RMSE (9.5° → 5.8° slow, 5.7° → 4.2° fast) |
 
 ---
 
