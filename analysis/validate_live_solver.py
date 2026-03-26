@@ -753,6 +753,13 @@ def main():
     USE_GNC = '--gnc' in sys.argv
     USE_CPP = '--cpp' in sys.argv
 
+    # Default: full rate for --cpp (fast enough + better results), 200 Hz for Python solver
+    IMU_TARGET_HZ = 1000 if USE_CPP else 200
+    if '--imu-hz' in sys.argv:
+        idx_hz = sys.argv.index('--imu-hz')
+        if idx_hz + 1 < len(sys.argv):
+            IMU_TARGET_HZ = int(sys.argv[idx_hz + 1])
+
     BIAS_PRESET = None
     if '--bias' in sys.argv:
         idx_b = sys.argv.index('--bias')
@@ -896,11 +903,11 @@ def main():
         print("ERROR: Insufficient sensor data!")
         return
 
-    # Downsample IMU (~200 Hz is sufficient)
-    IMU_DOWNSAMPLE = max(1, len(imu_data) // (int(DURATION * 200)))
+    # Downsample IMU to target rate (default 200 Hz; use --imu-hz N to override)
+    IMU_DOWNSAMPLE = max(1, len(imu_data) // (int(DURATION * IMU_TARGET_HZ)))
     imu_data_full  = imu_data  # keep full-rate for gyro integration
     imu_data       = imu_data[::IMU_DOWNSAMPLE]
-    print(f"  IMU after downsampling (1/{IMU_DOWNSAMPLE}): {len(imu_data)}")
+    print(f"  IMU after downsampling to ~{IMU_TARGET_HZ} Hz (1/{IMU_DOWNSAMPLE}): {len(imu_data)}")
 
     # Time reference = first IMU sample after time offset (MoCap-free)
     t_ref = imu_data[0].timestamp
