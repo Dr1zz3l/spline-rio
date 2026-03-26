@@ -29,7 +29,14 @@ All scripts run from `analysis/` and take a bag name as the first argument:
 ```bash
 cd analysis/
 
-# Live RIO solver — MoCap-free init, MoCap used only for eval (MAIN ENTRY POINT)
+# Live RIO solver — C++ backend (CURRENT BEST, ~15-20s, 2-3× better than Python)
+../.venv/bin/python3 validate_live_solver.py slow_racing_best_velocity --mocap-yaw --cpp
+../.venv/bin/python3 validate_live_solver.py fast_racing_best_velocity --mocap-yaw --cpp
+# --cpp loads config/solver_cpp.yaml overrides automatically (full-rate IMU, tighter priors)
+# --set key=value overrides any solver.yaml param at runtime (repeatable)
+# --imu-hz N overrides IMU rate (default: 1000 for --cpp, 200 for Python)
+
+# Live RIO solver — Python backend (~10 min)
 ../.venv/bin/python3 validate_live_solver.py slow_racing_best_velocity --mocap-yaw
 ../.venv/bin/python3 validate_live_solver.py fast_racing_best_velocity --mocap-yaw
 # Flags: --mocap-yaw (heading+pos priors), --no-plot, --gnc, --preintegrate
@@ -84,7 +91,7 @@ Flags: `--no-flip` (override per-bag yaw flip), `--flip` (force flip on), `--no-
 
 | File | Role |
 |------|------|
-| `validate_live_solver.py` | **Live RIO: MoCap-free P1-P3 init + LM solver (main entry point)** |
+| `validate_live_solver.py` | **Live RIO: MoCap-free P1-P3 init + solver (main entry point)** |
 | `validate_nonlinear_solver.py` | Batch solver: full LM with MoCap init (shared solver core) |
 | `lib/radar_velocity_utils.py` | Forward model, WLS ego-velocity solver, Huber loss, extrinsic calibration |
 | `lib/bspline_utils.py` | Uniform B-splines (Cox-de Boor), derivatives, min-snap regularization |
@@ -96,8 +103,38 @@ Flags: `--no-flip` (override per-bag yaw flip), `--flip` (force flip on), `--no-
 | `config_loader.py` | Loads all YAML configs from `config/` as a dict-of-dicts |
 | `config/extrinsics.yaml` | Extrinsics: [180, 25.5, 0] deg (solver-calibrated pitch, physical 30°), translation [0.08,0.02,-0.01] m |
 | `config/bags.yaml` | Bag aliases → paths, flipped bag set, per-bag timing windows |
-| `config/solver.yaml` | LM hyperparameters, B-spline config, extrinsic optimization mode |
+| `config/solver.yaml` | Python solver hyperparameters (default) |
+| `config/solver_cpp.yaml` | C++ solver overrides loaded on `--cpp` (IMU rate, snap, gyro weight, bias prior) |
 | `diagnostics/diagnose_doppler_sign.py` | Compares both Doppler code paths at MoCap ground truth; tests sign convention |
+
+### C++ Ceres Solver (`rio_solver_cpp/`)
+
+Batch C++ solver called via pybind11 from `validate_live_solver.py --cpp`.
+
+| File | Role |
+|------|------|
+| `CMakeLists.txt` | Build (Release): `cd build_release && cmake .. && cmake --build . -j$(nproc)` |
+| `include/rio/trajectory.h` | Trajectory state: pos CPs + quaternion knots + biases |
+| `include/rio/factors/` | Ceres cost functors: radar Doppler, accel, gyro, gravity, heading, regularization, bias prior |
+| `include/rio/solver.h` | Public API (`SolverConfig`, `SolverResult`, `solve()`) |
+| `src/solver.cpp` | Problem construction + Ceres LM solve |
+| `src/pybind_module.cpp` | Python↔C++ bridge |
+| `tests/test_spline.cpp` | Phase 1 validation: spline eval + trajectory indexing |
+| `scripts/build.sh` | Convenience build script |
+
+**Orientation convention**: quaternion knots [x,y,z,w] = `_base_rotations[i]` from Python's `CumulativeSO3BSpline`. Uses basalt `CeresSplineHelper<N>::evaluate_lie()`.
+
+**C++ vs Python results** (--mocap-yaw, full-rate IMU ~1000 Hz):
+
+| Bag | Python pos/ori | C++ pos/ori | C++ solve time |
+|-----|---------------|-------------|---------------|
+| slow_racing | 0.374m / 3.32° | **0.146m / 0.96°** | 19s |
+| fast_racing | 1.397m / 4.38° | **0.925m / 2.35°** | 16s |
+
+**C++ solver config** (`config/solver_cpp.yaml` overrides vs `solver.yaml`):
+- `lambda_gyro`: 1.0 → **4.0** (tighter orientation constraint)
+- `lambda_snap_pos`: 1e-4 → **2e-5** (less over-smoothing for racing dynamics)
+- `lambda_bias_prior_accel/gyro`: 1.0 → **10000** (full-rate IMU makes tight prior safe; prevents bias trash-can)
 
 ### State Representation
 
@@ -136,23 +173,31 @@ observable from Doppler; free roll/yaw optimization drifts 5–7° and corrupts 
 
 The radar has limited elevation diversity (2 TX antennas), causing a systematic z-velocity bias of −0.5 to −0.65 m/s. Doppler quantization is 0.63 m/s per bin — keep Huber δ ≥ 1.0 m/s.
 
-## Key Hyperparameters (`config/solver.yaml` — used by live solver)
+## Key Hyperparameters
+
+### `config/solver.yaml` — Python solver defaults
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | `huber_delta` | 1.0 m/s | Must be ≥ radar Doppler bin size (0.63 m/s) |
 | `lambda_accel` | 0.01 | Accelerometer weight |
-| `lambda_gyro` | 1.0 | Gyroscope weight (primary orientation sensor) |
-| `lambda_ori_reg` | 0.001 | Orientation increment regularization (penalizes `‖Ω_j‖²` per knot) |
-| `ori_base_jacobian_window` | 20 | Max base knots per measurement for orientation Jacobian (~1 s); 0 = full exact |
-| `lambda_bias_prior_accel` | 1.0 | Relaxed prior — biases free to optimize (not a trash can) |
-| `lambda_bias_prior_gyro` | 1.0 | Same reasoning |
-| `lambda_boundary_vel/pos` | 1000.0 | Anchor start of trajectory |
-| `lambda_boundary_ori` | 1000.0 | Anchor start orientation |
+| `lambda_gyro` | 1.0 | Gyroscope weight |
+| `lambda_snap_pos` | 0.0001 | Min-snap position regularization |
+| `lambda_ori_reg` | 0.001 | Orientation increment regularization |
+| `lambda_bias_prior_accel` | 1.0 | Relaxed — biases free to adjust |
+| `lambda_bias_prior_gyro` | 1.0 | Same |
+| `lambda_boundary_vel/pos/ori` | 1000.0 | Anchor start of trajectory |
 | `optimize_pitch_only` | **true** | **Must stay true** — only pitch is Doppler-observable |
-| `early_stop_patience` | 20 | Stop after N consecutive rejected LM steps |
-| `converge_window` | 50 | Sliding window (accepted steps) for plateau detection |
-| `rtol_converge` | 0.01 | Relative cost decrease threshold over window |
+| `max_iterations` | 400 | Used by C++ solver; Python uses early-stop criteria |
+
+### `config/solver_cpp.yaml` — C++ overrides (applied on `--cpp`)
+
+| Parameter | Value | Reason |
+|-----------|-------|--------|
+| `lambda_gyro` | **4.0** | Tighter orientation; reduces acc_bias blow-up |
+| `lambda_snap_pos` | **2e-5** | Less over-smoothing for racing dynamics |
+| `lambda_bias_prior_accel` | **10000** | Full-rate IMU provides enough constraints; prevents trash-can |
+| `lambda_bias_prior_gyro` | **10000** | Same |
 
 ## ROS Topics
 
