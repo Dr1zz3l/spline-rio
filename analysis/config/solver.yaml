@@ -45,7 +45,7 @@ gnc_div_factor: 2.0   # μ division factor per GNC phase; 2.0 → ~10 phases (90
 gnc_mu_final: 1.0    # Final μ for GNC. δ²=1.0 (aggressive, ~TLS at δ); 9*δ²=9 (Huber-like for inliers, more aggressive for big outliers)
 
 # Optimizer
-max_iterations: 40
+max_iterations: 400
 early_stop_patience: 20  # Stop after this many consecutive rejected LM steps; -1 = disabled
 converge_window: 50       # Sliding window size (accepted steps) for plateau detection
 rtol_converge: 0.01      # Relative cost decrease threshold over the window; stop if below this

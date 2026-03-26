@@ -62,6 +62,148 @@ from validate_nonlinear_solver import (
 )
 
 
+# ==================== C++ Ceres solver bridge ====================
+
+def _solve_cpp(initial_state, solver_radar_frames, imu_data,
+               extrinsics_cfg, solver_cfg,
+               heading_priors=None):
+    """
+    Call the C++ Ceres solver (rio_solver_cpp) in place of
+    solve_trajectory_nonlinear().  Returns an updated TrajectoryState.
+
+    Orientation conversion:
+      Python: omega_knots[i] = incremental so3 log increments
+      Basalt/C++: quaternion knots q[i] = absolute rotation as xyzw
+      q[i] = _base_rotations[i]  (the cumulative product rotation at knot i)
+
+    After the C++ solve, converts back via CumulativeSO3BSpline.from_rotation_samples().
+    """
+    import sys as _sys, os as _os
+    _build_dirs = [
+        _os.path.join(_os.path.dirname(__file__), '..', 'rio_solver_cpp', 'build_release'),
+        _os.path.join(_os.path.dirname(__file__), '..', 'rio_solver_cpp', 'build_debug'),
+        _os.path.dirname(__file__),
+    ]
+    for d in _build_dirs:
+        d = _os.path.abspath(d)
+        if d not in _sys.path:
+            _sys.path.insert(0, d)
+    import rio_solver
+
+    ori_spline = initial_state.ori_spline
+    pos_bspline = initial_state.pos_bspline
+
+    # --- Convert orientation: omega_knots → absolute quaternion knots (xyzw) ---
+    R_abs = ori_spline._base_rotations  # (N_ori, 3, 3), already computed
+    init_ori_quats = Rotation.from_matrix(R_abs).as_quat()  # (N_ori, 4) xyzw
+
+    # --- Position control points ---
+    init_pos_cps = pos_bspline.control_points.copy()  # (N_pos, 3)
+
+    # --- Biases ---
+    init_biases = np.concatenate([initial_state.acc_bias, initial_state.gyr_bias])  # (6,)
+
+    # --- Config ---
+    cfg = rio_solver.SolverConfig()
+    cfg.dt_pos              = solver_cfg.get('dt_pos', 0.005)
+    cfg.dt_ori              = solver_cfg.get('dt_ori', 0.008)
+    cfg.huber_delta         = solver_cfg.get('huber_delta', 1.0)
+    cfg.min_range           = solver_cfg.get('min_range', 0.2)
+    cfg.lambda_accel        = solver_cfg.get('lambda_accel', 0.01)
+    cfg.lambda_gyro         = solver_cfg.get('lambda_gyro', 1.0)
+    cfg.huber_delta_accel   = solver_cfg.get('huber_delta_accel', 2.0)
+    cfg.lambda_snap_pos     = solver_cfg.get('lambda_snap_pos', 0.0001)
+    cfg.lambda_ori_reg      = solver_cfg.get('lambda_ori_reg', 0.001)
+    cfg.lambda_gravity      = solver_cfg.get('lambda_gravity', 0.001)
+    cfg.gravity_accel_threshold = solver_cfg.get('gravity_accel_threshold', 3.0)
+    cfg.lambda_heading      = solver_cfg.get('lambda_heading', 3.0)
+    cfg.lambda_bias_prior_accel = solver_cfg.get('lambda_bias_prior_accel', 1.0)
+    cfg.lambda_bias_prior_gyro  = solver_cfg.get('lambda_bias_prior_gyro', 1.0)
+    cfg.lambda_boundary_pos = solver_cfg.get('lambda_boundary_pos', 1000.0)
+    cfg.lambda_boundary_vel = solver_cfg.get('lambda_boundary_vel', 1000.0)
+    cfg.lambda_boundary_ori = solver_cfg.get('lambda_boundary_ori', 1000.0)
+    cfg.lambda_boundary_ori_yaw = solver_cfg.get('lambda_boundary_ori_yaw', 0.0)
+    cfg.lock_extrinsics     = solver_cfg.get('lock_extrinsics', False)
+    cfg.optimize_pitch_only = solver_cfg.get('optimize_pitch_only', True)
+    cfg.lambda_extrinsic_prior = solver_cfg.get('lambda_extrinsic_prior', 10.0)
+    cfg.max_iterations      = solver_cfg.get('max_iterations', 400)
+
+    # --- Extrinsics ---
+    euler_deg = extrinsics_cfg.get('rotation_euler_deg', [180.0, 25.5, 0.0])
+    ext = rio_solver.ExtrinsicConfig()
+    ext.roll_deg  = euler_deg[0]
+    ext.pitch_deg = euler_deg[1]
+    ext.yaw_deg   = euler_deg[2]
+    t_body = extrinsics_cfg.get('translation_body_m', [0.08, 0.02, -0.01])
+    ext.tx, ext.ty, ext.tz = t_body[0], t_body[1], t_body[2]
+
+    # --- Convert radar frames ---
+    cpp_radar_frames = []
+    for frame in solver_radar_frames:
+        n = frame.num_points()
+        if n == 0:
+            continue
+        pts = np.zeros((n, 4))
+        pts[:, :3] = frame.positions[:n]
+        pts[:, 3]  = frame.velocities[:n] if frame.velocities is not None else 0.0
+        cpp_radar_frames.append(rio_solver.make_radar_frame(frame.timestamp, pts))
+
+    # --- Convert IMU samples ---
+    imu_np = np.zeros((len(imu_data), 7))
+    for i, s in enumerate(imu_data):
+        imu_np[i, 0] = s.timestamp
+        imu_np[i, 1:4] = s.linear_acceleration
+        imu_np[i, 4:7] = s.angular_velocity
+    cpp_imu = rio_solver.make_imu_samples(imu_np)
+
+    # --- Heading samples ---
+    # heading_priors is List[(t_abs, R_gt)] with R_gt a 3x3 matrix.
+    # C++ expects List[Tuple[float, float]] = (timestamp, yaw_rad).
+    # Extract yaw = atan2(R[1,0], R[0,0]).
+    if heading_priors:
+        cpp_heading = [(float(t), float(np.arctan2(R[1, 0], R[0, 0])))
+                       for t, R in heading_priors]
+    else:
+        cpp_heading = []
+
+    # --- t_ref ---
+    t_ref = pos_bspline.t_ref
+
+    # --- Solve ---
+    print(f"  [--cpp] Calling C++ Ceres solver "
+          f"({len(cpp_radar_frames)} radar frames, {len(cpp_imu)} IMU samples)")
+    t0_cpp = time.time()
+    result = rio_solver.solve(
+        cpp_radar_frames, cpp_imu, cfg, ext,
+        init_pos_cps, init_ori_quats, init_biases,
+        t_ref, cpp_heading)
+    dt_cpp = time.time() - t0_cpp
+    print(f"  [--cpp] Done in {dt_cpp:.2f}s  |  {result.solver_summary}")
+
+    # --- Convert result back to TrajectoryState ---
+    # Quaternion knots → absolute rotation matrices → omega_knots
+    result_quats = result.ori_knots  # (N_ori, 4) xyzw
+    result_R_abs = Rotation.from_quat(result_quats).as_matrix()  # (N_ori, 3, 3)
+    new_ori_spline = CumulativeSO3BSpline.from_rotation_samples(
+        result_R_abs, dt=ori_spline.dt, t_ref=ori_spline.t_ref)
+
+    new_pos_bspline = UniformBSpline(
+        result.pos_cps, pos_bspline.degree, pos_bspline.dt)
+    new_pos_bspline.t_ref = t_ref
+
+    result_biases = result.biases
+    new_acc_bias = np.array(result_biases[:3])
+    new_gyr_bias = np.array(result_biases[3:])
+
+    return TrajectoryState(
+        pos_bspline=new_pos_bspline,
+        ori_spline=new_ori_spline,
+        acc_bias=new_acc_bias,
+        gyr_bias=new_gyr_bias,
+        radar_extrinsic_delta=np.zeros(3),
+    )
+
+
 # ==================== Config ====================
 _cfg = load_config()
 BAGS = _cfg['bags']['bags']
@@ -609,6 +751,7 @@ def main():
     NO_PLOT = '--no-plot' in sys.argv
     USE_PREINTEGRATE = '--preintegrate' in sys.argv
     USE_GNC = '--gnc' in sys.argv
+    USE_CPP = '--cpp' in sys.argv
 
     BIAS_PRESET = None
     if '--bias' in sys.argv:
@@ -1155,57 +1298,67 @@ def main():
     # intermediate knots unconstrained — gyro pins them at 1kHz.
     solver_lambda_accel = 0.0 if USE_PREINTEGRATE else LAMBDA_ACCEL
 
-    optimized_state = solve_trajectory_nonlinear(
-        initial_state=initial_state,
-        radar_frames=solver_radar_frames,
-        imu_data=imu_data,
-        sensor_translation=TRANSLATION,
-        sensor_rotation=SENSOR_ROTATION,
-        lambda_accel=solver_lambda_accel,
-        lambda_gyro=LAMBDA_GYRO,
-        lambda_snap_pos=LAMBDA_SNAP_POS,
-        huber_delta=HUBER_DELTA,
-        huber_delta_accel=HUBER_DELTA_ACCEL,
-        max_iterations=MAX_ITERATIONS,
-        lock_biases=LOCK_BIASES,
-        use_jacobi_precond=USE_JACOBI_PRECOND,
-        verbose=True,
-        mocap_times_abs=mocap_times_abs,
-        mocap_rotations=mocap_rots_eval,
-        boundary_vel_priors=boundary_vel_priors,
-        boundary_pos_priors=boundary_pos_priors,
-        lambda_boundary_vel=LAMBDA_BOUNDARY_VEL,
-        lambda_boundary_pos=LAMBDA_BOUNDARY_POS,
-        boundary_ori_priors=boundary_ori_priors,
-        boundary_accel_priors=boundary_accel_priors,
-        boundary_gyro_priors=boundary_gyro_priors,
-        lambda_boundary_ori=LAMBDA_BOUNDARY_ORI,
-        lambda_boundary_ori_yaw=LAMBDA_BOUNDARY_ORI_YAW,
-        lambda_boundary_accel=LAMBDA_BOUNDARY_ACCEL,
-        lambda_boundary_gyro=LAMBDA_BOUNDARY_GYRO,
-        relinearize_threshold_deg=RELINEARIZE_THRESHOLD_DEG,
-        lambda_ori_reg=LAMBDA_ORI_REG,
-        lambda_bias_prior=LAMBDA_BIAS_PRIOR,
-        lambda_bias_prior_accel=LAMBDA_BIAS_PRIOR_ACCEL,
-        lambda_bias_prior_gyro=LAMBDA_BIAS_PRIOR_GYRO,
-        bias_prior_mean=bias_prior_mean,
-        lock_extrinsics=LOCK_EXTRINSICS,
-        optimize_pitch_only=OPTIMIZE_PITCH_ONLY,
-        lambda_extrinsic_prior=LAMBDA_EXTRINSIC_PRIOR,
-        v_max=V_MAX if USE_UNWRAP else None,
-        ori_base_jacobian_window=ORI_BASE_JACOBIAN_WINDOW,
-        early_stop_patience=EARLY_STOP_PATIENCE,
-        converge_window=CONVERGE_WINDOW,
-        rtol_converge=RTOL_CONVERGE,
-        lambda_gravity=LAMBDA_GRAVITY,
-        gravity_accel_threshold=GRAVITY_ACCEL_THRESHOLD,
-        lambda_heading=LAMBDA_HEADING,
-        heading_priors=heading_priors if heading_priors else None,
-        preintegrated_factors=preintegrated_factors,
-        use_gnc=USE_GNC,
-        gnc_div_factor=GNC_DIV_FACTOR,
-        gnc_mu_final=GNC_MU_FINAL,
-    )
+    if USE_CPP:
+        optimized_state = _solve_cpp(
+            initial_state=initial_state,
+            solver_radar_frames=solver_radar_frames,
+            imu_data=imu_data,
+            extrinsics_cfg=_EXTRINSICS_CFG,
+            solver_cfg=_SOLVER_CFG,
+            heading_priors=heading_priors if heading_priors else None,
+        )
+    else:
+        optimized_state = solve_trajectory_nonlinear(
+            initial_state=initial_state,
+            radar_frames=solver_radar_frames,
+            imu_data=imu_data,
+            sensor_translation=TRANSLATION,
+            sensor_rotation=SENSOR_ROTATION,
+            lambda_accel=solver_lambda_accel,
+            lambda_gyro=LAMBDA_GYRO,
+            lambda_snap_pos=LAMBDA_SNAP_POS,
+            huber_delta=HUBER_DELTA,
+            huber_delta_accel=HUBER_DELTA_ACCEL,
+            max_iterations=MAX_ITERATIONS,
+            lock_biases=LOCK_BIASES,
+            use_jacobi_precond=USE_JACOBI_PRECOND,
+            verbose=True,
+            mocap_times_abs=mocap_times_abs,
+            mocap_rotations=mocap_rots_eval,
+            boundary_vel_priors=boundary_vel_priors,
+            boundary_pos_priors=boundary_pos_priors,
+            lambda_boundary_vel=LAMBDA_BOUNDARY_VEL,
+            lambda_boundary_pos=LAMBDA_BOUNDARY_POS,
+            boundary_ori_priors=boundary_ori_priors,
+            boundary_accel_priors=boundary_accel_priors,
+            boundary_gyro_priors=boundary_gyro_priors,
+            lambda_boundary_ori=LAMBDA_BOUNDARY_ORI,
+            lambda_boundary_ori_yaw=LAMBDA_BOUNDARY_ORI_YAW,
+            lambda_boundary_accel=LAMBDA_BOUNDARY_ACCEL,
+            lambda_boundary_gyro=LAMBDA_BOUNDARY_GYRO,
+            relinearize_threshold_deg=RELINEARIZE_THRESHOLD_DEG,
+            lambda_ori_reg=LAMBDA_ORI_REG,
+            lambda_bias_prior=LAMBDA_BIAS_PRIOR,
+            lambda_bias_prior_accel=LAMBDA_BIAS_PRIOR_ACCEL,
+            lambda_bias_prior_gyro=LAMBDA_BIAS_PRIOR_GYRO,
+            bias_prior_mean=bias_prior_mean,
+            lock_extrinsics=LOCK_EXTRINSICS,
+            optimize_pitch_only=OPTIMIZE_PITCH_ONLY,
+            lambda_extrinsic_prior=LAMBDA_EXTRINSIC_PRIOR,
+            v_max=V_MAX if USE_UNWRAP else None,
+            ori_base_jacobian_window=ORI_BASE_JACOBIAN_WINDOW,
+            early_stop_patience=EARLY_STOP_PATIENCE,
+            converge_window=CONVERGE_WINDOW,
+            rtol_converge=RTOL_CONVERGE,
+            lambda_gravity=LAMBDA_GRAVITY,
+            gravity_accel_threshold=GRAVITY_ACCEL_THRESHOLD,
+            lambda_heading=LAMBDA_HEADING,
+            heading_priors=heading_priors if heading_priors else None,
+            preintegrated_factors=preintegrated_factors,
+            use_gnc=USE_GNC,
+            gnc_div_factor=GNC_DIV_FACTOR,
+            gnc_mu_final=GNC_MU_FINAL,
+        )
 
     # ==================== Evaluate against MoCap ====================
     print(f"\n{'Evaluation vs MoCap Ground Truth (not used in optimization)':=^80}")
