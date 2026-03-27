@@ -125,6 +125,7 @@ SolverResult SlidingWindowSolver::solve_window(
 
     // Extrinsics are kept fixed (same as solver.cpp — not part of the problem)
     Sophus::SO3d R_radar_to_body = extrinsic_R(ext_);
+    Eigen::Vector3d t_body_sensor(ext_.tx, ext_.ty, ext_.tz);
     const double inv_dt_pos = 1.0 / cfg_.dt_pos;
     const double inv_dt_ori = 1.0 / cfg_.dt_ori;
 
@@ -166,7 +167,7 @@ SolverResult SlidingWindowSolver::solve_window(
             auto* f = new RadarDopplerFunctor(u_sensor, pt.v,
                                                u_ori, inv_dt_ori,
                                                u_pos, inv_dt_pos,
-                                               R_radar_to_body);
+                                               R_radar_to_body, t_body_sensor);
             std::vector<int> sizes;
             for (int k = 0; k < N_ORI; ++k) sizes.push_back(4);
             for (int k = 0; k < N_POS; ++k) sizes.push_back(3);

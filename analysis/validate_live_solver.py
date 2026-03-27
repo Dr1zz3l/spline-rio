@@ -655,6 +655,7 @@ def preunwrap_radar_frames(
     acc_bias: np.ndarray = None,
     min_range: float = 0.2,
     min_points: int = 5,
+    mocap_vel_fn=None,  # optional: t -> world-frame velocity (3,); overrides IMU integration
 ) -> tuple:
     """
     Pre-unwrap radar Doppler measurements using IMU-aided velocity prediction.
@@ -663,6 +664,10 @@ def preunwrap_radar_frames(
     integrated world-frame velocity is advanced to each radar frame and used to
     pick the correct Doppler alias for every point.  After each frame the WLS
     result resets the IMU velocity to prevent accelerometer drift accumulation.
+
+    When mocap_vel_fn is provided (e.g. from differentiated MoCap positions),
+    it overrides the IMU integration entirely — useful when backflip velocities
+    exceed v_max so often that the WLS reset loop breaks down.
 
     Returns new RadarVelocity objects with corrected velocities so the solver
     sees already-unwrapped measurements from iteration 1, removing the circular
@@ -676,6 +681,8 @@ def preunwrap_radar_frames(
         v_max           : Doppler ambiguity (m/s)
         imu_data_full   : full-rate IMU samples for accel integration
         acc_bias        : (3,) accelerometer bias
+        mocap_vel_fn    : optional callable t -> (3,) world-frame CoM velocity;
+                          when given, replaces IMU integration as the prediction source
 
     Returns:
         (unwrapped_frames, n_total_pts, n_unwrapped_pts)
@@ -728,7 +735,10 @@ def preunwrap_radar_frames(
 
         # Prediction in WLS sensor frame: u · v_wls = v_meas = -u · v_sensor
         #   v_wls = -v_sensor = -(R_bs^T @ R_wb^T @ v_world)
-        if use_imu:
+        if mocap_vel_fn is not None:
+            v_world_mocap = mocap_vel_fn(t)
+            v_unwrap_pred = -(sensor_rotation.T @ R_wb.T @ v_world_mocap)
+        elif use_imu:
             v_unwrap_pred = -(sensor_rotation.T @ R_wb.T @ v_imu)
         else:
             v_unwrap_pred = v_prev_wls
@@ -1456,6 +1466,15 @@ def main():
     if NO_RADAR:
         solver_radar_frames = []
     elif USE_UNWRAP and V_MAX is not None:
+        # If MoCap positions are available, build a velocity interpolation function
+        # from finite-differenced MoCap positions. This gives exact velocity for
+        # alias correction even when backflip speeds exceed v_max (where IMU
+        # integration and WLS both break down).
+        _mocap_vel_fn = None
+        if mocap_pos_arr is not None and _mc_times is not None and len(_mc_times) > 1:
+            _mc_vels = np.gradient(mocap_pos_arr, _mc_times, axis=0)
+            _mocap_vel_fn = lambda t: np.array([
+                np.interp(t, _mc_times, _mc_vels[:, i]) for i in range(3)])
         solver_radar_frames, _n_pts, _n_unwrapped = preunwrap_radar_frames(
             radar_frames,
             gyro_times, gyro_Rs,
@@ -1464,6 +1483,7 @@ def main():
             imu_data_full=imu_data_full,
             acc_bias=acc_bias,
             min_range=MIN_RANGE,
+            mocap_vel_fn=_mocap_vel_fn,
         )
         print(f"\n  Pre-unwrapped {_n_unwrapped}/{_n_pts} radar points "
               f"({100 * _n_unwrapped / max(1, _n_pts):.1f}%)")
@@ -1584,6 +1604,11 @@ def main():
 
         t_eval_start = max(pos_bspline.t_start + t_ref, mocap_times_abs[0])
         t_eval_end   = min(pos_bspline.t_end   + t_ref, mocap_times_abs[-1])
+        # For sliding window: exclude the last window_duration to avoid final-window
+        # drift that has no subsequent window to correct it.
+        if USE_SLIDING_WINDOW and USE_CPP:
+            sw_trim = _SOLVER_CFG.get('window_duration', 3.0)
+            t_eval_end = min(t_eval_end, pos_bspline.t_end + t_ref - sw_trim)
         spline_valid_mask = ((mocap_times_abs >= t_eval_start) &
                              (mocap_times_abs <= t_eval_end))
         eval_times     = mocap_times_abs[spline_valid_mask]

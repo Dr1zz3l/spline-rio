@@ -7,10 +7,11 @@
 #  - lambda_snap_pos lowered from 1e-4 → 2e-5: allows position spline to track faster dynamics
 #    (racing flight) without over-smoothing. Still adequate for gentle flight.
 #
-# Results vs Python baseline on --mocap-yaw:
-#   slow_racing:  pos 0.147m → 0.146m / ori 1.65° → 0.96°  (vs Python 0.374m / 3.32°)
-#   fast_racing:  pos 1.52m  → 0.925m / ori 5.24° → 2.35°  (vs Python 1.40m  / 4.38°)
-#   backflips:    pos 3.86m  → 2.93m  / ori 52°   → 10.7°  (vs Python 1.88m  / 13°)
+# Results vs Python baseline on --mocap-yaw (with lever arm correction):
+#   slow_racing:  0.180m / 1.07°  (vs Python 0.374m / 3.32°)
+#   fast_racing:  1.110m / 2.56°  (vs Python 1.40m  / 4.38°)
+#   backflips:    0.527m / 3.77°  (vs Python 1.88m  / 13°)  — 5.6× pos improvement from lever arm
+# Pre-lever-arm batch: slow 0.146m/0.96°, fast 0.925m/2.35°, backflips 2.93m/10.7°
 
 lambda_gyro: 4.0
 lambda_snap_pos: 0.00002

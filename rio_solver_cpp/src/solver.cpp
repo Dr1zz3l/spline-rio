@@ -85,6 +85,7 @@ SolverResult solve(
     const int n_ori = traj.n_ori_knots();
 
     Sophus::SO3d R_radar_to_body = extrinsic.R_radar_to_body();
+    Eigen::Vector3d t_body_sensor(extrinsic.tx, extrinsic.ty, extrinsic.tz);
 
     // ---- Build Ceres problem ------------------------------------------------
     ceres::Problem problem;
@@ -137,7 +138,7 @@ SolverResult solve(
                 u_sensor, pt.v,
                 u_ori, inv_dt_ori,
                 u_pos, inv_dt_pos,
-                R_radar_to_body);
+                R_radar_to_body, t_body_sensor);
 
             // Parameter block sizes: N_ORI * 4, then N_POS * 3, then 6 (bias)
             std::vector<int> sizes;

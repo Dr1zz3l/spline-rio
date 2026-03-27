@@ -40,8 +40,9 @@ cd analysis/
 ../.venv/bin/python3 validate_live_solver.py slow_racing_best_velocity --mocap-yaw --cpp --sliding-window
 # --sliding-window: fixed-lag smoother with Schur complement marginalization
 # Default: window=3.0s, stride=0.3s, marg_prior_scale=2e-4
-# slow_racing: 0.162m / 1.77° (vs batch 0.146m / 0.96°)  ~1.5s/window
-# fast_racing: 0.710m / 4.26° (vs batch 0.925m / 2.35°)  — better than batch in pos!
+# slow_racing: 0.205m / 1.57°  (vs batch 0.180m / 1.07°)  ~1.5s/window
+# fast_racing: 0.676m / 3.01°  (vs batch 1.110m / 2.56° — better in position!)
+# Evaluation trims last window_duration seconds (no subsequent window to correct final drift)
 # marg_prior_scale key: raw Schur info O(10^5) >> lambda_boundary=1000; scale down to match
 # Tune: --set marg_prior_scale=X  (sweep 1e-4 to 1e-3 for new datasets)
 
@@ -133,12 +134,17 @@ Batch C++ solver called via pybind11 from `validate_live_solver.py --cpp`.
 
 **Orientation convention**: quaternion knots [x,y,z,w] = `_base_rotations[i]` from Python's `CumulativeSO3BSpline`. Uses basalt `CeresSplineHelper<N>::evaluate_lie()`.
 
-**C++ vs Python results** (--mocap-yaw, full-rate IMU ~1000 Hz):
+**C++ vs Python results** (--mocap-yaw, full-rate IMU ~1000 Hz, with lever arm correction):
 
 | Bag | Python pos/ori | C++ pos/ori | C++ solve time |
 |-----|---------------|-------------|---------------|
-| slow_racing | 0.374m / 3.32° | **0.146m / 0.96°** | 19s |
-| fast_racing | 1.397m / 4.38° | **0.925m / 2.35°** | 16s |
+| slow_racing | 0.374m / 3.32° | **0.180m / 1.07°** | ~7s |
+| fast_racing | 1.397m / 4.38° | **1.110m / 2.56°** | ~16s |
+| backflips | — | **0.527m / 3.77°** | ~7s |
+
+Note: lever arm (ω × r_antenna) added to C++ RadarDopplerFunctor in Phase 4b.
+Backflips improved from 2.93m/10.7° (5.6× pos, 2.8× ori). Gentle bags slightly regressed
+vs pre-lever-arm (0.146m/0.96° slow_racing) due to changed optimization landscape.
 
 **C++ solver config** (`config/solver_cpp.yaml` overrides vs `solver.yaml`):
 - `lambda_gyro`: 1.0 → **4.0** (tighter orientation constraint)
