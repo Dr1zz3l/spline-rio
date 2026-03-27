@@ -25,6 +25,14 @@ sliding window with frames
 radar huber loss dependant on config
 same as wraparound velocity
 
+--- 
+
+radar frame de-skewing? do we even know the individual timestamps of each return? check the ros1 driver for this. 
+
+---
+
+should we make time offsets trainable?
+
 ---
 
 time step distance 0.3s window mit mocap vergleichen für error werte, nicht final optimized splie da future bias
