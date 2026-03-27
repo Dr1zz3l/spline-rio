@@ -130,7 +130,15 @@ SolverResult SlidingWindowSolver::solve_window(
 
     // ---- Boundary / marginalization prior -----------------------------------
     if (prior_.valid) {
-        // Attach prior to the leading (extended) CPs/knots of this window
+        // Re-linearize: shift the prior's center to the current warm-start so
+        // it contributes curvature information without pulling toward a stale
+        // historical estimate.  sqrt_info (the curvature shape) is unchanged.
+        for (int i = 0; i < (int)prior_.bound_pos.size(); ++i)
+            prior_.bound_pos[i] = traj_.pos_cps[prior_.pos_start + i];
+        for (int i = 0; i < (int)prior_.bound_ori.size(); ++i)
+            prior_.bound_ori[i] = traj_.ori_knots[prior_.ori_start + i];
+        prior_.biases = traj_.biases;
+
         add_prior_to_problem(problem);
     } else {
         // First window: fix the leading CPs/knots constant (nothing to marginalize)
@@ -422,7 +430,12 @@ void SlidingWindowSolver::add_prior_to_problem(ceres::Problem& problem) {
         params.push_back(traj_.ori_knot_data(prior_.ori_start + i));
     params.push_back(traj_.bias_data());
 
-    problem.AddResidualBlock(cost, nullptr, params);
+    ceres::LossFunction* loss = nullptr;
+    if (cfg_.marg_prior_scale != 1.0) {
+        loss = new ceres::ScaledLoss(nullptr, cfg_.marg_prior_scale * cfg_.marg_prior_scale,
+                                     ceres::TAKE_OWNERSHIP);
+    }
+    problem.AddResidualBlock(cost, loss, params);
 }
 
 // ============================================================================

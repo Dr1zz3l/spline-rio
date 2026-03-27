@@ -114,7 +114,8 @@ PYBIND11_MODULE(rio_solver, m) {
         .def_readwrite("lambda_extrinsic_prior", &SolverConfig::lambda_extrinsic_prior)
         .def_readwrite("max_iterations", &SolverConfig::max_iterations)
         .def_readwrite("n_fix_leading_pos", &SolverConfig::n_fix_leading_pos)
-        .def_readwrite("n_fix_leading_ori", &SolverConfig::n_fix_leading_ori);
+        .def_readwrite("n_fix_leading_ori", &SolverConfig::n_fix_leading_ori)
+        .def_readwrite("marg_prior_scale", &SolverConfig::marg_prior_scale);
 
     // ---- ExtrinsicConfig ----------------------------------------------------
     py::class_<ExtrinsicConfig>(m, "ExtrinsicConfig")

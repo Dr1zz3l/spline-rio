@@ -283,6 +283,7 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
     cfg.optimize_pitch_only     = solver_cfg.get('optimize_pitch_only', True)
     cfg.lambda_extrinsic_prior  = solver_cfg.get('lambda_extrinsic_prior', 10.0)
     cfg.max_iterations          = solver_cfg.get('max_iterations', 400)
+    cfg.marg_prior_scale        = solver_cfg.get('marg_prior_scale', 1.0)
 
     # Create stateful solver and initialize with full P1-P3 trajectory
     solver = rio_solver.SlidingWindowSolver(cfg, ext)

@@ -36,13 +36,14 @@ cd analysis/
 # --set key=value overrides any solver.yaml param at runtime (repeatable)
 # --imu-hz N overrides IMU rate (default: 1000 for --cpp, 200 for Python)
 
-# Live RIO solver — C++ sliding window (Phase 4a fixed-lag smoother)
+# Live RIO solver — C++ sliding window (Phase 4b: Schur complement marginalization)
 ../.venv/bin/python3 validate_live_solver.py slow_racing_best_velocity --mocap-yaw --cpp --sliding-window
-# --sliding-window: fixed-lag smoother, re-solves last window_duration s every window_stride s
-# Default: window=3.0s, stride=0.3s, n_fix_leading=0 (boundary priors anchor leading edge)
-# slow_racing: 0.358m pos / 1.34° ori (vs batch 0.146m / 0.96°); each window ~1.1s (3s window)
-# Tune: --set window_duration=5.0  →  0.262m / 1.15° at ~2.5s/window
-# Requires --cpp; requires phase 4b (marginalization) to match batch accuracy
+# --sliding-window: fixed-lag smoother with Schur complement marginalization
+# Default: window=3.0s, stride=0.3s, marg_prior_scale=2e-4
+# slow_racing: 0.162m / 1.77° (vs batch 0.146m / 0.96°)  ~1.5s/window
+# fast_racing: 0.710m / 4.26° (vs batch 0.925m / 2.35°)  — better than batch in pos!
+# marg_prior_scale key: raw Schur info O(10^5) >> lambda_boundary=1000; scale down to match
+# Tune: --set marg_prior_scale=X  (sweep 1e-4 to 1e-3 for new datasets)
 
 # Live RIO solver — Python backend (~10 min)
 ../.venv/bin/python3 validate_live_solver.py slow_racing_best_velocity --mocap-yaw

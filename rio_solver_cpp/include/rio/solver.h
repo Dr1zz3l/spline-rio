@@ -76,6 +76,13 @@ struct SolverConfig {
     // Sliding window: fix leading knots constant (previously solved, trusted)
     int n_fix_leading_pos{0};   // number of leading pos CPs to freeze
     int n_fix_leading_ori{0};   // number of leading ori knots to freeze
+
+    // Marginalization prior scale: multiplies sqrt_info before attaching prior.
+    // The raw Schur complement encodes the full information from all previous
+    // measurements, which can be orders of magnitude tighter than the boundary
+    // priors (lambda ~1000).  Scale < 1 softens the prior to prevent it from
+    // over-constraining boundary CPs and blocking adaptation to new data.
+    double marg_prior_scale{1.0};
 };
 
 // ============================================================================

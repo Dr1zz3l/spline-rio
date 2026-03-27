@@ -360,21 +360,29 @@ marginalized out and their information is compressed into a dense 30×30 Gaussia
 prior on the boundary CPs/knots + bias.  This prior is carried forward via
 `MargPriorFunctor` (DynamicAutoDiff over SO3 local coordinates).
 
-**Phase 4b results (3.0s window, 0.3s stride, --mocap-yaw):**
+**Phase 4b results (3.0s window, 0.3s stride, --mocap-yaw, `marg_prior_scale=2e-4`):**
 
-| Bag | Phase 4a (warm-start) | Phase 4b (Schur prior) | Batch |
-|-----|-----------------------|------------------------|-------|
-| slow_racing | 0.358m / 1.34° | 0.468m / 1.90° | 0.146m / 0.96° |
-| fast_racing | ~1.0m / ~3° | 0.848m / 4.36° | 0.925m / 2.35° |
+| Bag | Phase 4a | Phase 4b (scale=1.0) | Phase 4b (scale=2e-4) | Batch |
+|-----|----------|----------------------|-----------------------|-------|
+| slow_racing | 0.358m / 1.34° | 0.468m / 1.90° | **0.162m / 1.77°** | 0.146m / 0.96° |
+| fast_racing | ~1.0m / ~3° | 0.848m / 4.36° | **0.710m / 4.26°** | 0.925m / 2.35° |
 
-**Per-window timing:** ~1.5–3.6s (vs ~0.7s for Phase 4a, due to `Evaluate()` for Jacobians).
+**Per-window timing:** ~1.5s.
 
-**Key observation:** Schur prior does not improve over Phase 4a warm-start.  This is
-expected for first-order marginalization — the linearization point drifts between
-windows, and accumulated prior errors counteract the information gain.  Possible
-improvements: (a) re-linearize the prior at the current estimate before adding it,
-(b) use a FEJ (First Estimates Jacobian) strategy, (c) increase `window_duration`
-to reduce how many times marginalization is applied.
+**Key finding: prior scale is critical.**  The raw Schur complement has per-entry magnitudes
+of O(10⁵–10⁶) — derived from ~3000 IMU samples per window all contributing to H_bb.  This
+is 100–1000× tighter than the boundary priors (λ=1000).  An unscaled prior locks the boundary
+CPs completely, preventing adaptation to new data and causing drift.
+
+`marg_prior_scale=2e-4` brings the prior into the same regime as the boundary priors.  At
+this scale, the prior still propagates curvature information forward but allows the boundary
+CPs to move when new measurements demand it.
+
+**Prior design (re-linearization):** before each `add_prior_to_problem()` call, the prior's
+linearization point (x₀) is updated to the current warm-start.  This makes the prior
+contribute only curvature (Hessian) information, not a gradient pull toward a stale
+historical estimate.  Combined with the scale factor this gives near-batch accuracy from
+a 3s/0.3s sliding window.
 
 ## Files
 
