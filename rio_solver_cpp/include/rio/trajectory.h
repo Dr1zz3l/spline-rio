@@ -51,6 +51,10 @@ struct Trajectory {
     // During optimization only pitch (index 1) changes if optimize_pitch_only.
     std::array<double, 3> extrinsic_euler_deg{180.0, 25.5, 0.0};
 
+    // Pitch extrinsic perturbation (radians). Optimized when !lock_extrinsics.
+    // Composition: R_total = R_nominal * Ry(pitch_delta).
+    double pitch_delta{0.0};
+
     // ---- Initializers --------------------------------------------------------
 
     void init(double t_ref_, double dt_pos_, double dt_ori_,
@@ -116,6 +120,9 @@ struct Trajectory {
 
     double* bias_data() { return biases.data(); }
     const double* bias_data() const { return biases.data(); }
+
+    double* pitch_delta_data() { return &pitch_delta; }
+    const double* pitch_delta_data() const { return &pitch_delta; }
 
     // ---- Accel / gyro bias helpers ------------------------------------------
     Eigen::Vector3d ba() const {

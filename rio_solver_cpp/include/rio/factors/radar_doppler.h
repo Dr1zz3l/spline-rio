@@ -102,4 +102,75 @@ struct RadarDopplerFunctor {
     }
 };
 
+// ============================================================================
+// RadarDopplerWithPitchFunctor
+// ============================================================================
+// Same as RadarDopplerFunctor but accepts one extra parameter block:
+//   params[N_ORI + N_POS + 1] = pitch_delta (1 scalar, radians)
+//
+// Composition: R_total = R_nominal * Ry(pitch_delta)
+// where R_nominal is the fixed roll=180°, yaw=0° part of the extrinsic.
+// Only pitch is observable from Doppler; roll/yaw are not added as parameters.
+//
+// Used when lock_extrinsics=false (default). Falls back to RadarDopplerFunctor
+// when lock_extrinsics=true.
+
+struct RadarDopplerWithPitchFunctor {
+    Eigen::Vector3d u_sensor;
+    double v_meas;
+    double u_ori, inv_dt_ori;
+    double u_pos, inv_dt_pos;
+    Sophus::SO3d R_radar_to_body;
+    Eigen::Vector3d t_body_sensor;
+
+    RadarDopplerWithPitchFunctor(const Eigen::Vector3d& u_sensor_,
+                                  double v_meas_,
+                                  double u_ori_, double inv_dt_ori_,
+                                  double u_pos_, double inv_dt_pos_,
+                                  const Sophus::SO3d& R_radar_to_body_,
+                                  const Eigen::Vector3d& t_body_sensor_)
+        : u_sensor(u_sensor_), v_meas(v_meas_),
+          u_ori(u_ori_), inv_dt_ori(inv_dt_ori_),
+          u_pos(u_pos_), inv_dt_pos(inv_dt_pos_),
+          R_radar_to_body(R_radar_to_body_),
+          t_body_sensor(t_body_sensor_) {}
+
+    template <class T>
+    bool operator()(T const* const* params, T* residuals) const {
+        using SO3T = Sophus::SO3<T>;
+        using Vec3T = Eigen::Matrix<T, 3, 1>;
+        using Mat3T = Eigen::Matrix<T, 3, 3>;
+
+        // 1. Orientation and angular rate
+        SO3T R_body_to_world;
+        Vec3T omega_body;
+        CeresSplineHelper<N_ORI>::template evaluate_lie<T, Sophus::SO3>(
+            params, u_ori, inv_dt_ori, &R_body_to_world, &omega_body, nullptr);
+
+        // 2. Position velocity
+        Vec3T body_vel_world;
+        CeresSplineHelper<N_POS>::template evaluate<T, 3, 1>(
+            params + N_ORI, u_pos, inv_dt_pos, &body_vel_world);
+
+        // 3. Apply pitch perturbation: R_total = R_nominal * Ry(pitch_delta)
+        T pd = params[N_ORI + N_POS + 1][0];
+        Mat3T Ry;
+        Ry << cos(pd), T(0), sin(pd),
+              T(0),    T(1), T(0),
+             -sin(pd), T(0), cos(pd);
+        Mat3T R_total = R_radar_to_body.matrix().template cast<T>() * Ry;
+        Vec3T u_body = R_total * u_sensor.cast<T>();
+
+        // 4. Velocity at antenna with lever arm
+        Vec3T v_CoM_body = R_body_to_world.inverse() * body_vel_world;
+        Vec3T v_lever = omega_body.cross(t_body_sensor.cast<T>());
+        Vec3T v_ant = v_CoM_body + v_lever;
+
+        // 5. Predicted Doppler
+        T v_pred = -u_body.dot(v_ant);
+        residuals[0] = v_meas - v_pred;
+        return true;
+    }
+};
+
 }  // namespace rio

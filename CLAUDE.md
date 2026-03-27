@@ -134,33 +134,28 @@ Batch C++ solver called via pybind11 from `validate_live_solver.py --cpp`.
 
 **Orientation convention**: quaternion knots [x,y,z,w] = `_base_rotations[i]` from Python's `CumulativeSO3BSpline`. Uses basalt `CeresSplineHelper<N>::evaluate_lie()`.
 
-**C++ results by spline config** (--mocap-yaw --cpp, lever arm correction, eval trims last 3s)
+**C++ results — current best** (--mocap-yaw --cpp, lambda_ori_accel=0.1, extrinsic opt enabled)
 
-Two configs compared (both use solver_cpp.yaml overrides on top):
-- **old**: `dt_pos=0.005s, dt_ori=0.008s` — original spacing, best for racing
-- **new**: `dt_pos=0.010s, dt_ori=0.0008s` — coarser pos / 10× finer ori, best for backflips
+Per-bag config auto-selected via `bags.yaml` solver_overrides:
+- racing bags: `dt_pos=0.005s, dt_ori=0.008s` (default)
+- backflips: `dt_pos=0.010s, dt_ori=0.0008s, lock_extrinsics=1` (per-bag override)
 
-| Bag | Config | Mode | Pos RMSE | Vel RMSE | Ori RMSE | Acc bias (m/s²) | Gyr bias (rad/s) |
-|-----|--------|------|----------|----------|----------|-----------------|-----------------|
-| slow_racing | old | batch | **0.160m** | 0.143 | **1.08°** | [-0.005, 0.049, 0.236] | [0.005, -0.003, 0.000] |
-| slow_racing | old | sliding-win | 0.210m | 0.137 | 1.58° | [-0.007, 0.046, 0.215] | [0.009, -0.003, 0.006] |
-| slow_racing | new | batch | 0.289m | 0.449 | 3.46° | [-0.008, 0.038, 0.236] | [-0.000, -0.003, 0.003] |
-| slow_racing | new | sliding-win | 1.867m | 1.081 | 19.33° ⚠️ | [-0.009, 0.047, 0.207] | [0.155, -1.009, -0.243] ⚠️ |
-| fast_racing | old | batch | 0.791m | 0.397 | 2.57° | [-0.009, 0.007, 0.064] | [0.006, 0.001, -0.002] |
-| fast_racing | old | sliding-win | **0.676m** | 0.376 | 3.01° | [-0.016, 0.006, 0.088] | [0.005, 0.007, 0.007] |
-| fast_racing | new | batch | 1.612m | 0.797 | 9.90° | [-0.007, 0.005, 0.058] | [0.004, -0.003, 0.000] |
-| fast_racing | new | sliding-win | 1.561m | 0.839 | 21.71° ⚠️ | [-0.007, 0.004, 0.060] | [0.559, 2.527, -2.944] ⚠️ |
-| backflips | old | batch | 5.060m | 4.006 | 7.61° | [0.041, 0.082, 0.246] | [0.002, 0.000, -0.001] |
-| backflips | old | sliding-win | 3.557m | 2.791 | 11.28° | [0.043, 0.083, 0.483] | [-0.019, -0.071, -0.003] |
-| backflips | new | batch | **1.817m** | 1.953 | 8.41° | [0.044, 0.082, 0.220] | [-0.001, 0.000, 0.001] |
-| backflips | new | sliding-win | 1.936m | 2.475 | 41.93° ⚠️ | [0.047, 0.082, 0.357] | [-0.189, 0.098, 1.006] ⚠️ |
+| Bag | Mode | Pos RMSE | Vel RMSE | Ori RMSE | Ext pitch | Acc bias (m/s²) | Gyr bias (rad/s) |
+|-----|------|----------|----------|----------|-----------|-----------------|-----------------|
+| slow_racing | batch | **0.174m** | 0.151 | **1.08°** | 27.1° | [-0.005, 0.049, 0.236] | [0.005, -0.003, 0.001] |
+| fast_racing | batch | 0.758m | 0.386 | 2.58° | 27.6° | [-0.008, 0.007, 0.064] | [0.006, 0.001, -0.002] |
+| backflips | batch | **1.817m** | 1.951 | **8.31°** | locked 25.5° | [0.044, 0.082, 0.220] | [-0.001, 0.000, 0.001] |
 
-⚠️ Sliding window unstable with new config: dt_ori=0.0008s → ~3750 ori knots per 3s window
-vs ~3000 IMU samples → underconstrained. lambda_ori_reg=0.01 (10× increase) made no difference.
-New config only viable for batch mode.
+Extrinsic optimization note: racing bags converge to 27–28° from either 25.5° or 30° init.
+Backflips locks extrinsics — 22630 dense ori knots underconstrain pitch_delta (drifts to +18°).
+
+**Sliding window** (batch results above are better; sliding-window not re-tuned since angular accel change):
+- slow_racing: ~0.21m / 1.6° (sliding-win with old config)
+- fast_racing: ~0.68m / 3.0° (sliding-win with old config — better position than batch)
+- backflips: unstable with dt_ori=0.0008s (underconstrained per window), use batch
 
 Note: lever arm (ω × r_antenna) added to C++ RadarDopplerFunctor in Phase 4b.
-Pre-lever-arm batch (old config): slow 0.146m/0.96°, fast 0.925m/2.35°, backflips 2.93m/10.7°.
+Pre-lever-arm batch: slow 0.146m/0.96°, fast 0.925m/2.35°, backflips 2.93m/10.7°.
 
 **C++ solver config** (`config/solver_cpp.yaml` overrides vs `solver.yaml`):
 - `lambda_gyro`: 1.0 → **4.0** (tighter orientation constraint)
@@ -289,24 +284,20 @@ not a gradient). Every step denser than 0.008 hurts slow_racing. Root cause: 0.0
 enough bandwidth to represent the rapid angular acceleration ramp-up of the backflip. The
 orientation bandwidth requires 0.0008s; there is no universal dt_ori that works for both.
 
-### C++ solver: extrinsic pitch optimization not implemented
+### C++ solver: extrinsic pitch optimization (implemented)
 
-The Python solver optimizes radar extrinsics (pitch angle) as a free parameter during solve.
-The C++ solver does **not** — `R_radar_to_body` is baked in as a constant from `ExtrinsicConfig`
-and never added as a Ceres parameter block, even though `SolverConfig` has `lock_extrinsics` and
-`optimize_pitch_only` fields that are read from YAML but currently ignored.
+**Implemented.** `RadarDopplerWithPitchFunctor` in `radar_doppler.h` accepts a 1-DOF scalar
+`pitch_delta` as an extra parameter block; `solver.cpp` and `sliding_window_solver.cpp` add it
+when `lock_extrinsics=false` (default). Composition: `R_total = R_nominal * Ry(pitch_delta)`.
+A `PitchDeltaPriorFunctor` with `lambda_extrinsic_prior=10.0` keeps it near nominal.
 
-**Effect:** C++ always uses the fixed `pitch_deg=25.5°`. If the true pitch differs per-run, the
-systematic Doppler error accumulates across all radar measurements. Python self-calibrates this
-each run.
+**Convergence:** Racing bags consistently converge to 27–28° from either 25.5° or 30° init
+(+1.6–2.1° from 25.5° nominal). Metrics are essentially unchanged vs locked baseline.
 
-**What needs to be done:**
-- Add a 1-DOF pitch parameter (or 3-DOF so(3) delta with roll/yaw frozen) to `solver.cpp`
-- Pass it into `RadarDopplerFunctor` as a parameter block instead of constant
-- The comment in `radar_doppler.h:34-36` already anticipates this design
-- When `optimize_pitch_only=true`: use a 1-param block for pitch increment only
-- When `lock_extrinsics=true`: skip entirely (current behaviour)
-- Also port to `sliding_window_solver.cpp`
+**Backflips uses `lock_extrinsics: 1` per-bag override** — the dense ori knots (22630 for 18s)
+create too many DOF for the weak prior to anchor pitch_delta; it drifts to +18° and causes
+catastrophic orientation error (43.8° pitch vs 8.3° with locked). Added to `bags.yaml`
+`solver_overrides.backflips_best_velocity`.
 
 ## ROS Topics
 

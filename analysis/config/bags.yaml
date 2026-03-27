@@ -15,8 +15,9 @@ bags:
 # Use for bags that need different spline configs (e.g. backflips need dense ori knots).
 solver_overrides:
   backflips_best_velocity:
-    dt_ori: 0.0008   # 10x denser: needed to represent rapid angular acceleration of backflip
-    dt_pos: 0.010    # coarser position: compensates for increased solve time from dense ori knots
+    dt_ori: 0.0008       # 10x denser: needed to represent rapid angular acceleration of backflip
+    dt_pos: 0.010        # coarser position: compensates for increased solve time from dense ori knots
+    lock_extrinsics: 1   # extrinsic pitch optimization destabilizes with dense knots (underconstrained)
 
 radar_config:
   default:

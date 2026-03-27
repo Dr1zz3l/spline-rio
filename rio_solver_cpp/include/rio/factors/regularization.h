@@ -181,4 +181,19 @@ struct BoundaryOriFunctor {
     }
 };
 
+// ============================================================================
+// PitchDeltaPriorFactor
+// ============================================================================
+// Anchors pitch_delta near zero (= nominal extrinsic pitch).
+// residual = pitch_delta   →   cost = lambda_extrinsic_prior * pitch_delta²
+// Parameter blocks: [pitch_delta (1 param)]
+
+struct PitchDeltaPriorFunctor {
+    template <class T>
+    bool operator()(T const* const* params, T* residuals) const {
+        residuals[0] = params[0][0];
+        return true;
+    }
+};
+
 }  // namespace rio

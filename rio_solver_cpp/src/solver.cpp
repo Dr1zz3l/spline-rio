@@ -106,6 +106,12 @@ SolverResult solve(
     // Add bias block
     problem.AddParameterBlock(traj.bias_data(), 6);
 
+    // Add pitch_delta extrinsic parameter (1 scalar, radians)
+    const bool optimize_ext = !cfg.lock_extrinsics;
+    traj.pitch_delta = 0.0;
+    if (optimize_ext)
+        problem.AddParameterBlock(traj.pitch_delta_data(), 1);
+
     // Sliding window: freeze leading knots (trusted from previous window solve)
     for (int i = 0; i < cfg.n_fix_leading_pos && i < n_pos; ++i)
         problem.SetParameterBlockConstant(traj.pos_cp_data(i));
@@ -134,27 +140,41 @@ SolverResult solve(
 
             Eigen::Vector3d u_sensor(pt.x / range, pt.y / range, pt.z / range);
 
-            auto* f = new RadarDopplerFunctor(
-                u_sensor, pt.v,
-                u_ori, inv_dt_ori,
-                u_pos, inv_dt_pos,
-                R_radar_to_body, t_body_sensor);
-
-            // Parameter block sizes: N_ORI * 4, then N_POS * 3, then 6 (bias)
-            std::vector<int> sizes;
-            for (int i = 0; i < N_ORI; ++i) sizes.push_back(4);
-            for (int i = 0; i < N_POS; ++i) sizes.push_back(3);
-            sizes.push_back(6);
-
-            auto* cost = make_auto_cost(f, 1, sizes);
-
-            // Build parameter block list
+            // Build parameter block list (shared by both functor variants)
             std::vector<double*> param_blocks;
             for (int i = 0; i < N_ORI; ++i)
                 param_blocks.push_back(traj.ori_knot_data(ori0 + i));
             for (int i = 0; i < N_POS; ++i)
                 param_blocks.push_back(traj.pos_cp_data(pos0 + i));
             param_blocks.push_back(traj.bias_data());
+
+            ceres::CostFunction* cost;
+            if (optimize_ext) {
+                // RadarDopplerWithPitchFunctor: extra pitch_delta param block
+                param_blocks.push_back(traj.pitch_delta_data());
+                std::vector<int> sizes;
+                for (int i = 0; i < N_ORI; ++i) sizes.push_back(4);
+                for (int i = 0; i < N_POS; ++i) sizes.push_back(3);
+                sizes.push_back(6);
+                sizes.push_back(1);
+                auto* f = new RadarDopplerWithPitchFunctor(
+                    u_sensor, pt.v,
+                    u_ori, inv_dt_ori,
+                    u_pos, inv_dt_pos,
+                    R_radar_to_body, t_body_sensor);
+                cost = make_auto_cost(f, 1, sizes);
+            } else {
+                std::vector<int> sizes;
+                for (int i = 0; i < N_ORI; ++i) sizes.push_back(4);
+                for (int i = 0; i < N_POS; ++i) sizes.push_back(3);
+                sizes.push_back(6);
+                auto* f = new RadarDopplerFunctor(
+                    u_sensor, pt.v,
+                    u_ori, inv_dt_ori,
+                    u_pos, inv_dt_pos,
+                    R_radar_to_body, t_body_sensor);
+                cost = make_auto_cost(f, 1, sizes);
+            }
 
             problem.AddResidualBlock(cost, huber_loss, param_blocks);
         }
@@ -320,6 +340,15 @@ SolverResult solve(
         problem.AddResidualBlock(cost, loss, traj.bias_data());
     }
 
+    // ---- Extrinsic pitch prior -----------------------------------------------
+    if (optimize_ext && cfg.lambda_extrinsic_prior > 0.0) {
+        auto* f = new PitchDeltaPriorFunctor();
+        auto* cost = make_auto_cost(f, 1, {1});
+        auto* loss = new ceres::ScaledLoss(nullptr, cfg.lambda_extrinsic_prior,
+                                            ceres::TAKE_OWNERSHIP);
+        problem.AddResidualBlock(cost, loss, traj.pitch_delta_data());
+    }
+
     // ---- Heading prior -------------------------------------------------------
     if (cfg.lambda_heading > 0.0 && !heading_samples.empty()) {
         for (const auto& [t_abs, yaw_ref] : heading_samples) {
@@ -450,7 +479,9 @@ SolverResult solve(
     result.pos_cps    = traj.pos_cps;
     result.ori_knots  = traj.ori_knots;
     result.biases     = traj.biases;
-    result.extrinsic_euler_deg = traj.extrinsic_euler_deg;
+    // Return optimized pitch (nominal + delta converted to degrees)
+    double final_pitch = extrinsic.pitch_deg + traj.pitch_delta * (180.0 / M_PI);
+    result.extrinsic_euler_deg = {extrinsic.roll_deg, final_pitch, extrinsic.yaw_deg};
     result.solve_time_s = elapsed;
 
     // Cost history from iteration callbacks (simplification: just final cost)

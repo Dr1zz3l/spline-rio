@@ -183,7 +183,12 @@ def _solve_cpp(initial_state, solver_radar_frames, imu_data,
     t_res  = result.time_residual_eval_s
     t_lin  = result.time_linear_solver_s
     t_misc = dt_cpp - t_jac - t_res - t_lin
+    nominal_pitch = extrinsics_cfg.get('rotation_euler_deg', [180.0, 25.5, 0.0])[1]
+    opt_pitch = result.extrinsic_euler_deg[1]
     print(f"  [--cpp] Done in {dt_cpp:.2f}s  |  {result.solver_summary}")
+    if not solver_cfg.get('lock_extrinsics', False):
+        print(f"  [--cpp] Extrinsic pitch: {opt_pitch:.3f}° (nominal {nominal_pitch:.1f}°,"
+              f" delta {opt_pitch - nominal_pitch:+.3f}°)")
     print(f"  [--cpp] Time breakdown:  jacobian={t_jac:.2f}s ({100*t_jac/dt_cpp:.0f}%)"
           f"  residual={t_res:.2f}s ({100*t_res/dt_cpp:.0f}%)"
           f"  linear_solve={t_lin:.2f}s ({100*t_lin/dt_cpp:.0f}%)"
@@ -354,7 +359,12 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
         t_solve += window_stride
         n_windows += 1
 
+    nominal_pitch_sw = extrinsics_cfg.get('rotation_euler_deg', [180.0, 25.5, 0.0])[1]
+    opt_pitch_sw = result.extrinsic_euler_deg[1] if n_windows > 0 else nominal_pitch_sw
     print(f"  [--sliding-window] Done: {n_windows} windows solved")
+    if not solver_cfg.get('lock_extrinsics', False):
+        print(f"  [--sliding-window] Extrinsic pitch: {opt_pitch_sw:.3f}°"
+              f" (nominal {nominal_pitch_sw:.1f}°, delta {opt_pitch_sw - nominal_pitch_sw:+.3f}°)")
 
     # Retrieve full global trajectory from solver
     all_pos_cps   = solver.pos_cps

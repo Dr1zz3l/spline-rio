@@ -70,6 +70,7 @@ void SlidingWindowSolver::initialize(
     traj_.ori_knots = ori_knots;
     traj_.biases    = biases;
     traj_.extrinsic_euler_deg = {ext_.roll_deg, ext_.pitch_deg, ext_.yaw_deg};
+    traj_.pitch_delta = 0.0;
     prior_.valid    = false;
     initialized_    = true;
 }
@@ -123,7 +124,11 @@ SolverResult SlidingWindowSolver::solve_window(
         problem.AddParameterBlock(traj_.pos_cp_data(i), 3);
     problem.AddParameterBlock(traj_.bias_data(), 6);
 
-    // Extrinsics are kept fixed (same as solver.cpp — not part of the problem)
+    // Pitch extrinsic parameter — persists across windows (slow calibration, like bias)
+    const bool optimize_ext = !cfg_.lock_extrinsics;
+    if (optimize_ext)
+        problem.AddParameterBlock(traj_.pitch_delta_data(), 1);
+
     Sophus::SO3d R_radar_to_body = extrinsic_R(ext_);
     Eigen::Vector3d t_body_sensor(ext_.tx, ext_.ty, ext_.tz);
     const double inv_dt_pos = 1.0 / cfg_.dt_pos;
@@ -164,20 +169,35 @@ SolverResult SlidingWindowSolver::solve_window(
             if (range < cfg_.min_range) continue;
             Eigen::Vector3d u_sensor(pt.x/range, pt.y/range, pt.z/range);
 
-            auto* f = new RadarDopplerFunctor(u_sensor, pt.v,
-                                               u_ori, inv_dt_ori,
-                                               u_pos, inv_dt_pos,
-                                               R_radar_to_body, t_body_sensor);
-            std::vector<int> sizes;
-            for (int k = 0; k < N_ORI; ++k) sizes.push_back(4);
-            for (int k = 0; k < N_POS; ++k) sizes.push_back(3);
-            sizes.push_back(6);
-            auto* cost = make_auto_cost_sw(f, 1, sizes);
-
             std::vector<double*> params;
             for (int k = 0; k < N_ORI; ++k) params.push_back(traj_.ori_knot_data(ori0 + k));
             for (int k = 0; k < N_POS; ++k) params.push_back(traj_.pos_cp_data(pos0 + k));
             params.push_back(traj_.bias_data());
+
+            ceres::CostFunction* cost;
+            if (optimize_ext) {
+                params.push_back(traj_.pitch_delta_data());
+                std::vector<int> sizes;
+                for (int k = 0; k < N_ORI; ++k) sizes.push_back(4);
+                for (int k = 0; k < N_POS; ++k) sizes.push_back(3);
+                sizes.push_back(6);
+                sizes.push_back(1);
+                auto* f = new RadarDopplerWithPitchFunctor(u_sensor, pt.v,
+                                                            u_ori, inv_dt_ori,
+                                                            u_pos, inv_dt_pos,
+                                                            R_radar_to_body, t_body_sensor);
+                cost = make_auto_cost_sw(f, 1, sizes);
+            } else {
+                std::vector<int> sizes;
+                for (int k = 0; k < N_ORI; ++k) sizes.push_back(4);
+                for (int k = 0; k < N_POS; ++k) sizes.push_back(3);
+                sizes.push_back(6);
+                auto* f = new RadarDopplerFunctor(u_sensor, pt.v,
+                                                   u_ori, inv_dt_ori,
+                                                   u_pos, inv_dt_pos,
+                                                   R_radar_to_body, t_body_sensor);
+                cost = make_auto_cost_sw(f, 1, sizes);
+            }
             problem.AddResidualBlock(cost, huber_loss, params);
         }
     }
@@ -291,6 +311,15 @@ SolverResult SlidingWindowSolver::solve_window(
         problem.AddResidualBlock(cost,
             new ceres::ScaledLoss(nullptr, w, ceres::TAKE_OWNERSHIP),
             {traj_.bias_data()});
+    }
+
+    // ---- Extrinsic pitch prior ---------------------------------------------
+    if (optimize_ext && cfg_.lambda_extrinsic_prior > 0.0) {
+        auto* f = new PitchDeltaPriorFunctor();
+        auto* cost = make_auto_cost_sw(f, 1, {1});
+        problem.AddResidualBlock(cost,
+            new ceres::ScaledLoss(nullptr, cfg_.lambda_extrinsic_prior, ceres::TAKE_OWNERSHIP),
+            {traj_.pitch_delta_data()});
     }
 
     // ---- Heading priors ----------------------------------------------------
@@ -408,7 +437,8 @@ SolverResult SlidingWindowSolver::solve_window(
     result.pos_cps    = traj_.pos_cps;
     result.ori_knots  = traj_.ori_knots;
     result.biases     = traj_.biases;
-    result.extrinsic_euler_deg = traj_.extrinsic_euler_deg;
+    double final_pitch = ext_.pitch_deg + traj_.pitch_delta * (180.0 / M_PI);
+    result.extrinsic_euler_deg = {ext_.roll_deg, final_pitch, ext_.yaw_deg};
     result.solve_time_s = elapsed;
     result.cost_history.push_back(summary.initial_cost);
     result.cost_history.push_back(summary.final_cost);
