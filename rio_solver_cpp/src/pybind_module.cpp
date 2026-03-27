@@ -4,6 +4,7 @@
 #include <pybind11/eigen.h>
 
 #include <rio/solver.h>
+#include <rio/sliding_window_solver.h>
 
 namespace py = pybind11;
 using namespace rio;
@@ -231,6 +232,51 @@ PYBIND11_MODULE(rio_solver, m) {
         },
         py::arg("timestamp"), py::arg("points_nx4"),
         "Create a RadarFrame from a Nx4 numpy array [x,y,z,v].");
+
+    // ---- SlidingWindowSolver ------------------------------------------------
+    py::class_<SlidingWindowSolver>(m, "SlidingWindowSolver")
+        .def(py::init<SolverConfig, ExtrinsicConfig>(),
+             py::arg("cfg"), py::arg("ext"))
+        .def("initialize",
+            [](SlidingWindowSolver& self,
+               py::array_t<double, py::array::c_style | py::array::forcecast> pos_cps_np,
+               py::array_t<double, py::array::c_style | py::array::forcecast> ori_knots_np,
+               py::array_t<double, py::array::c_style | py::array::forcecast> biases_np,
+               double t_ref) {
+                auto pos_cps   = np_to_pos_cps(pos_cps_np);
+                auto ori_knots = np_to_ori_knots(ori_knots_np);
+                std::array<double, 6> biases{};
+                {
+                    auto r = biases_np.unchecked<1>();
+                    for (int i = 0; i < 6; ++i) biases[i] = r(i);
+                }
+                self.initialize(pos_cps, ori_knots, biases, t_ref);
+            },
+            py::arg("pos_cps"), py::arg("ori_knots"), py::arg("biases"), py::arg("t_ref"),
+            "Initialize with full P1-P3 trajectory. Call once before solve_window().")
+        .def("solve_window",
+            [](SlidingWindowSolver& self,
+               const std::vector<RadarFrame>& radar_frames,
+               const std::vector<ImuSample>& imu_samples,
+               const std::vector<std::pair<double, double>>& heading_samples,
+               double t_start, double t_end, double stride) {
+                return self.solve_window(radar_frames, imu_samples, heading_samples,
+                                         t_start, t_end, stride);
+            },
+            py::arg("radar_frames"), py::arg("imu_samples"), py::arg("heading_samples"),
+            py::arg("t_start"), py::arg("t_end"), py::arg("stride"),
+            "Solve one window [t_start, t_end]. Returns SolverResult.")
+        .def_property_readonly("pos_cps",
+            [](const SlidingWindowSolver& s) { return pos_cps_to_np(s.pos_cps()); })
+        .def_property_readonly("ori_knots",
+            [](const SlidingWindowSolver& s) { return ori_knots_to_np(s.ori_knots()); })
+        .def_property_readonly("biases",
+            [](const SlidingWindowSolver& s) -> py::array_t<double> {
+                py::array_t<double> out(6);
+                auto buf = out.mutable_unchecked<1>();
+                for (int i = 0; i < 6; ++i) buf(i) = s.biases()[i];
+                return out;
+            });
 
     m.def("make_imu_samples",
         [](py::array_t<double, py::array::c_style | py::array::forcecast> imu_np) {

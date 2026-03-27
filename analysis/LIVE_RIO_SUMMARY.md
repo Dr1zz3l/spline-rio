@@ -352,11 +352,29 @@ Doppler + heading priors.  The batch solver uses ALL heading priors simultaneous
 to correct yaw (and thus position direction) across the full trajectory.  In the
 sliding window, yaw corrections at t=20s cannot retroactively fix position at t=5s.
 
-### Phase 4b: True Marginalization
+### Phase 4b: Schur Complement Marginalization (implemented)
 
-To close the accuracy gap, marginalize out old CPs/knots via Schur complement
-into a `ceres::NormalPrior` factor.  This carries forward the information content
-of discarded measurements.  Planned but not yet implemented.
+`SlidingWindowSolver` in `rio_solver_cpp/` implements full Schur complement
+marginalization.  After each window solve, the "stride zone" CPs/knots are
+marginalized out and their information is compressed into a dense 30×30 Gaussian
+prior on the boundary CPs/knots + bias.  This prior is carried forward via
+`MargPriorFunctor` (DynamicAutoDiff over SO3 local coordinates).
+
+**Phase 4b results (3.0s window, 0.3s stride, --mocap-yaw):**
+
+| Bag | Phase 4a (warm-start) | Phase 4b (Schur prior) | Batch |
+|-----|-----------------------|------------------------|-------|
+| slow_racing | 0.358m / 1.34° | 0.468m / 1.90° | 0.146m / 0.96° |
+| fast_racing | ~1.0m / ~3° | 0.848m / 4.36° | 0.925m / 2.35° |
+
+**Per-window timing:** ~1.5–3.6s (vs ~0.7s for Phase 4a, due to `Evaluate()` for Jacobians).
+
+**Key observation:** Schur prior does not improve over Phase 4a warm-start.  This is
+expected for first-order marginalization — the linearization point drifts between
+windows, and accumulated prior errors counteract the information gain.  Possible
+improvements: (a) re-linearize the prior at the current estimate before adding it,
+(b) use a FEJ (First Estimates Jacobian) strategy, (c) increase `window_duration`
+to reduce how many times marginalization is applied.
 
 ## Files
 
@@ -371,3 +389,6 @@ of discarded measurements.  Planned but not yet implemented.
 | `config/bags.yaml` | Bag aliases, timing windows, radar configs |
 | `eval_results/` | JSON results from eval_bags.py runs |
 | `FINDINGS_PREINTEGRATION.md` | Detailed investigation notes |
+| `../rio_solver_cpp/include/rio/marginalization.h` | MarginalizationPrior + MargPriorFunctor |
+| `../rio_solver_cpp/include/rio/sliding_window_solver.h` | SlidingWindowSolver API |
+| `../rio_solver_cpp/src/sliding_window_solver.cpp` | Schur complement marginalization impl |

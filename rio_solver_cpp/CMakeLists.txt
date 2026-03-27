@@ -35,6 +35,7 @@ endif()
 
 add_library(rio_solver STATIC
     src/solver.cpp
+    src/sliding_window_solver.cpp
 )
 set_target_properties(rio_solver PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
