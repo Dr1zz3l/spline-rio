@@ -382,6 +382,7 @@ _cfg = load_config()
 BAGS = _cfg['bags']['bags']
 FLIPPED_BAGS = set(_cfg['bags']['flipped'])
 _BAG_TIMING_CFG = _cfg['bags']['timing']
+_BAG_SOLVER_OVERRIDES = _cfg['bags'].get('solver_overrides', {})
 _RADAR_CFG = _cfg['bags'].get('radar_config', {})
 _EXTRINSICS_CFG = _cfg['extrinsics']
 _SOLVER_CFG = _cfg['solver']
@@ -959,6 +960,12 @@ def main():
         _cpp_overrides = load_config().get('solver_cpp', {})
         for k, v in _cpp_overrides.items():
             _SOLVER_CFG[k] = v
+
+    # Apply per-bag solver overrides from bags.yaml (after cpp overrides, before --set)
+    if bag_key in _BAG_SOLVER_OVERRIDES:
+        for k, v in _BAG_SOLVER_OVERRIDES[bag_key].items():
+            _SOLVER_CFG[k] = v
+            print(f"  [bag override] {k} = {v}")
 
     # --set key=value  (repeatable): override solver.yaml entries at runtime
     # e.g.: --set lambda_bias_prior_accel=100 --set lambda_gravity=0

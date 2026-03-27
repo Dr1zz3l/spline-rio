@@ -261,6 +261,34 @@ gyro dominates; regularizer only matters for position and backflip stability.
 
 Current defaults: `lambda_ori_reg: 0.0`, `lambda_ori_accel: 0.1`
 
+### Per-bag solver overrides (implemented)
+
+`config/bags.yaml` has a `solver_overrides` section. Any key valid in `solver.yaml` can be
+overridden per bag. Applied after `solver_cpp.yaml`, before `--set` (so `--set` always wins).
+
+```yaml
+solver_overrides:
+  my_bag:
+    dt_ori: 0.0008
+    dt_pos: 0.010
+```
+
+**Why backflips needs different dt_ori** — swept dt_ori 0.002–0.0008 on both bags
+(lambda_ori_accel scaled as λ ∝ dt_ori³ to keep continuous ∫||α||²dt equivalent):
+
+| dt_ori | slow_racing pos | backflips pos | backflips ori |
+|---|---|---|---|
+| 0.008 (default) | **0.170m** | 3.369m | 8.01° |
+| 0.006 | 0.151m | 3.662m | 8.17° |
+| 0.004 | 0.224m | 4.772m | 9.55° |
+| 0.002 | 0.459m | 3.355m | 49.8° ⚠️ |
+| **0.0008** (backflips default) | — | **1.814m** | 8.57° |
+
+No intermediate value helps backflips — the position drops below 2m only at 0.0008 (hard cliff,
+not a gradient). Every step denser than 0.008 hurts slow_racing. Root cause: 0.008s doesn't have
+enough bandwidth to represent the rapid angular acceleration ramp-up of the backflip. The
+orientation bandwidth requires 0.0008s; there is no universal dt_ori that works for both.
+
 ### C++ solver: extrinsic pitch optimization not implemented
 
 The Python solver optimizes radar extrinsics (pitch angle) as a free parameter during solve.

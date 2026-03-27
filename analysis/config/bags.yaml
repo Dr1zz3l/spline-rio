@@ -11,6 +11,13 @@ bags:
   fast_racing_best_velocity:                rosbags/Wed_11032026_1503/fastracing_oldconfig_2026-03-11-17-20-18.bag
   slow_racing_best_velocity:                rosbags/Wed_11032026_1503/slowracing_oldconfig_2026-03-11-17-18-43.bag
 
+# Per-bag solver parameter overrides. Applied after solver_cpp.yaml, before --set.
+# Use for bags that need different spline configs (e.g. backflips need dense ori knots).
+solver_overrides:
+  backflips_best_velocity:
+    dt_ori: 0.0008   # 10x denser: needed to represent rapid angular acceleration of backflip
+    dt_pos: 0.010    # coarser position: compensates for increased solve time from dense ori knots
+
 radar_config:
   default:
     v_max: 4.99
