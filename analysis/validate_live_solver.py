@@ -1397,7 +1397,7 @@ def main():
     heading_priors = []
     if USE_MOCAP_HEADING and LAMBDA_HEADING > 0 and mocap_slerp is not None:
         print(f"\n{'Heading Priors (MoCap pseudo-magnetometer)':-^80}")
-        heading_dt = 0.05   # 20 Hz, same as batch solver
+        heading_dt = 0.01   # 100 Hz, matches raw MoCap rate (/mocap/angrybird2/pose @ 100 Hz)
         t_spline_start_rel = pos_bspline.t_start
         t_spline_end_rel   = pos_bspline.t_end
         for t_rel in np.arange(t_spline_start_rel, t_spline_end_rel, heading_dt):
