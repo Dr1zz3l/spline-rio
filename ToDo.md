@@ -24,3 +24,11 @@ sliding window with frames
 
 radar huber loss dependant on config
 same as wraparound velocity
+
+---
+
+time step distance 0.3s window mit mocap vergleichen für error werte, nicht final optimized splie da future bias
+
+---
+
+test ohne radar, nur IMU. attitude error verhalten evaluieren auf slow racing. hyperparameter gleich lassen
