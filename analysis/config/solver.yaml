@@ -1,7 +1,7 @@
 # B-spline parameterization
 pos_bspline_degree: 5      # Position spline degree (quintic for continuous snap); orientation is always cubic (CumulativeSO3BSpline)
-dt_pos: 0.005            # Knot spacing for position spline (seconds)
-dt_ori: 0.008              # Knot spacing for orientation spline (seconds)
+dt_pos: 0.01            # Knot spacing for position spline (seconds)
+dt_ori: 0.0008              # Knot spacing for orientation spline (seconds)
 
 # Radar
 huber_delta: 1           # Huber threshold (m/s); must be >= 0.63 m/s Doppler bin size
@@ -14,7 +14,7 @@ huber_delta_accel: 2.0     # Huber threshold for accelerometer (m/s²); clips sp
 
 # Regularization
 lambda_snap_pos: 0.0001    # Position minimum-snap weight
-lambda_ori_reg: 0.001      # Orientation increment regularization (penalizes ||Omega_j||^2 per knot); sole orientation regularizer
+lambda_ori_reg: 0.01      # Orientation increment regularization (penalizes ||Omega_j||^2 per knot); sole orientation regularizer
 
 # Gravity-direction factor (absolute roll/pitch from accelerometer, Mahony-style)
 lambda_gravity: 0.001          # Weight for gravity-direction residual; 0 = disabled
