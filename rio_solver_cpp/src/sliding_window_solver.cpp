@@ -268,6 +268,19 @@ SolverResult SlidingWindowSolver::solve_window(
         }
     }
 
+    // ---- Angular acceleration regularization --------------------------------
+    if (cfg_.lambda_ori_accel > 0.0) {
+        for (int i = oi0; i + 2 <= oi1; ++i) {
+            auto* f = new AngularAccelRegFunctor();
+            auto* cost = make_auto_cost_sw(f, 3, {4, 4, 4});
+            problem.AddResidualBlock(cost,
+                new ceres::ScaledLoss(nullptr, cfg_.lambda_ori_accel, ceres::TAKE_OWNERSHIP),
+                {traj_.ori_knot_data(i),
+                 traj_.ori_knot_data(i + 1),
+                 traj_.ori_knot_data(i + 2)});
+        }
+    }
+
     // ---- Bias prior --------------------------------------------------------
     if (cfg_.lambda_bias_prior_accel > 0.0 || cfg_.lambda_bias_prior_gyro > 0.0) {
         double w = std::sqrt(cfg_.lambda_bias_prior_accel * cfg_.lambda_bias_prior_gyro);

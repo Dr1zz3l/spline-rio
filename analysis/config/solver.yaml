@@ -14,7 +14,11 @@ huber_delta_accel: 2.0     # Huber threshold for accelerometer (m/s²); clips sp
 
 # Regularization
 lambda_snap_pos: 0.0001    # Position minimum-snap weight
-lambda_ori_reg: 0.001      # Orientation increment regularization (penalizes ||Omega_j||^2 per knot); sole orientation regularizer
+lambda_ori_reg: 0.0        # Angular velocity regularization (penalizes ||log(q_i^{-1}*q_{i+1})||^2); disabled — fights legitimate rotation
+lambda_ori_accel: 0.1      # Angular acceleration regularization (penalizes ||Δω||^2 per knot triplet);
+                            # zero for constant angular rate — correct prior for racing/backflips
+                            # Swept 0–1: 0.1 best compromise (fast_racing 0.875→0.740m, backflips ori 9.59→8.31°)
+                            # 1.0 blows up backflips (44°!); slow_racing slightly prefers 0.0 but 0.1 acceptable
 
 # Gravity-direction factor (absolute roll/pitch from accelerometer, Mahony-style)
 lambda_gravity: 0.001          # Weight for gravity-direction residual; 0 = disabled

@@ -46,7 +46,8 @@ struct SolverConfig {
 
     // Regularization
     double lambda_snap_pos{0.0001};
-    double lambda_ori_reg{0.001};
+    double lambda_ori_reg{0.001};   // angular vel reg: penalizes ||log(q_i^{-1}*q_{i+1})||² (legacy)
+    double lambda_ori_accel{0.0};  // angular accel reg: penalizes ||Δω||² per knot triplet (preferred)
 
     // Gravity direction factor
     double lambda_gravity{0.001};

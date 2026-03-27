@@ -284,6 +284,20 @@ SolverResult solve(
         }
     }
 
+    // ---- Angular acceleration regularization --------------------------------
+    if (cfg.lambda_ori_accel > 0.0) {
+        for (int i = 0; i < n_ori - 2; ++i) {
+            auto* f = new AngularAccelRegFunctor();
+            auto* cost = make_auto_cost(f, 3, {4, 4, 4});
+            auto* loss = new ceres::ScaledLoss(nullptr, cfg.lambda_ori_accel,
+                                                ceres::TAKE_OWNERSHIP);
+            problem.AddResidualBlock(cost, loss,
+                traj.ori_knot_data(i),
+                traj.ori_knot_data(i + 1),
+                traj.ori_knot_data(i + 2));
+        }
+    }
+
     // ---- Bias prior ---------------------------------------------------------
     {
         Eigen::Matrix<double, 6, 1> b0;

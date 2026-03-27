@@ -134,17 +134,33 @@ Batch C++ solver called via pybind11 from `validate_live_solver.py --cpp`.
 
 **Orientation convention**: quaternion knots [x,y,z,w] = `_base_rotations[i]` from Python's `CumulativeSO3BSpline`. Uses basalt `CeresSplineHelper<N>::evaluate_lie()`.
 
-**C++ vs Python results** (--mocap-yaw, full-rate IMU ~1000 Hz, with lever arm correction):
+**C++ results by spline config** (--mocap-yaw --cpp, lever arm correction, eval trims last 3s)
 
-| Bag | Python pos/ori | C++ pos/ori | C++ solve time |
-|-----|---------------|-------------|---------------|
-| slow_racing | 0.374m / 3.32° | **0.180m / 1.07°** | ~7s |
-| fast_racing | 1.397m / 4.38° | **1.110m / 2.56°** | ~16s |
-| backflips | — | **0.527m / 3.77°** | ~7s |
+Two configs compared (both use solver_cpp.yaml overrides on top):
+- **old**: `dt_pos=0.005s, dt_ori=0.008s` — original spacing, best for racing
+- **new**: `dt_pos=0.010s, dt_ori=0.0008s` — coarser pos / 10× finer ori, best for backflips
+
+| Bag | Config | Mode | Pos RMSE | Vel RMSE | Ori RMSE | Acc bias (m/s²) | Gyr bias (rad/s) |
+|-----|--------|------|----------|----------|----------|-----------------|-----------------|
+| slow_racing | old | batch | **0.160m** | 0.143 | **1.08°** | [-0.005, 0.049, 0.236] | [0.005, -0.003, 0.000] |
+| slow_racing | old | sliding-win | 0.210m | 0.137 | 1.58° | [-0.007, 0.046, 0.215] | [0.009, -0.003, 0.006] |
+| slow_racing | new | batch | 0.289m | 0.449 | 3.46° | [-0.008, 0.038, 0.236] | [-0.000, -0.003, 0.003] |
+| slow_racing | new | sliding-win | 1.867m | 1.081 | 19.33° ⚠️ | [-0.009, 0.047, 0.207] | [0.155, -1.009, -0.243] ⚠️ |
+| fast_racing | old | batch | 0.791m | 0.397 | 2.57° | [-0.009, 0.007, 0.064] | [0.006, 0.001, -0.002] |
+| fast_racing | old | sliding-win | **0.676m** | 0.376 | 3.01° | [-0.016, 0.006, 0.088] | [0.005, 0.007, 0.007] |
+| fast_racing | new | batch | 1.612m | 0.797 | 9.90° | [-0.007, 0.005, 0.058] | [0.004, -0.003, 0.000] |
+| fast_racing | new | sliding-win | 1.561m | 0.839 | 21.71° ⚠️ | [-0.007, 0.004, 0.060] | [0.559, 2.527, -2.944] ⚠️ |
+| backflips | old | batch | 5.060m | 4.006 | 7.61° | [0.041, 0.082, 0.246] | [0.002, 0.000, -0.001] |
+| backflips | old | sliding-win | 3.557m | 2.791 | 11.28° | [0.043, 0.083, 0.483] | [-0.019, -0.071, -0.003] |
+| backflips | new | batch | **1.817m** | 1.953 | 8.41° | [0.044, 0.082, 0.220] | [-0.001, 0.000, 0.001] |
+| backflips | new | sliding-win | 1.936m | 2.475 | 41.93° ⚠️ | [0.047, 0.082, 0.357] | [-0.189, 0.098, 1.006] ⚠️ |
+
+⚠️ Sliding window unstable with new config: dt_ori=0.0008s → ~3750 ori knots per 3s window
+vs ~3000 IMU samples → underconstrained. lambda_ori_reg=0.01 (10× increase) made no difference.
+New config only viable for batch mode.
 
 Note: lever arm (ω × r_antenna) added to C++ RadarDopplerFunctor in Phase 4b.
-Backflips improved from 2.93m/10.7° (5.6× pos, 2.8× ori). Gentle bags slightly regressed
-vs pre-lever-arm (0.146m/0.96° slow_racing) due to changed optimization landscape.
+Pre-lever-arm batch (old config): slow 0.146m/0.96°, fast 0.925m/2.35°, backflips 2.93m/10.7°.
 
 **C++ solver config** (`config/solver_cpp.yaml` overrides vs `solver.yaml`):
 - `lambda_gyro`: 1.0 → **4.0** (tighter orientation constraint)
@@ -213,6 +229,56 @@ The radar has limited elevation diversity (2 TX antennas), causing a systematic 
 | `lambda_snap_pos` | **2e-5** | Less over-smoothing for racing dynamics |
 | `lambda_bias_prior_accel` | **10000** | Full-rate IMU provides enough constraints; prevents trash-can |
 | `lambda_bias_prior_gyro` | **10000** | Same |
+
+## Known Gaps / TODO
+
+### Orientation regularization: angular acceleration (∫||dω/dt||²) replaces angular velocity
+
+**Implemented.** `lambda_ori_reg` (min-ω) disabled; `lambda_ori_accel` (min-α) active.
+
+The old `OrientationRegFunctor` penalized `||log(q_i^{-1}·q_{i+1})||²` (minimum angular velocity),
+which fought every banked turn and the entire backflip maneuver.
+
+`AngularAccelRegFunctor` penalizes the second finite difference:
+```
+r = log(q_{i-1}^{-1}·q_i) - log(q_i^{-1}·q_{i+1})
+```
+Zero for constant angular rate. Only fires at maneuver onset/offset.
+
+**Lambda sweep results** (--mocap-yaw --cpp, batch, backflips uses dt_ori=0.0008):
+
+| lambda_ori_accel | slow_racing pos | fast_racing pos | backflips ori |
+|---|---|---|---|
+| 0.0 (none) | **0.150m** | 0.875m | 9.59° |
+| 0.001 | 0.178m | 0.786m | 8.61° |
+| 0.01 | 0.178m | 0.790m | 8.43° |
+| **0.1** ← default | 0.170m | **0.740m** | **8.31°** |
+| 1.0 | 0.174m | 0.796m | 44.2° ⚠️ |
+
+0.1 is best compromise. 1.0 blows up backflips (regularizer too tight to represent rapid angular
+acceleration of the flip itself). Orientation RMSE insensitive across all racing bags — 1000 Hz
+gyro dominates; regularizer only matters for position and backflip stability.
+
+Current defaults: `lambda_ori_reg: 0.0`, `lambda_ori_accel: 0.1`
+
+### C++ solver: extrinsic pitch optimization not implemented
+
+The Python solver optimizes radar extrinsics (pitch angle) as a free parameter during solve.
+The C++ solver does **not** — `R_radar_to_body` is baked in as a constant from `ExtrinsicConfig`
+and never added as a Ceres parameter block, even though `SolverConfig` has `lock_extrinsics` and
+`optimize_pitch_only` fields that are read from YAML but currently ignored.
+
+**Effect:** C++ always uses the fixed `pitch_deg=25.5°`. If the true pitch differs per-run, the
+systematic Doppler error accumulates across all radar measurements. Python self-calibrates this
+each run.
+
+**What needs to be done:**
+- Add a 1-DOF pitch parameter (or 3-DOF so(3) delta with roll/yaw frozen) to `solver.cpp`
+- Pass it into `RadarDopplerFunctor` as a parameter block instead of constant
+- The comment in `radar_doppler.h:34-36` already anticipates this design
+- When `optimize_pitch_only=true`: use a 1-param block for pitch increment only
+- When `lock_extrinsics=true`: skip entirely (current behaviour)
+- Also port to `sliding_window_solver.cpp`
 
 ## ROS Topics
 

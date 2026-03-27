@@ -100,6 +100,7 @@ PYBIND11_MODULE(rio_solver, m) {
         .def_readwrite("huber_delta_accel", &SolverConfig::huber_delta_accel)
         .def_readwrite("lambda_snap_pos", &SolverConfig::lambda_snap_pos)
         .def_readwrite("lambda_ori_reg", &SolverConfig::lambda_ori_reg)
+        .def_readwrite("lambda_ori_accel", &SolverConfig::lambda_ori_accel)
         .def_readwrite("lambda_gravity", &SolverConfig::lambda_gravity)
         .def_readwrite("gravity_accel_threshold", &SolverConfig::gravity_accel_threshold)
         .def_readwrite("lambda_heading", &SolverConfig::lambda_heading)

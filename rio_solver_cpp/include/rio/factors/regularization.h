@@ -60,6 +60,40 @@ struct OrientationRegFunctor {
 };
 
 // ============================================================================
+// AngularAccelRegFactor
+// ============================================================================
+// Penalise angular acceleration: second finite difference of rotation in so(3).
+//   omega_prev = log(q_{i-1}^{-1} * q_i)
+//   omega_next = log(q_i^{-1}     * q_{i+1})
+//   r = omega_next - omega_prev   (3D, units: rad per knot interval)
+//
+// Zero for constant angular rate (steady-state bank, uniform flip rotation).
+// Only fires when omega changes abruptly — correct prior for aggressive flight.
+// Analogue of min-snap for position. Replaces OrientationRegFunctor.
+//
+// Parameter blocks: [q_{i-1} (4), q_i (4), q_{i+1} (4)]
+
+struct AngularAccelRegFunctor {
+    template <class T>
+    bool operator()(T const* const* params, T* residuals) const {
+        using SO3T = Sophus::SO3<T>;
+
+        Eigen::Map<SO3T const> q0(params[0]);
+        Eigen::Map<SO3T const> q1(params[1]);
+        Eigen::Map<SO3T const> q2(params[2]);
+
+        auto omega_prev = (q0.inverse() * q1).log();
+        auto omega_next = (q1.inverse() * q2).log();
+
+        auto alpha = omega_next - omega_prev;
+        residuals[0] = alpha[0];
+        residuals[1] = alpha[1];
+        residuals[2] = alpha[2];
+        return true;
+    }
+};
+
+// ============================================================================
 // BoundaryPosFactor
 // ============================================================================
 // Pin position spline to a reference value at the boundary.
