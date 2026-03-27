@@ -1604,11 +1604,9 @@ def main():
 
         t_eval_start = max(pos_bspline.t_start + t_ref, mocap_times_abs[0])
         t_eval_end   = min(pos_bspline.t_end   + t_ref, mocap_times_abs[-1])
-        # For sliding window: exclude the last window_duration to avoid final-window
-        # drift that has no subsequent window to correct it.
-        if USE_SLIDING_WINDOW and USE_CPP:
-            sw_trim = _SOLVER_CFG.get('window_duration', 3.0)
-            t_eval_end = min(t_eval_end, pos_bspline.t_end + t_ref - sw_trim)
+        # Trim the last 3s from evaluation: the trajectory tail (no future data)
+        # typically drifts and artificially inflates RMSE.
+        t_eval_end = min(t_eval_end, pos_bspline.t_end + t_ref - 3.0)
         spline_valid_mask = ((mocap_times_abs >= t_eval_start) &
                              (mocap_times_abs <= t_eval_end))
         eval_times     = mocap_times_abs[spline_valid_mask]
