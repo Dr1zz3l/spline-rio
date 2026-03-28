@@ -284,18 +284,23 @@ not a gradient). Every step denser than 0.008 hurts slow_racing. Root cause: 0.0
 enough bandwidth to represent the rapid angular acceleration ramp-up of the backflip. The
 orientation bandwidth requires 0.0008s; there is no universal dt_ori that works for both.
 
-**Underconstrained regime at dt_ori=0.0008s**: with 18s bag and N_ORI=4 (cubic),
-there are 22630 orientation knots × 3 DOF = 67890 orientation DOF. IMU at 1000 Hz gives
-~18000 gyro observations × 3 = 54000 constraints — roughly 1.26 DOF per constraint.
-The system is *technically* underconstrained without regularization (lambda_ori_accel
-and gyro residuals must carry the slack). This is why:
-- **Extrinsic pitch optimization breaks**: 67890 ori DOF can absorb pitch error into trajectory,
-  leaving pitch_delta unconstrained → drifts +18°. Fix: `lock_extrinsics: 1` per-bag.
-- **Sliding window is unstable**: a 3s window has ~3750 ori knots (11250 DOF) vs ~3000 gyro
-  samples (9000 constraints) → underconstrained per window, gyro bias can run away.
+**Why extrinsic optimization always breaks on backflips (any density)**: the flip maneuver
+produces rapid large-amplitude orientation changes that the spline can only partially
+represent. The systematic orientation model error creates a systematic Doppler residual,
+which the optimizer reduces by drifting pitch_delta (cheaper than fixing orientation DOF
+en masse). Tested: at default density (dt_ori=0.008s, 2268 knots, well-constrained ratio
+8:1), pitch_delta still drifts to +29.6° (55.1°) with catastrophic pos RMSE 3.96m. The
+root cause is not the DOF/constraint ratio — it is that the backflip creates conditions
+where pitch_delta acts as a surrogate for orientation model error.
+Fix: `lock_extrinsics: 1` per-bag, regardless of density.
+
+**Additional issue at dt_ori=0.0008s**: 22630 knots × 3 = 67890 DOF vs ~54000 gyro constraints
+(ratio 1.26 DOF/constraint) makes the system *technically* underconstrained, compounding the
+above. This is a secondary reason and also explains sliding window instability:
+- **Sliding window**: a 3s window has ~3750 ori knots (11250 DOF) vs ~3000 gyro samples
+  (9000 constraints) → underconstrained per window, gyro bias runs away.
   Fix: batch-only for backflips.
-- Works in batch because the full 18s accumulates enough total constraints and the
-  angular-accel regularizer (lambda_ori_accel=0.1) stiffens the underdetermined modes.
+- Batch works because lambda_ori_accel=0.1 stiffens the underdetermined modes across 18s.
 
 ### C++ solver: extrinsic pitch optimization (implemented)
 
