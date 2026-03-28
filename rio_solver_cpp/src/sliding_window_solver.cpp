@@ -7,6 +7,7 @@
 #include <rio/factors/heading_prior.h>
 #include <rio/factors/bias_prior.h>
 #include <rio/factors/regularization.h>
+#include <rio/factors/imu_preintegration.h>
 
 #include <sophus/ceres_manifold.hpp>
 #include <Eigen/Dense>
@@ -81,6 +82,7 @@ void SlidingWindowSolver::initialize(
 SolverResult SlidingWindowSolver::solve_window(
     const std::vector<RadarFrame>& radar_frames,
     const std::vector<ImuSample>& imu_samples,
+    const std::vector<PreintFactor>& preint_factors,
     const std::vector<std::pair<double, double>>& heading_samples,
     double t_start, double t_end, double stride)
 {
@@ -203,54 +205,116 @@ SolverResult SlidingWindowSolver::solve_window(
     }
 
     // ---- IMU factors --------------------------------------------------------
-    for (const auto& imu : imu_samples) {
-        double u_ori; int ori0;
-        if (!traj_.ori_index(imu.timestamp, u_ori, ori0)) continue;
-        if (ori0 < oi0 || ori0 + N_ORI - 1 > oi1) continue;
+    if (cfg_.use_preintegration && !preint_factors.empty()) {
+        // ---- Preintegrated IMU factors (Forster TRO-2017) -------------------
+        for (const auto& pf : preint_factors) {
+            double u_ori_i; int oi0_i;
+            if (!traj_.ori_index(pf.t_i, u_ori_i, oi0_i)) continue;
+            double u_ori_j; int oi0_j;
+            if (!traj_.ori_index(pf.t_j, u_ori_j, oi0_j)) continue;
+            if (oi0_j != oi0_i + 1) continue;
 
-        double u_pos; int pos0;
-        bool has_pos = traj_.pos_index(imu.timestamp, u_pos, pos0);
-        if (has_pos && (pos0 < pi0 || pos0 + N_POS - 1 > pi1)) has_pos = false;
+            double u_pos_i; int pi0_i;
+            if (!traj_.pos_index(pf.t_i, u_pos_i, pi0_i)) continue;
+            double u_pos_j; int pi0_j;
+            if (!traj_.pos_index(pf.t_j, u_pos_j, pi0_j)) continue;
+            const int k_pos_stride = pi0_j - pi0_i;
+            if (k_pos_stride <= 0) continue;
 
-        // Gyro
-        {
-            Eigen::Vector3d z_gyro(imu.gx, imu.gy, imu.gz);
-            auto* f = new GyroFunctor(z_gyro, u_ori, inv_dt_ori);
+            // Window bounds check: all 5 ori knots + all pos CPs must be within window
+            if (oi0_i < oi0 || oi0_i + 4 > oi1) continue;
+            if (pi0_i < pi0 || pi0_i + N_POS + k_pos_stride - 1 > pi1) continue;
+
+            const double scale_v = (cfg_.lambda_preint > 0.0)
+                ? std::sqrt(cfg_.lambda_preint_v / cfg_.lambda_preint) : 0.0;
+            const double scale_p = (cfg_.lambda_preint > 0.0)
+                ? std::sqrt(cfg_.lambda_preint_p / cfg_.lambda_preint) : 0.0;
+            auto* f = new IMUPreintegrationFunctor(
+                pf, u_ori_i, u_ori_j, inv_dt_ori,
+                    u_pos_i, u_pos_j, inv_dt_pos, k_pos_stride,
+                    scale_v, scale_p);
+
             std::vector<int> sizes;
-            for (int k = 0; k < N_ORI; ++k) sizes.push_back(4);
+            for (int k = 0; k < 5; ++k) sizes.push_back(4);
+            for (int k = 0; k < N_POS + k_pos_stride; ++k) sizes.push_back(3);
             sizes.push_back(6);
-            auto* cost = make_auto_cost_sw(f, 3, sizes);
+
+            auto* cost = make_auto_cost_sw(f, 9, sizes);
+
             std::vector<double*> params;
-            for (int k = 0; k < N_ORI; ++k) params.push_back(traj_.ori_knot_data(ori0 + k));
+            for (int k = 0; k < 5; ++k)
+                params.push_back(traj_.ori_knot_data(oi0_i + k));
+            for (int k = 0; k < N_POS + k_pos_stride; ++k)
+                params.push_back(traj_.pos_cp_data(pi0_i + k));
             params.push_back(traj_.bias_data());
-            problem.AddResidualBlock(cost,
-                new ceres::ScaledLoss(nullptr, cfg_.lambda_gyro, ceres::TAKE_OWNERSHIP), params);
+
+            problem.AddResidualBlock(
+                cost,
+                new ceres::ScaledLoss(nullptr, cfg_.lambda_preint, ceres::TAKE_OWNERSHIP),
+                params);
         }
 
-        // Accel
-        if (has_pos) {
-            Eigen::Vector3d z_acc(imu.ax, imu.ay, imu.az);
-            auto* f = new AccelFunctor(z_acc, u_ori, inv_dt_ori, u_pos, inv_dt_pos);
-            std::vector<int> sizes;
-            for (int k = 0; k < N_ORI; ++k) sizes.push_back(4);
-            for (int k = 0; k < N_POS; ++k) sizes.push_back(3);
-            sizes.push_back(6);
-            auto* cost = make_auto_cost_sw(f, 3, sizes);
-            std::vector<double*> params;
-            for (int k = 0; k < N_ORI; ++k) params.push_back(traj_.ori_knot_data(ori0 + k));
-            for (int k = 0; k < N_POS; ++k) params.push_back(traj_.pos_cp_data(pos0 + k));
-            params.push_back(traj_.bias_data());
-            auto* huber_a = new ceres::HuberLoss(cfg_.huber_delta_accel);
-            problem.AddResidualBlock(cost,
-                new ceres::ScaledLoss(huber_a, cfg_.lambda_accel, ceres::TAKE_OWNERSHIP), params);
-        }
+        // Raw accel + gravity direction (position-orientation coupling;
+        // preint r_R only replaces gyro, not accel).
+        for (const auto& imu : imu_samples) {
+            double u_ori; int ori0;
+            if (!traj_.ori_index(imu.timestamp, u_ori, ori0)) continue;
+            if (ori0 < oi0 || ori0 + N_ORI - 1 > oi1) continue;
 
-        // Gravity direction (when not accelerating hard)
-        if (cfg_.lambda_gravity > 0.0 && has_pos) {
-            Eigen::Vector3d z_acc(imu.ax, imu.ay, imu.az);
-            double acc_norm = z_acc.norm();
-            if (std::abs(acc_norm - 9.81) < cfg_.gravity_accel_threshold) {
-                auto* f = new GravityDirectionFunctor(z_acc, u_ori, inv_dt_ori);
+            double u_pos; int pos0;
+            bool has_pos = traj_.pos_index(imu.timestamp, u_pos, pos0);
+            if (has_pos && (pos0 < pi0 || pos0 + N_POS - 1 > pi1)) has_pos = false;
+
+            // Accel factor
+            if (has_pos) {
+                Eigen::Vector3d z_acc(imu.ax, imu.ay, imu.az);
+                auto* f = new AccelFunctor(z_acc, u_ori, inv_dt_ori, u_pos, inv_dt_pos);
+                std::vector<int> sizes;
+                for (int k = 0; k < N_ORI; ++k) sizes.push_back(4);
+                for (int k = 0; k < N_POS; ++k) sizes.push_back(3);
+                sizes.push_back(6);
+                auto* cost = make_auto_cost_sw(f, 3, sizes);
+                std::vector<double*> params;
+                for (int k = 0; k < N_ORI; ++k) params.push_back(traj_.ori_knot_data(ori0 + k));
+                for (int k = 0; k < N_POS; ++k) params.push_back(traj_.pos_cp_data(pos0 + k));
+                params.push_back(traj_.bias_data());
+                auto* huber_a = new ceres::HuberLoss(cfg_.huber_delta_accel);
+                problem.AddResidualBlock(cost,
+                    new ceres::ScaledLoss(huber_a, cfg_.lambda_accel, ceres::TAKE_OWNERSHIP), params);
+            }
+
+            // Gravity direction (when not accelerating hard)
+            if (cfg_.lambda_gravity > 0.0 && has_pos) {
+                Eigen::Vector3d z_acc(imu.ax, imu.ay, imu.az);
+                if (std::abs(z_acc.norm() - 9.81) < cfg_.gravity_accel_threshold) {
+                    auto* f = new GravityDirectionFunctor(z_acc, u_ori, inv_dt_ori);
+                    std::vector<int> sizes;
+                    for (int k = 0; k < N_ORI; ++k) sizes.push_back(4);
+                    sizes.push_back(6);
+                    auto* cost = make_auto_cost_sw(f, 3, sizes);
+                    std::vector<double*> params;
+                    for (int k = 0; k < N_ORI; ++k) params.push_back(traj_.ori_knot_data(ori0 + k));
+                    params.push_back(traj_.bias_data());
+                    problem.AddResidualBlock(cost,
+                        new ceres::ScaledLoss(nullptr, cfg_.lambda_gravity, ceres::TAKE_OWNERSHIP), params);
+                }
+            }
+        }
+    } else {
+        // ---- Raw IMU factors (gyro + accel + gravity direction) -------------
+        for (const auto& imu : imu_samples) {
+            double u_ori; int ori0;
+            if (!traj_.ori_index(imu.timestamp, u_ori, ori0)) continue;
+            if (ori0 < oi0 || ori0 + N_ORI - 1 > oi1) continue;
+
+            double u_pos; int pos0;
+            bool has_pos = traj_.pos_index(imu.timestamp, u_pos, pos0);
+            if (has_pos && (pos0 < pi0 || pos0 + N_POS - 1 > pi1)) has_pos = false;
+
+            // Gyro
+            {
+                Eigen::Vector3d z_gyro(imu.gx, imu.gy, imu.gz);
+                auto* f = new GyroFunctor(z_gyro, u_ori, inv_dt_ori);
                 std::vector<int> sizes;
                 for (int k = 0; k < N_ORI; ++k) sizes.push_back(4);
                 sizes.push_back(6);
@@ -259,7 +323,42 @@ SolverResult SlidingWindowSolver::solve_window(
                 for (int k = 0; k < N_ORI; ++k) params.push_back(traj_.ori_knot_data(ori0 + k));
                 params.push_back(traj_.bias_data());
                 problem.AddResidualBlock(cost,
-                    new ceres::ScaledLoss(nullptr, cfg_.lambda_gravity, ceres::TAKE_OWNERSHIP), params);
+                    new ceres::ScaledLoss(nullptr, cfg_.lambda_gyro, ceres::TAKE_OWNERSHIP), params);
+            }
+
+            // Accel
+            if (has_pos) {
+                Eigen::Vector3d z_acc(imu.ax, imu.ay, imu.az);
+                auto* f = new AccelFunctor(z_acc, u_ori, inv_dt_ori, u_pos, inv_dt_pos);
+                std::vector<int> sizes;
+                for (int k = 0; k < N_ORI; ++k) sizes.push_back(4);
+                for (int k = 0; k < N_POS; ++k) sizes.push_back(3);
+                sizes.push_back(6);
+                auto* cost = make_auto_cost_sw(f, 3, sizes);
+                std::vector<double*> params;
+                for (int k = 0; k < N_ORI; ++k) params.push_back(traj_.ori_knot_data(ori0 + k));
+                for (int k = 0; k < N_POS; ++k) params.push_back(traj_.pos_cp_data(pos0 + k));
+                params.push_back(traj_.bias_data());
+                auto* huber_a = new ceres::HuberLoss(cfg_.huber_delta_accel);
+                problem.AddResidualBlock(cost,
+                    new ceres::ScaledLoss(huber_a, cfg_.lambda_accel, ceres::TAKE_OWNERSHIP), params);
+            }
+
+            // Gravity direction (when not accelerating hard)
+            if (cfg_.lambda_gravity > 0.0 && has_pos) {
+                Eigen::Vector3d z_acc(imu.ax, imu.ay, imu.az);
+                if (std::abs(z_acc.norm() - 9.81) < cfg_.gravity_accel_threshold) {
+                    auto* f = new GravityDirectionFunctor(z_acc, u_ori, inv_dt_ori);
+                    std::vector<int> sizes;
+                    for (int k = 0; k < N_ORI; ++k) sizes.push_back(4);
+                    sizes.push_back(6);
+                    auto* cost = make_auto_cost_sw(f, 3, sizes);
+                    std::vector<double*> params;
+                    for (int k = 0; k < N_ORI; ++k) params.push_back(traj_.ori_knot_data(ori0 + k));
+                    params.push_back(traj_.bias_data());
+                    problem.AddResidualBlock(cost,
+                        new ceres::ScaledLoss(nullptr, cfg_.lambda_gravity, ceres::TAKE_OWNERSHIP), params);
+                }
             }
         }
     }

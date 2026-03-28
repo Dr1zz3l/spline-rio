@@ -54,6 +54,7 @@ public:
     SolverResult solve_window(
         const std::vector<RadarFrame>& radar_frames,
         const std::vector<ImuSample>& imu_samples,
+        const std::vector<PreintFactor>& preint_factors,
         const std::vector<std::pair<double, double>>& heading_samples,
         double t_start, double t_end, double stride);
 

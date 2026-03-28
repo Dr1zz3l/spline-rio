@@ -13,6 +13,16 @@
 #   backflips:    0.527m / 3.77°  (vs Python 1.88m  / 13°)  — 5.6× pos improvement from lever arm
 # Pre-lever-arm batch: slow 0.146m/0.96°, fast 0.925m/2.35°, backflips 2.93m/10.7°
 
+# IMU preintegration (Forster TRO-2017)
+# Replaces 1000 Hz raw IMU with preintegrated factors at preint_hz.
+# dt_ori is coupled: dt_ori = 1/preint_hz (set automatically in Python).
+# lambda_preint starting point: lambda_gyro * sqrt(preint_dt * imu_hz) ≈ 4 * sqrt(0.01*1000) ≈ 40
+use_preintegration: false  # preint at 100 Hz degrades orientation: 1:1 constraint ratio vs raw gyro's 8:1
+preint_hz: 100.0
+lambda_preint: 40.0    # weight for r_R (rotation residuals)
+lambda_preint_v: 0.0   # weight for r_v (velocity residuals); 0 = disabled
+lambda_preint_p: 0.0   # weight for r_p (position residuals); 0 = disabled
+
 lambda_gyro: 4.0
 lambda_snap_pos: 0.00002
 lambda_bias_prior_accel: 10000.0

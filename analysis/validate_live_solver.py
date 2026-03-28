@@ -48,7 +48,7 @@ from cumulative_so3_bspline import (
 )
 from codegen.generated_jacobians import Rot3
 from config_loader import load_config
-from imu_preintegration import build_preintegrated_factors
+from imu_preintegration import build_preintegrated_factors, preintegrate
 
 # Import solver core from the batch solver (optimizer itself is MoCap-free)
 from validate_nonlinear_solver import (
@@ -63,6 +63,51 @@ from validate_nonlinear_solver import (
 
 
 # ==================== C++ Ceres solver bridge ====================
+
+def _build_preint_factors_cpp(rio_solver, imu_data, b_a0, b_g0, t_start, t_end, dt_ori, t_ref):
+    """
+    Build preintegrated IMU factors on a uniform grid aligned to knot boundaries.
+    Returns a list of rio_solver.PreintFactor objects.
+    """
+    # Snap grid to knot boundaries relative to t_ref
+    k_start = int(round((t_start - t_ref) / dt_ori))
+    k_end   = int(round((t_end   - t_ref) / dt_ori))
+    t_grid  = np.array([t_ref + k * dt_ori for k in range(k_start, k_end + 1)])
+
+    # Convert imu_data to arrays for preintegrate()
+    imu_times = np.array([s.timestamp for s in imu_data])
+    imu_acc   = np.array([s.linear_acceleration for s in imu_data])
+    imu_gyro  = np.array([s.angular_velocity    for s in imu_data])
+    imu_arr   = np.hstack([imu_times[:, None], imu_acc, imu_gyro])  # (N, 7)
+
+    factors = []
+    for k in range(len(t_grid) - 1):
+        ti, tj = float(t_grid[k]), float(t_grid[k + 1])
+        mask = (imu_arr[:, 0] >= ti) & (imu_arr[:, 0] < tj + 1e-9)
+        if not mask.any():
+            continue
+        pf_py = preintegrate(
+            imu_data,
+            np.asarray(b_a0, dtype=float),
+            np.asarray(b_g0, dtype=float),
+            ti, tj)
+        f = rio_solver.PreintFactor()
+        f.t_i = pf_py.t_i
+        f.t_j = pf_py.t_j
+        f.dt  = pf_py.dt
+        f.delta_R  = pf_py.delta_R
+        f.delta_v  = pf_py.delta_v
+        f.delta_p  = pf_py.delta_p
+        f.b_a0     = pf_py.b_a0
+        f.b_g0     = pf_py.b_g0
+        f.d_R_d_bg = pf_py.d_R_d_bg
+        f.d_v_d_ba = pf_py.d_v_d_ba
+        f.d_v_d_bg = pf_py.d_v_d_bg
+        f.d_p_d_ba = pf_py.d_p_d_ba
+        f.d_p_d_bg = pf_py.d_p_d_bg
+        factors.append(f)
+    return factors
+
 
 def _solve_cpp(initial_state, solver_radar_frames, imu_data,
                extrinsics_cfg, solver_cfg,
@@ -128,6 +173,11 @@ def _solve_cpp(initial_state, solver_radar_frames, imu_data,
     cfg.optimize_pitch_only = solver_cfg.get('optimize_pitch_only', True)
     cfg.lambda_extrinsic_prior = solver_cfg.get('lambda_extrinsic_prior', 10.0)
     cfg.max_iterations      = solver_cfg.get('max_iterations', 400)
+    cfg.use_preintegration  = solver_cfg.get('use_preintegration', False)
+    cfg.lambda_preint       = solver_cfg.get('lambda_preint', 1.0)
+    cfg.lambda_preint_v     = solver_cfg.get('lambda_preint_v', 0.0)
+    cfg.lambda_preint_p     = solver_cfg.get('lambda_preint_p', 0.0)
+    cfg.preint_hz           = solver_cfg.get('preint_hz', 100.0)
 
     # --- Extrinsics ---
     euler_deg = extrinsics_cfg.get('rotation_euler_deg', [180.0, 25.5, 0.0])
@@ -170,12 +220,23 @@ def _solve_cpp(initial_state, solver_radar_frames, imu_data,
     # --- t_ref ---
     t_ref = pos_bspline.t_ref
 
+    # --- Preintegrated factors ---
+    cpp_preint = []
+    if cfg.use_preintegration:
+        t_data_start = min(f.timestamp for f in cpp_radar_frames) if cpp_radar_frames else t_ref
+        t_data_end   = max(f.timestamp for f in cpp_radar_frames) if cpp_radar_frames else t_ref
+        cpp_preint = _build_preint_factors_cpp(
+            rio_solver, imu_data, init_biases[:3], init_biases[3:],
+            t_data_start, t_data_end, cfg.dt_ori, t_ref)
+        print(f"  [--cpp] Preintegration: {len(cpp_preint)} factors at {cfg.preint_hz:.0f} Hz"
+              f" (dt_ori={cfg.dt_ori:.4f}s)")
+
     # --- Solve ---
     print(f"  [--cpp] Calling C++ Ceres solver "
           f"({len(cpp_radar_frames)} radar frames, {len(cpp_imu)} IMU samples)")
     t0_cpp = time.time()
     result = rio_solver.solve(
-        cpp_radar_frames, cpp_imu, cfg, ext,
+        cpp_radar_frames, cpp_imu, cpp_preint, cfg, ext,
         init_pos_cps, init_ori_quats, init_biases,
         t_ref, cpp_heading)
     dt_cpp = time.time() - t0_cpp
@@ -291,6 +352,11 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
     cfg.lambda_extrinsic_prior  = solver_cfg.get('lambda_extrinsic_prior', 10.0)
     cfg.max_iterations          = solver_cfg.get('max_iterations', 400)
     cfg.marg_prior_scale        = solver_cfg.get('marg_prior_scale', 1.0)
+    cfg.use_preintegration      = solver_cfg.get('use_preintegration', False)
+    cfg.lambda_preint           = solver_cfg.get('lambda_preint', 1.0)
+    cfg.lambda_preint_v         = solver_cfg.get('lambda_preint_v', 0.0)
+    cfg.lambda_preint_p         = solver_cfg.get('lambda_preint_p', 0.0)
+    cfg.preint_hz               = solver_cfg.get('preint_hz', 100.0)
 
     # Create stateful solver and initialize with full P1-P3 trajectory
     solver = rio_solver.SlidingWindowSolver(cfg, ext)
@@ -345,9 +411,20 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
             t_solve += window_stride
             continue
 
+        # Preintegrated factors for this window
+        window_imu_data = [s for s in imu_data
+                           if t_w_start <= s.timestamp <= t_w_end]
+        window_preint = []
+        if cfg.use_preintegration and window_imu_data:
+            b_a0 = np.array(solver.biases[:3])
+            b_g0 = np.array(solver.biases[3:])
+            window_preint = _build_preint_factors_cpp(
+                rio_solver, window_imu_data, b_a0, b_g0,
+                t_w_start, t_w_end, cfg.dt_ori, t_ref)
+
         t0 = time.time()
         result = solver.solve_window(
-            window_radar, window_imu, window_heading,
+            window_radar, window_imu, window_preint, window_heading,
             t_w_start, t_w_end, window_stride)
         dt_w = time.time() - t0
 
@@ -987,6 +1064,13 @@ def main():
             except ValueError:
                 _SOLVER_CFG[k] = v
             print(f"  [--set] {k} = {_SOLVER_CFG[k]}")
+
+    # Preintegration: dt_ori is coupled to preint_hz (dt_ori = 1/preint_hz)
+    if _SOLVER_CFG.get('use_preintegration', False):
+        preint_hz = _SOLVER_CFG.get('preint_hz', 100.0)
+        _SOLVER_CFG['dt_ori'] = 1.0 / preint_hz
+        print(f"  [preintegration] dt_ori coupled to preint_hz={preint_hz:.0f} Hz"
+              f" → dt_ori={_SOLVER_CFG['dt_ori']:.5f}s")
 
     # Init mode string (for display/filenames)
     mode_parts = []

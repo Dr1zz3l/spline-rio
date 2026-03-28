@@ -116,7 +116,12 @@ PYBIND11_MODULE(rio_solver, m) {
         .def_readwrite("max_iterations", &SolverConfig::max_iterations)
         .def_readwrite("n_fix_leading_pos", &SolverConfig::n_fix_leading_pos)
         .def_readwrite("n_fix_leading_ori", &SolverConfig::n_fix_leading_ori)
-        .def_readwrite("marg_prior_scale", &SolverConfig::marg_prior_scale);
+        .def_readwrite("marg_prior_scale", &SolverConfig::marg_prior_scale)
+        .def_readwrite("use_preintegration", &SolverConfig::use_preintegration)
+        .def_readwrite("lambda_preint",   &SolverConfig::lambda_preint)
+        .def_readwrite("lambda_preint_v", &SolverConfig::lambda_preint_v)
+        .def_readwrite("lambda_preint_p", &SolverConfig::lambda_preint_p)
+        .def_readwrite("preint_hz", &SolverConfig::preint_hz);
 
     // ---- ExtrinsicConfig ----------------------------------------------------
     py::class_<ExtrinsicConfig>(m, "ExtrinsicConfig")
@@ -151,6 +156,22 @@ PYBIND11_MODULE(rio_solver, m) {
         .def_readwrite("gy", &ImuSample::gy)
         .def_readwrite("gz", &ImuSample::gz);
 
+    py::class_<PreintFactor>(m, "PreintFactor")
+        .def(py::init<>())
+        .def_readwrite("t_i", &PreintFactor::t_i)
+        .def_readwrite("t_j", &PreintFactor::t_j)
+        .def_readwrite("dt",  &PreintFactor::dt)
+        .def_readwrite("delta_R",   &PreintFactor::delta_R)
+        .def_readwrite("delta_v",   &PreintFactor::delta_v)
+        .def_readwrite("delta_p",   &PreintFactor::delta_p)
+        .def_readwrite("b_a0",      &PreintFactor::b_a0)
+        .def_readwrite("b_g0",      &PreintFactor::b_g0)
+        .def_readwrite("d_R_d_bg",  &PreintFactor::d_R_d_bg)
+        .def_readwrite("d_v_d_ba",  &PreintFactor::d_v_d_ba)
+        .def_readwrite("d_v_d_bg",  &PreintFactor::d_v_d_bg)
+        .def_readwrite("d_p_d_ba",  &PreintFactor::d_p_d_ba)
+        .def_readwrite("d_p_d_bg",  &PreintFactor::d_p_d_bg);
+
     // ---- SolverResult -------------------------------------------------------
     py::class_<SolverResult>(m, "SolverResult")
         .def_property_readonly("pos_cps",
@@ -182,6 +203,7 @@ PYBIND11_MODULE(rio_solver, m) {
     m.def("solve",
         [](const std::vector<RadarFrame>& radar_frames,
            const std::vector<ImuSample>& imu_samples,
+           const std::vector<PreintFactor>& preint_factors,
            const SolverConfig& cfg,
            const ExtrinsicConfig& extrinsic,
            py::array_t<double, py::array::c_style | py::array::forcecast> init_pos_cps_np,
@@ -199,12 +221,13 @@ PYBIND11_MODULE(rio_solver, m) {
                 for (int i = 0; i < 6; ++i) init_biases[i] = r(i);
             }
 
-            return solve(radar_frames, imu_samples, cfg, extrinsic,
+            return solve(radar_frames, imu_samples, preint_factors, cfg, extrinsic,
                          init_pos_cps, init_ori_knots, init_biases, t_ref,
                          heading_samples);
         },
         py::arg("radar_frames"),
         py::arg("imu_samples"),
+        py::arg("preint_factors") = std::vector<PreintFactor>{},
         py::arg("cfg"),
         py::arg("extrinsic"),
         py::arg("init_pos_cps"),
@@ -260,12 +283,15 @@ PYBIND11_MODULE(rio_solver, m) {
             [](SlidingWindowSolver& self,
                const std::vector<RadarFrame>& radar_frames,
                const std::vector<ImuSample>& imu_samples,
+               const std::vector<PreintFactor>& preint_factors,
                const std::vector<std::pair<double, double>>& heading_samples,
                double t_start, double t_end, double stride) {
-                return self.solve_window(radar_frames, imu_samples, heading_samples,
-                                         t_start, t_end, stride);
+                return self.solve_window(radar_frames, imu_samples, preint_factors,
+                                         heading_samples, t_start, t_end, stride);
             },
-            py::arg("radar_frames"), py::arg("imu_samples"), py::arg("heading_samples"),
+            py::arg("radar_frames"), py::arg("imu_samples"),
+            py::arg("preint_factors") = std::vector<PreintFactor>{},
+            py::arg("heading_samples"),
             py::arg("t_start"), py::arg("t_end"), py::arg("stride"),
             "Solve one window [t_start, t_end]. Returns SolverResult.")
         .def_property_readonly("pos_cps",

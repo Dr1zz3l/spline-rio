@@ -7,6 +7,7 @@
 #include <rio/factors/heading_prior.h>
 #include <rio/factors/bias_prior.h>
 #include <rio/factors/regularization.h>
+#include <rio/factors/imu_preintegration.h>
 
 #include <Eigen/Dense>
 #include <sophus/so3.hpp>
@@ -61,6 +62,7 @@ ceres::CostFunction* make_auto_cost(Functor* f,
 SolverResult solve(
     const std::vector<RadarFrame>& radar_frames,
     const std::vector<ImuSample>& imu_samples,
+    const std::vector<PreintFactor>& preint_factors,
     const SolverConfig& cfg,
     const ExtrinsicConfig& extrinsic,
     const std::vector<std::array<double, 3>>& init_pos_cps,
@@ -181,74 +183,123 @@ SolverResult solve(
     }
 
     // ---- IMU factors ---------------------------------------------------------
-    auto* huber_accel = new ceres::HuberLoss(cfg.huber_delta_accel);
+    if (cfg.use_preintegration && !preint_factors.empty()) {
+        // ---- Preintegrated IMU factors (Forster TRO-2017) -------------------
+        for (const auto& pf : preint_factors) {
+            double u_ori_i; int oi0_i;
+            if (!traj.ori_index(pf.t_i, u_ori_i, oi0_i)) continue;
+            double u_ori_j; int oi0_j;
+            if (!traj.ori_index(pf.t_j, u_ori_j, oi0_j)) continue;
+            if (oi0_j != oi0_i + 1) continue;  // adjacency guard
 
-    for (const auto& imu : imu_samples) {
-        double u_ori;
-        int ori0;
-        if (!traj.ori_index(imu.timestamp, u_ori, ori0)) continue;
+            double u_pos_i; int pi0_i;
+            if (!traj.pos_index(pf.t_i, u_pos_i, pi0_i)) continue;
+            double u_pos_j; int pi0_j;
+            if (!traj.pos_index(pf.t_j, u_pos_j, pi0_j)) continue;
+            const int k_pos_stride = pi0_j - pi0_i;
+            if (k_pos_stride <= 0) continue;
 
-        double u_pos;
-        int pos0;
-        bool has_pos = traj.pos_index(imu.timestamp, u_pos, pos0);
+            const double scale_v = (cfg.lambda_preint > 0.0)
+                ? std::sqrt(cfg.lambda_preint_v / cfg.lambda_preint) : 0.0;
+            const double scale_p = (cfg.lambda_preint > 0.0)
+                ? std::sqrt(cfg.lambda_preint_p / cfg.lambda_preint) : 0.0;
+            auto* f = new IMUPreintegrationFunctor(
+                pf, u_ori_i, u_ori_j, inv_dt_ori,
+                    u_pos_i, u_pos_j, inv_dt_pos, k_pos_stride,
+                    scale_v, scale_p);
 
-        // Gyro factor (orientation only)
-        {
-            Eigen::Vector3d z_gyro(imu.gx, imu.gy, imu.gz);
-            auto* f = new GyroFunctor(z_gyro, u_ori, inv_dt_ori);
-
+            // 5 unique ori knots × 4, (N_POS+k_pos_stride) pos CPs × 3, bias × 6
             std::vector<int> sizes;
-            for (int i = 0; i < N_ORI; ++i) sizes.push_back(4);
+            for (int k = 0; k < 5; ++k) sizes.push_back(4);
+            for (int k = 0; k < N_POS + k_pos_stride; ++k) sizes.push_back(3);
             sizes.push_back(6);
 
-            auto* cost = make_auto_cost(f, 3, sizes);
+            auto* cost = make_auto_cost(f, 9, sizes);
 
             std::vector<double*> params;
-            for (int i = 0; i < N_ORI; ++i)
-                params.push_back(traj.ori_knot_data(ori0 + i));
+            for (int k = 0; k < 5; ++k)
+                params.push_back(traj.ori_knot_data(oi0_i + k));
+            for (int k = 0; k < N_POS + k_pos_stride; ++k)
+                params.push_back(traj.pos_cp_data(pi0_i + k));
             params.push_back(traj.bias_data());
 
-            // Apply lambda_gyro as inverse-sigma (sqrt(lambda) * residual)
-            auto* scaled = new ceres::ScaledLoss(nullptr, cfg.lambda_gyro,
-                                                  ceres::TAKE_OWNERSHIP);
-            problem.AddResidualBlock(cost, scaled, params);
+            problem.AddResidualBlock(
+                cost,
+                new ceres::ScaledLoss(nullptr, cfg.lambda_preint, ceres::TAKE_OWNERSHIP),
+                params);
         }
 
-        // Accel factor (needs position too)
-        if (has_pos) {
-            Eigen::Vector3d z_acc(imu.ax, imu.ay, imu.az);
-            auto* f = new AccelFunctor(z_acc, u_ori, inv_dt_ori, u_pos, inv_dt_pos);
+        // Raw accel + gravity direction factors (position-orientation coupling,
+        // same as the raw IMU path — preint r_R only replaces gyro, not accel).
+        for (const auto& imu : imu_samples) {
+            double u_ori; int ori0;
+            if (!traj.ori_index(imu.timestamp, u_ori, ori0)) continue;
 
-            std::vector<int> sizes;
-            for (int i = 0; i < N_ORI; ++i) sizes.push_back(4);
-            for (int i = 0; i < N_POS; ++i) sizes.push_back(3);
-            sizes.push_back(6);
+            double u_pos; int pos0;
+            bool has_pos = traj.pos_index(imu.timestamp, u_pos, pos0);
 
-            auto* cost = make_auto_cost(f, 3, sizes);
+            // Accel factor (needs position too)
+            if (has_pos) {
+                Eigen::Vector3d z_acc(imu.ax, imu.ay, imu.az);
+                auto* f = new AccelFunctor(z_acc, u_ori, inv_dt_ori, u_pos, inv_dt_pos);
 
-            std::vector<double*> params;
-            for (int i = 0; i < N_ORI; ++i)
-                params.push_back(traj.ori_knot_data(ori0 + i));
-            for (int i = 0; i < N_POS; ++i)
-                params.push_back(traj.pos_cp_data(pos0 + i));
-            params.push_back(traj.bias_data());
+                std::vector<int> sizes;
+                for (int i = 0; i < N_ORI; ++i) sizes.push_back(4);
+                for (int i = 0; i < N_POS; ++i) sizes.push_back(3);
+                sizes.push_back(6);
 
-            // lambda_accel via ScaledLoss(HuberLoss)
-            auto* loss = new ceres::ScaledLoss(
-                new ceres::HuberLoss(cfg.huber_delta_accel),
-                cfg.lambda_accel,
-                ceres::TAKE_OWNERSHIP);
-            problem.AddResidualBlock(cost, loss, params);
+                auto* cost = make_auto_cost(f, 3, sizes);
+
+                std::vector<double*> params;
+                for (int i = 0; i < N_ORI; ++i)
+                    params.push_back(traj.ori_knot_data(ori0 + i));
+                for (int i = 0; i < N_POS; ++i)
+                    params.push_back(traj.pos_cp_data(pos0 + i));
+                params.push_back(traj.bias_data());
+
+                auto* loss = new ceres::ScaledLoss(
+                    new ceres::HuberLoss(cfg.huber_delta_accel),
+                    cfg.lambda_accel,
+                    ceres::TAKE_OWNERSHIP);
+                problem.AddResidualBlock(cost, loss, params);
+            }
+
+            // Gravity direction factor
+            if (cfg.lambda_gravity > 0.0 && has_pos) {
+                Eigen::Vector3d z_acc(imu.ax, imu.ay, imu.az);
+                double dev = std::abs(z_acc.norm() - 9.81);
+                if (dev < cfg.gravity_accel_threshold) {
+                    auto* f = new GravityDirectionFunctor(z_acc, u_ori, inv_dt_ori);
+                    std::vector<int> sizes;
+                    for (int i = 0; i < N_ORI; ++i) sizes.push_back(4);
+                    sizes.push_back(6);
+                    auto* cost = make_auto_cost(f, 3, sizes);
+                    std::vector<double*> params;
+                    for (int i = 0; i < N_ORI; ++i)
+                        params.push_back(traj.ori_knot_data(ori0 + i));
+                    params.push_back(traj.bias_data());
+                    problem.AddResidualBlock(
+                        cost,
+                        new ceres::ScaledLoss(nullptr, cfg.lambda_gravity, ceres::TAKE_OWNERSHIP),
+                        params);
+                }
+            }
         }
+    } else {
+        // ---- Raw IMU factors (gyro + accel + gravity direction) -------------
+        for (const auto& imu : imu_samples) {
+            double u_ori;
+            int ori0;
+            if (!traj.ori_index(imu.timestamp, u_ori, ori0)) continue;
 
-        // Gravity direction factor
-        if (cfg.lambda_gravity > 0.0 && has_pos) {
-            Eigen::Vector3d z_acc(imu.ax, imu.ay, imu.az);
-            // Dynamic trust: skip if accelerometer shows strong dynamics
-            double a_norm = z_acc.norm();
-            double dev = std::abs(a_norm - 9.81);
-            if (dev < cfg.gravity_accel_threshold) {
-                auto* f = new GravityDirectionFunctor(z_acc, u_ori, inv_dt_ori);
+            double u_pos;
+            int pos0;
+            bool has_pos = traj.pos_index(imu.timestamp, u_pos, pos0);
+
+            // Gyro factor (orientation only)
+            {
+                Eigen::Vector3d z_gyro(imu.gx, imu.gy, imu.gz);
+                auto* f = new GyroFunctor(z_gyro, u_ori, inv_dt_ori);
 
                 std::vector<int> sizes;
                 for (int i = 0; i < N_ORI; ++i) sizes.push_back(4);
@@ -261,9 +312,60 @@ SolverResult solve(
                     params.push_back(traj.ori_knot_data(ori0 + i));
                 params.push_back(traj.bias_data());
 
-                auto* loss = new ceres::ScaledLoss(nullptr, cfg.lambda_gravity,
-                                                    ceres::TAKE_OWNERSHIP);
+                auto* scaled = new ceres::ScaledLoss(nullptr, cfg.lambda_gyro,
+                                                      ceres::TAKE_OWNERSHIP);
+                problem.AddResidualBlock(cost, scaled, params);
+            }
+
+            // Accel factor (needs position too)
+            if (has_pos) {
+                Eigen::Vector3d z_acc(imu.ax, imu.ay, imu.az);
+                auto* f = new AccelFunctor(z_acc, u_ori, inv_dt_ori, u_pos, inv_dt_pos);
+
+                std::vector<int> sizes;
+                for (int i = 0; i < N_ORI; ++i) sizes.push_back(4);
+                for (int i = 0; i < N_POS; ++i) sizes.push_back(3);
+                sizes.push_back(6);
+
+                auto* cost = make_auto_cost(f, 3, sizes);
+
+                std::vector<double*> params;
+                for (int i = 0; i < N_ORI; ++i)
+                    params.push_back(traj.ori_knot_data(ori0 + i));
+                for (int i = 0; i < N_POS; ++i)
+                    params.push_back(traj.pos_cp_data(pos0 + i));
+                params.push_back(traj.bias_data());
+
+                auto* loss = new ceres::ScaledLoss(
+                    new ceres::HuberLoss(cfg.huber_delta_accel),
+                    cfg.lambda_accel,
+                    ceres::TAKE_OWNERSHIP);
                 problem.AddResidualBlock(cost, loss, params);
+            }
+
+            // Gravity direction factor
+            if (cfg.lambda_gravity > 0.0 && has_pos) {
+                Eigen::Vector3d z_acc(imu.ax, imu.ay, imu.az);
+                double a_norm = z_acc.norm();
+                double dev = std::abs(a_norm - 9.81);
+                if (dev < cfg.gravity_accel_threshold) {
+                    auto* f = new GravityDirectionFunctor(z_acc, u_ori, inv_dt_ori);
+
+                    std::vector<int> sizes;
+                    for (int i = 0; i < N_ORI; ++i) sizes.push_back(4);
+                    sizes.push_back(6);
+
+                    auto* cost = make_auto_cost(f, 3, sizes);
+
+                    std::vector<double*> params;
+                    for (int i = 0; i < N_ORI; ++i)
+                        params.push_back(traj.ori_knot_data(ori0 + i));
+                    params.push_back(traj.bias_data());
+
+                    auto* loss = new ceres::ScaledLoss(nullptr, cfg.lambda_gravity,
+                                                        ceres::TAKE_OWNERSHIP);
+                    problem.AddResidualBlock(cost, loss, params);
+                }
             }
         }
     }

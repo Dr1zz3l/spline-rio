@@ -28,6 +28,31 @@ struct ImuSample {
 };
 
 // ============================================================================
+// PreintFactor — preintegrated IMU measurement (Forster TRO-2017)
+// ============================================================================
+// Holds ΔR, Δv, Δp integrated from t_i to t_j plus first-order Jacobians
+// for on-the-fly bias correction during optimization.
+struct PreintFactor {
+    double t_i{0.0}, t_j{0.0}, dt{0.0};
+
+    // Preintegrated measurements (at linearization biases b_a0, b_g0)
+    Eigen::Matrix3d delta_R{Eigen::Matrix3d::Identity()};
+    Eigen::Vector3d delta_v{Eigen::Vector3d::Zero()};
+    Eigen::Vector3d delta_p{Eigen::Vector3d::Zero()};
+
+    // Linearization biases
+    Eigen::Vector3d b_a0{Eigen::Vector3d::Zero()};
+    Eigen::Vector3d b_g0{Eigen::Vector3d::Zero()};
+
+    // First-order bias Jacobians (3×3 each)
+    Eigen::Matrix3d d_R_d_bg{Eigen::Matrix3d::Zero()};
+    Eigen::Matrix3d d_v_d_ba{Eigen::Matrix3d::Zero()};
+    Eigen::Matrix3d d_v_d_bg{Eigen::Matrix3d::Zero()};
+    Eigen::Matrix3d d_p_d_ba{Eigen::Matrix3d::Zero()};
+    Eigen::Matrix3d d_p_d_bg{Eigen::Matrix3d::Zero()};
+};
+
+// ============================================================================
 // Config (subset of solver.yaml)
 // ============================================================================
 struct SolverConfig {
@@ -73,6 +98,13 @@ struct SolverConfig {
 
     // Optimizer
     int max_iterations{40};
+
+    // Preintegration
+    bool   use_preintegration{false}; // replace raw IMU with preintegrated factors
+    double lambda_preint{1.0};        // weight for r_R (3 residuals)
+    double lambda_preint_v{0.0};      // weight for r_v (3 residuals); 0 = disabled (safe default)
+    double lambda_preint_p{0.0};      // weight for r_p (3 residuals); 0 = disabled (safe default)
+    double preint_hz{100.0};          // informational; Python uses to set dt_ori = 1/preint_hz
 
     // Sliding window: fix leading knots constant (previously solved, trusted)
     int n_fix_leading_pos{0};   // number of leading pos CPs to freeze
@@ -125,6 +157,7 @@ struct SolverResult {
 SolverResult solve(
     const std::vector<RadarFrame>& radar_frames,
     const std::vector<ImuSample>& imu_samples,
+    const std::vector<PreintFactor>& preint_factors,
     const SolverConfig& cfg,
     const ExtrinsicConfig& extrinsic,
     // Initial state (from Python P1-P3 initialisation)

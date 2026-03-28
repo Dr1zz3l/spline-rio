@@ -317,6 +317,40 @@ create too many DOF for the weak prior to anchor pitch_delta; it drifts to +18°
 catastrophic orientation error (43.8° pitch vs 8.3° with locked). Added to `bags.yaml`
 `solver_overrides.backflips_best_velocity`.
 
+### C++ solver: IMU preintegration (implemented, disabled by default)
+
+**Implemented** but **disabled** (`use_preintegration: false` in `solver_cpp.yaml`). The full
+Forster TRO-2017 preintegration pipeline is in place:
+
+- `IMUPreintegrationFunctor` in `rio_solver_cpp/include/rio/factors/imu_preintegration.h`
+- `PreintFactor` struct in `solver.h` with full Jacobians (d_R_d_bg, d_v_d_ba, d_v_d_bg, d_p_d_ba, d_p_d_bg)
+- `SolverConfig` fields: `use_preintegration`, `lambda_preint`, `lambda_preint_v`, `lambda_preint_p`, `preint_hz`
+- Functor has separate `scale_v`, `scale_p` scalars (default 0.0) to independently enable r_v and r_p
+- In the preint path, raw accel factors are still added (preint r_R replaces gyro only)
+- Python wiring in `validate_live_solver.py`: `_build_preint_factors_cpp()`, dt_ori coupling override
+- `PreintFactor` bound in pybind11; `preint_factors` arg added to `solve()` and `solve_window()`
+
+**Why it's disabled — fundamental constraint-density issue:**
+
+Preint at 100 Hz (dt_ori=0.01) replaces 1000 Hz raw gyro with 100 Hz preintegration factors.
+For racing bags at dt_ori=0.008s:
+- Raw gyro: ~8 samples per knot → 8:1 overconstrained (strong, noise-resistant)
+- Preint at 100 Hz: 1 factor per knot → 1:1 (critically constrained → orientation degrades)
+- Tested: slow_racing orientation RMSE 1.09° (raw gyro) → 6.0° (preint at 100 Hz)
+
+**Why preint can't fix backflips sliding window instability:**
+Two conflicting requirements make preint fundamentally unable to help:
+1. Model bandwidth: backflips require dt_ori ≤ 0.001s (empirically ~0.0008s from dt_ori sweep)
+2. Preintegration requires dt_preint ≥ 1/IMU_hz = 0.001s (need ≥2 samples per interval)
+At 100 Hz (dt_ori=0.01s): model bandwidth insufficient — same bad results as dt_ori=0.008
+At 1250 Hz (dt_ori=0.0008s): dt_preint=0.0008 < IMU period=0.001 → degenerate factors
+
+**Backflips sliding window** remains documented as batch-only (see section above).
+
+**If enabling preint in the future**, start with `lambda_preint_v=0, lambda_preint_p=0` (r_R only).
+r_v residuals are ~0.1 m/s at init (P1-P3 velocity ≠ IMU-integrated velocity) and corrupt
+orientation through ∂r_v/∂R_i if enabled before the optimizer has converged.
+
 ## ROS Topics
 
 | Topic | Content |
