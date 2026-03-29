@@ -367,6 +367,9 @@ prior on the boundary CPs/knots + bias.  This prior is carried forward via
 | slow_racing | 0.358m / 1.34° | 0.468m / 1.90° | **0.162m / 1.77°** | 0.146m / 0.96° |
 | fast_racing | ~1.0m / ~3° | 0.848m / 4.36° | **0.710m / 4.26°** | 0.925m / 2.35° |
 
+Note: above numbers are pre-lever-arm.  Post-lever-arm (current): slow 0.43m/1.59°, fast 0.80m/3.10°
+(lever arm adds physically correct antenna-offset correction but changes the absolute numbers).
+
 **Per-window timing:** ~1.5s.
 
 **Key finding: prior scale is critical.**  The raw Schur complement has per-entry magnitudes
@@ -383,6 +386,81 @@ linearization point (x₀) is updated to the current warm-start.  This makes the
 contribute only curvature (Hessian) information, not a gradient pull toward a stale
 historical estimate.  Combined with the scale factor this gives near-batch accuracy from
 a 3s/0.3s sliding window.
+
+## Phase 4b: Settled vs Live (Leading-Edge) RMSE (2026-03-29)
+
+### What "live" means
+
+In sliding-window mode the final RMSE is evaluated over the *settled* trajectory —
+each CP/knot has been refined by ~10 subsequent windows by the time evaluation runs.
+This is an optimistic metric for online deployment.
+
+The *live (leading-edge)* metric snapshots the estimate at the end of each window
+(`[t_w_end − stride, t_w_end]`) before any subsequent refinement.  These CPs have
+only been optimised once — they represent what a truly causal online system would output.
+
+Implementation: after each `solve_window()`, the current global pos/vel/ori splines
+are evaluated on a 50 Hz grid over the stride zone and accumulated.  At evaluation time,
+the snapshots are interpolated to MoCap timestamps and scored with the same SE3
+alignment used for the settled trajectory (apples-to-apples comparison).
+
+### Results — C++ SW (3.0s window, 0.3s stride, --mocap-yaw --cpp --sliding-window)
+
+All metrics evaluated over the same MoCap time range (settled eval range, which trims
+the last `window_duration` seconds).
+
+#### With radar (full RIO)
+
+| Bag | Settled Pos | Live Pos | Δ Pos | Settled Vel | Live Vel | Δ Vel | Settled Ori | Live Ori | Δ Ori |
+|-----|------------|---------|-------|------------|---------|-------|------------|---------|-------|
+| slow_racing | 0.429 m | **0.627 m** | +0.200 m (+47%) | 0.154 m/s | **0.409 m/s** | +0.255 m/s (+166%) | 1.59° | **2.28°** | +0.69° (+43%) |
+| fast_racing | 0.804 m | **0.876 m** | +0.073 m (+9%) | 0.383 m/s | **0.723 m/s** | +0.340 m/s (+89%) | 3.10° | **4.17°** | +1.07° (+34%) |
+
+#### Without radar (IMU-only baseline, --no-radar, same SW config)
+
+| Bag | Settled Pos | Live Pos | Δ Pos | Settled Vel | Live Vel | Δ Vel | Settled Ori | Live Ori | Δ Ori |
+|-----|------------|---------|-------|------------|---------|-------|------------|---------|-------|
+| slow_racing | 6.437 m | **7.332 m** | +0.895 m (+14%) | 1.031 m/s | **2.543 m/s** | +1.512 m/s (+147%) | 4.16° | **8.17°** | +4.01° (+96%) |
+| fast_racing | 5.898 m | **6.963 m** | +1.065 m (+18%) | 1.011 m/s | **1.723 m/s** | +0.712 m/s (+70%) | 6.94° | **6.83°** | −0.11° (≈0) |
+
+#### Radar impact (settled, IMU-only → RIO)
+
+| Bag | Pos improvement | Vel improvement | Ori improvement |
+|-----|----------------|----------------|----------------|
+| slow_racing | 6.44 → 0.43 m (**−93%**) | 1.03 → 0.15 m/s (**−85%**) | 4.16 → 1.59° (**−62%**) |
+| fast_racing | 5.90 → 0.80 m (**−86%**) | 1.01 → 0.38 m/s (**−62%**) | 6.94 → 3.10° (**−55%**) |
+
+### Observations
+
+**Radar impact is dominant.**  Position improves 86–93% vs IMU-only.  The IMU-only
+solver drifts rapidly (6–6.5 m settled RMSE over ~20 s) because the only position
+information is dead-reckoned from accelerometer integration — double-integration
+amplifies any bias or noise.  Radar Doppler breaks this by providing direct velocity
+measurements that constrain the spline trajectory continuously.
+
+**Live degradation is larger for velocity than position.**  Position at the leading
+edge degrades +9–47% (radar); velocity degrades +89–166%.  Velocity (first spline
+derivative) responds more quickly to each new data window — it has less temporal
+inertia than integrated position.  Subsequent windows smooth the velocity estimate
+significantly; the first-pass velocity is noisier.
+
+**slow_racing position degrades more than fast_racing (+47% vs +9%).**  Counter-
+intuitive, but consistent with the settled RMSE difference: slow_racing's batch
+optimizer extracts more benefit from re-processing previous windows (tighter dynamics,
+more consistent Doppler) so the gap between first-pass and settled is larger.
+fast_racing position is already poorly constrained (z-velocity bias) so subsequent
+windows add little.
+
+**Orientation leading-edge degradation is moderate (+34–43% with radar).**  The
+gyroscope dominates orientation — it provides dense continuous constraints.  The
+optimizer corrects small residual errors in subsequent windows but orientation
+is already well-anchored on the first pass.
+
+**IMU-only live orientation degradation is severe for slow_racing (+96%) but
+negligible for fast_racing (−0.1%).**  Without radar, position drifts freely and
+pulls orientation through the coupled spline factors.  fast_racing's orientation
+estimate happens to be insensitive to this coupling (it diverges along a different
+error mode — higher angular dynamics mean gyro dominates completely).
 
 ## Files
 

@@ -387,8 +387,8 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
         all_heading = [(float(t), float(np.arctan2(R[1, 0], R[0, 0])))
                        for t, R in heading_priors]
 
-    t_data_start = cpp_radar_all[0][0]  if cpp_radar_all else t_ref
-    t_data_end   = cpp_radar_all[-1][0] if cpp_radar_all else t_ref
+    t_data_start = cpp_radar_all[0][0]  if cpp_radar_all else imu_times[0]
+    t_data_end   = cpp_radar_all[-1][0] if cpp_radar_all else imu_times[-1]
     n_expected = max(1, int((t_data_end - t_data_start - window_duration) / window_stride) + 1)
 
     print(f"  [--sliding-window] window={window_duration:.1f}s  stride={window_stride:.1f}s"
@@ -396,6 +396,10 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
 
     t_solve = t_data_start + window_duration
     n_windows = 0
+
+    # Live leading-edge snapshots — one per window, over the stride zone
+    _live_eval_dt  = 0.02   # 50 Hz grid → ~15 pts per 0.3 s stride
+    live_snapshots = []     # list of {'t', 'pos', 'ori'} dicts
 
     while t_solve <= t_data_end + 1e-6:
         t_w_start = t_solve - window_duration
@@ -407,7 +411,8 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
         window_imu     = rio_solver.make_imu_samples(imu_np[imu_mask])
         window_heading = [(t, y) for t, y in all_heading if t_w_start <= t <= t_w_end]
 
-        if not window_radar or not imu_mask.any():
+        # Skip if no IMU, or if radar is expected (data exists globally) but absent this window
+        if not imu_mask.any() or (cpp_radar_all and not window_radar):
             t_solve += window_stride
             continue
 
@@ -432,6 +437,32 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
         print(f"  [sw {n_windows+1:3d}] t={t_w_start:.2f}–{t_w_end:.2f}s"
               f"  {len(window_radar):3d}fr  {int(imu_mask.sum()):4d}imu"
               f"  cost={cost_str}  iter={len(result.cost_history)}  dt={dt_w:.2f}s")
+
+        # Snapshot leading-edge estimate in stride zone [t_w_end - stride, t_w_end]
+        t_snap_start = t_w_end - window_stride
+        t_snap_end   = t_w_end
+        n_pts        = max(2, int(round((t_snap_end - t_snap_start) / _live_eval_dt)))
+        t_snap_grid  = np.linspace(t_snap_start, t_snap_end, n_pts, endpoint=False)
+
+        snap_pos_cps   = np.array(solver.pos_cps)
+        snap_ori_quats = np.array(solver.ori_knots)
+        snap_pos_sp = UniformBSpline(snap_pos_cps, pos_bspline.degree, dt_pos)
+        snap_pos_sp.t_ref = t_ref
+        snap_ori_sp = CumulativeSO3BSpline.from_rotation_samples(
+            Rotation.from_quat(snap_ori_quats).as_matrix(), dt=dt_ori, t_ref=t_ref)
+
+        abs_pos_start = t_ref + snap_pos_sp.t_start
+        abs_pos_end   = t_ref + snap_pos_sp.t_end
+        abs_ori_start = t_ref + snap_ori_sp.t_start
+        abs_ori_end   = t_ref + snap_ori_sp.t_end
+        valid_snap = ((t_snap_grid >= max(abs_pos_start, abs_ori_start)) &
+                      (t_snap_grid <= min(abs_pos_end,   abs_ori_end)))
+        t_eval_snap = t_snap_grid[valid_snap]
+        if len(t_eval_snap) > 0:
+            snap_pos_vals = np.array([snap_pos_sp(t - t_ref, derivative=0) for t in t_eval_snap])
+            snap_vel_vals = np.array([snap_pos_sp(t - t_ref, derivative=1) for t in t_eval_snap])
+            snap_ori_vals = np.array([snap_ori_sp.evaluate(t - t_ref)      for t in t_eval_snap])
+            live_snapshots.append({'t': t_eval_snap, 'pos': snap_pos_vals, 'vel': snap_vel_vals, 'ori': snap_ori_vals})
 
         t_solve += window_stride
         n_windows += 1
@@ -461,7 +492,7 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
         acc_bias=np.array(biases[:3]),
         gyr_bias=np.array(biases[3:]),
         radar_extrinsic_delta=np.zeros(3),
-    )
+    ), live_snapshots
 
 
 # ==================== Config ====================
@@ -1621,8 +1652,9 @@ def main():
     # intermediate knots unconstrained — gyro pins them at 1kHz.
     solver_lambda_accel = 0.0 if USE_PREINTEGRATE else LAMBDA_ACCEL
 
+    live_snapshots = []  # populated only for --sliding-window; used in live RMSE eval below
     if USE_CPP and USE_SLIDING_WINDOW:
-        optimized_state = _solve_cpp_sliding_window(
+        optimized_state, live_snapshots = _solve_cpp_sliding_window(
             initial_state=initial_state,
             solver_radar_frames=solver_radar_frames,
             imu_data=imu_data,
@@ -1812,12 +1844,124 @@ def main():
         est_euler = mocap_euler + ((est_euler_deg - mocap_euler + 180) % 360 - 180)
         euler_diff = est_euler - mocap_euler
 
-        print(f"\n  === RESULTS ({init_mode_str}) ===")
-        print(f"  Position RMSE (aligned): {pos_rmse:.4f} m  (max: {pos_errors.max():.4f} m)")
-        print(f"  Velocity RMSE:           {vel_rmse:.4f} m/s")
-        print(f"  Angular vel RMSE:        {ang_vel_rmse:.4f} rad/s")
-        print(f"  Acceleration RMSE:       {accel_rmse:.4f} m/s²")
-        print(f"  Orientation RMSE:        {rot_rmse:.4f} deg  (max: {rot_errors.max():.4f} deg)")
+        # ==================== Live (leading-edge) RMSE ====================
+        # Compute before the results print so we can show a combined table.
+        # Sentinel plot arrays — set inside the block if live data is available
+        live_pos_aligned_plot  = None   # (M, 3) aligned positions at live_mocap_t
+        live_vel_aligned_plot  = None   # (M, 3) aligned velocities
+        live_ori_aligned_plot  = None   # (M, 3, 3)
+        live_euler_plot        = None   # (M, 3) Euler xyz degrees, branch-snapped to MoCap
+        live_pos_errs_plot     = None   # (M,) absolute position errors
+        live_vel_errs_plot     = None   # (M,) absolute velocity errors
+        live_vel_rmse_plot     = None
+        live_rot_errs_plot     = None   # (M,) absolute orientation errors in degrees
+        live_time_rel_plot     = None   # (M,) relative times matching eval_times[0] origin
+        live_pos_rmse_plot     = None
+        live_rot_rmse_plot     = None
+        _n_live_windows        = 0
+
+        if live_snapshots:
+            all_live_t   = np.concatenate([s['t']   for s in live_snapshots])
+            all_live_pos = np.concatenate([s['pos'] for s in live_snapshots])
+            all_live_vel = np.concatenate([s['vel'] for s in live_snapshots])
+            all_live_ori = np.concatenate([s['ori'] for s in live_snapshots])
+
+            # Same MoCap time range as settled eval for apples-to-apples comparison
+            live_mask = ((mocap_times_abs >= t_eval_start) & (mocap_times_abs <= t_eval_end) &
+                         (mocap_times_abs >= all_live_t[0])  & (mocap_times_abs <= all_live_t[-1]))
+            live_mocap_t   = mocap_times_abs[live_mask]
+            live_mocap_pos = mocap_positions[live_mask]
+            live_mocap_ori = mocap_rots_all[live_mask]
+
+            if len(live_mocap_t) > 0:
+                from scipy.interpolate import interp1d as _interp1d
+                from scipy.spatial.transform import Slerp as _Slerp
+
+                live_pos_interp = np.zeros((len(live_mocap_t), 3))
+                live_vel_interp = np.zeros((len(live_mocap_t), 3))
+                for dim in range(3):
+                    fp = _interp1d(all_live_t, all_live_pos[:, dim], kind='linear',
+                                   bounds_error=False,
+                                   fill_value=(all_live_pos[0, dim], all_live_pos[-1, dim]))
+                    fv = _interp1d(all_live_t, all_live_vel[:, dim], kind='linear',
+                                   bounds_error=False,
+                                   fill_value=(all_live_vel[0, dim], all_live_vel[-1, dim]))
+                    live_pos_interp[:, dim] = fp(live_mocap_t)
+                    live_vel_interp[:, dim] = fv(live_mocap_t)
+
+                slerp_fn = _Slerp(all_live_t, Rotation.from_matrix(all_live_ori))
+                live_ori_interp = slerp_fn(
+                    np.clip(live_mocap_t, all_live_t[0], all_live_t[-1])).as_matrix()
+
+                live_pos_aligned = (R_align @ live_pos_interp.T).T + t_align
+                live_vel_aligned = (R_align @ live_vel_interp.T).T
+                live_ori_aligned = np.array([R_align @ R for R in live_ori_interp])
+
+                # Euler angles branch-snapped to MoCap (same convention as settled eval)
+                _live_euler_raw = np.degrees(Rotation.from_matrix(live_ori_aligned).as_euler('xyz'))
+                _ltr = live_mocap_t - eval_times[0]
+                _mocap_euler_raw_all = np.degrees(
+                    np.unwrap(Rotation.from_matrix(mocap_rots_all[spline_valid_mask]).as_euler('xyz'), axis=0))
+                _mocap_euler_at_live = np.zeros_like(_live_euler_raw)
+                _time_rel_settled = eval_times - eval_times[0]
+                for dim in range(3):
+                    _mocap_euler_at_live[:, dim] = np.interp(_ltr, _time_rel_settled, _mocap_euler_raw_all[:, dim])
+                live_euler_aligned = _mocap_euler_at_live + (
+                    (_live_euler_raw - _mocap_euler_at_live + 180) % 360 - 180)
+
+                live_mocap_vel = np.array([s.velocity for s in agiros_states])[live_mask]
+                live_pos_errs = np.linalg.norm(live_pos_aligned - live_mocap_pos, axis=1)
+                live_pos_rmse = np.sqrt(np.mean(live_pos_errs**2))
+                live_vel_errs = np.linalg.norm(live_vel_aligned - live_mocap_vel, axis=1)
+                live_vel_rmse = np.sqrt(np.mean(live_vel_errs**2))
+
+                live_rot_errs = [
+                    np.degrees(np.arccos(np.clip(
+                        (np.trace(live_mocap_ori[i].T @ live_ori_aligned[i]) - 1) / 2, -1, 1)))
+                    for i in range(len(live_mocap_t))
+                ]
+                live_rot_errs_arr = np.array(live_rot_errs)
+                live_rot_rmse = np.sqrt(np.mean(live_rot_errs_arr**2))
+
+                # Populate plot sentinels
+                live_pos_aligned_plot = live_pos_aligned
+                live_vel_aligned_plot = live_vel_aligned
+                live_ori_aligned_plot = live_ori_aligned
+                live_euler_plot       = live_euler_aligned
+                live_pos_errs_plot    = live_pos_errs
+                live_vel_errs_plot    = live_vel_errs
+                live_vel_rmse_plot    = live_vel_rmse
+                live_rot_errs_plot    = live_rot_errs_arr
+                live_time_rel_plot    = _ltr
+                live_pos_rmse_plot    = live_pos_rmse
+                live_rot_rmse_plot    = live_rot_rmse
+                _n_live_windows       = len(live_snapshots)
+
+        # ==================== Results summary ====================
+        _has_live = live_pos_rmse_plot is not None
+        _lbl_s = f"{'Settled':>10}"
+        _lbl_l = f"{'Live edge':>10}" if _has_live else ""
+        _lbl_d = f"{'Δ':>8}"         if _has_live else ""
+        print(f"\n  === RESULTS ({init_mode_str})"
+              + (f" — settled vs live ({_n_live_windows} windows) ===" if _has_live else " ==="))
+        print(f"  {'Metric':<28} {_lbl_s}" + (f"  {_lbl_l}  {_lbl_d}" if _has_live else ""))
+        print(f"  {'-'*28} {'-'*10}" + (f"  {'-'*10}  {'-'*8}" if _has_live else ""))
+
+        def _row(label, settled, live=None, fmt=".4f", unit=""):
+            s = f"{settled:{fmt}}{unit}"
+            if _has_live and live is not None:
+                d = live - settled
+                return f"  {label:<28} {s:>10}  {live:{fmt}}{unit:>0}  {d:>+8.4f}"
+            return f"  {label:<28} {s:>10}"
+
+        print(_row("Position RMSE (m)", pos_rmse,
+                   live_pos_rmse_plot if _has_live else None))
+        print(_row("Velocity RMSE (m/s)", vel_rmse,
+                   live_vel_rmse_plot if _has_live else None))
+        print(f"  {'Angular vel RMSE (rad/s)':<28} {ang_vel_rmse:>10.4f}")
+        print(f"  {'Acceleration RMSE (m/s²)':<28} {accel_rmse:>10.4f}")
+        print(_row("Orientation RMSE (deg)", rot_rmse,
+                   live_rot_rmse_plot if _has_live else None))
         print(f"  Per-axis ori RMSE: roll={np.sqrt(np.mean(euler_diff[:,0]**2)):.3f}  "
               f"pitch={np.sqrt(np.mean(euler_diff[:,1]**2)):.3f}  "
               f"yaw={np.sqrt(np.mean(euler_diff[:,2]**2)):.3f} deg")
@@ -1825,6 +1969,9 @@ def main():
               f"{optimized_state.acc_bias[2]:.4f}] m/s²")
         print(f"  Gyr bias: [{optimized_state.gyr_bias[0]:.4f}, {optimized_state.gyr_bias[1]:.4f}, "
               f"{optimized_state.gyr_bias[2]:.4f}] rad/s")
+        if _has_live:
+            print(f"  Live eval range: [{live_mocap_t[0]-t_ref:.3f}, {live_mocap_t[-1]-t_ref:.3f}] s  "
+                  f"({len(live_mocap_t)} MoCap pts)")
 
         if noise_rad_per_sqrts > 0:
             print(f"\n  [P5] Gyro noise={noise_deg_per_sqrts:.1f} deg/sqrt(s) -> "
@@ -1842,6 +1989,7 @@ def main():
         AXIS_COLORS = ['#c85050', '#4e9e4e', '#4878c8']
         C_MOCAP = 'royalblue'
         C_EST   = 'crimson'
+        C_LIVE  = 'darkorange'
         LW_AXIS = 0.9
         LW_ABS  = 2.0
         LW_ERR  = 1.0
@@ -1893,7 +2041,10 @@ def main():
         a.plot(mocap_pos_eval[:, 0], mocap_pos_eval[:, 1],
                color=C_MOCAP, linewidth=LW_ABS, label='MoCap')
         a.plot(estimated_positions_aligned[:, 0], estimated_positions_aligned[:, 1],
-               color=C_EST, linewidth=LW_ABS, linestyle='--', label='Estimate')
+               color=C_EST, linewidth=LW_ABS, linestyle='--', label='Settled')
+        if live_pos_aligned_plot is not None:
+            a.plot(live_pos_aligned_plot[:, 0], live_pos_aligned_plot[:, 1],
+                   color=C_LIVE, linewidth=LW_AXIS, linestyle=':', label='Live edge', alpha=0.8)
         a.set_xlabel('X (m)'); a.set_ylabel('Y (m)')
         a.set_title('Trajectory (X-Y)')
         a.legend(fontsize=8); a.grid(True, alpha=0.3); a.axis('equal')
@@ -1901,10 +2052,20 @@ def main():
         a = axd[(0, 1)]
         _comparison(a, time_rel, mocap_pos_eval, estimated_positions_aligned,
                     axis_labels, 'Position (m)')
-        a.set_xlabel('Time (s)'); a.set_title('Position vs Time')
+        if live_pos_aligned_plot is not None:
+            for i, lbl in enumerate(axis_labels):
+                a.plot(live_time_rel_plot, live_pos_aligned_plot[:, i],
+                       color=AXIS_COLORS[i], linewidth=LW_AXIS, linestyle=':', alpha=0.6)
+        a.set_xlabel('Time (s)'); a.set_title('Position vs Time  [-- settled  ··· live]')
 
         a = axd[(0, 2)]
         _error(a, time_rel, pos_diff, pos_errors, pos_rmse, axis_labels, 'Error (m)', 'err')
+        if live_pos_aligned_plot is not None:
+            a.plot(live_time_rel_plot, _smooth(live_pos_errs_plot) if len(live_pos_errs_plot) > 27 else live_pos_errs_plot,
+                   color=C_LIVE, linewidth=LW_ERR, linestyle=':', label=f'Live |err| (smoothed)', alpha=0.9)
+            a.axhline(live_pos_rmse_plot, color=C_LIVE, linewidth=1.2, linestyle=':',
+                      label=f'Live RMSE: {live_pos_rmse_plot:.4f}')
+            a.legend(fontsize=7)
         a.set_xlabel('Time (s)'); a.set_title('Position Error per Axis + Abs')
 
         # Row 1: Orientation
@@ -1914,22 +2075,42 @@ def main():
                    alpha=A_AXIS, label=f'MoCap {lbl}')
             a.plot(time_rel, est_euler[:, i], color=AXIS_COLORS[i], linewidth=LW_AXIS,
                    alpha=A_AXIS, linestyle='--')
+        if live_euler_plot is not None:
+            for i in range(3):
+                a.plot(live_time_rel_plot, live_euler_plot[:, i],
+                       color=AXIS_COLORS[i], linewidth=LW_AXIS * 0.7, linestyle=':', alpha=0.6)
         a.set_xlabel('Time (s)'); a.set_ylabel('Euler angle (deg)')
-        a.set_title('Orientation (Euler xyz)')
+        a.set_title('Orientation (Euler xyz)  [-- settled  ··· live]')
         a.legend(fontsize=6, ncol=2); a.grid(True, alpha=0.3)
 
         a = axd[(1, 1)]
         _error(a, time_rel, euler_diff, rot_errors, rot_rmse, euler_names, 'Error (deg)', 'Δori')
+        if live_rot_errs_plot is not None:
+            a.plot(live_time_rel_plot, _smooth(live_rot_errs_plot) if len(live_rot_errs_plot) > 27 else live_rot_errs_plot,
+                   color=C_LIVE, linewidth=LW_ERR, linestyle=':', label=f'Live |err| (smoothed)', alpha=0.9)
+            a.axhline(live_rot_rmse_plot, color=C_LIVE, linewidth=1.2, linestyle=':',
+                      label=f'Live RMSE: {live_rot_rmse_plot:.4f}')
+            a.legend(fontsize=7)
         a.set_xlabel('Time (s)'); a.set_title('Orientation Error per Axis + Abs')
 
         # Row 2: Linear velocity
         a = axd[(2, 0)]
         _comparison(a, time_rel, mocap_velocities, estimated_velocities_aligned,
                     axis_labels, 'Velocity (m/s)')
-        a.set_xlabel('Time (s)'); a.set_title('Linear Velocity Comparison')
+        if live_vel_aligned_plot is not None:
+            for i in range(3):
+                a.plot(live_time_rel_plot, live_vel_aligned_plot[:, i],
+                       color=AXIS_COLORS[i], linewidth=LW_AXIS * 0.7, linestyle=':', alpha=0.6)
+        a.set_xlabel('Time (s)'); a.set_title('Linear Velocity Comparison  [-- settled  ··· live]')
 
         a = axd[(2, 1)]
         _error(a, time_rel, vel_diff, vel_errors, vel_rmse, axis_labels, 'Error (m/s)', 'Δv')
+        if live_vel_errs_plot is not None:
+            a.plot(live_time_rel_plot, _smooth(live_vel_errs_plot) if len(live_vel_errs_plot) > 27 else live_vel_errs_plot,
+                   color=C_LIVE, linewidth=LW_ERR, linestyle=':', label=f'Live |err| (smoothed)', alpha=0.9)
+            a.axhline(live_vel_rmse_plot, color=C_LIVE, linewidth=1.2, linestyle=':',
+                      label=f'Live RMSE: {live_vel_rmse_plot:.4f}')
+            a.legend(fontsize=7)
         a.set_xlabel('Time (s)'); a.set_title('Linear Velocity Error per Axis + Abs')
 
         # Row 3: Angular velocity
