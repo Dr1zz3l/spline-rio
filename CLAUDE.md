@@ -298,9 +298,31 @@ Fix: `lock_extrinsics: 1` per-bag, regardless of density.
 (ratio 1.26 DOF/constraint) makes the system *technically* underconstrained, compounding the
 above. This is a secondary reason and also explains sliding window instability:
 - **Sliding window**: a 3s window has ~3750 ori knots (11250 DOF) vs ~3000 gyro samples
-  (9000 constraints) → underconstrained per window, gyro bias runs away.
+  (9000 constraints) → underconstrained per window, Ceres exits after 2 iterations every
+  window (rank-deficient Jacobian), gyro bias runs away.
   Fix: batch-only for backflips.
 - Batch works because lambda_ori_accel=0.1 stiffens the underdetermined modes across 18s.
+  A 3s window lacks enough chain length; no amount of prior tuning can replicate global coupling.
+
+**marg_prior_scale sweep for backflips SW at dt_ori=0.0008** (all equally broken):
+
+| marg_prior_scale | Pos RMSE | Ori RMSE | Gyr bias z |
+|---|---|---|---|
+| 2e-6 | 2.37m | 59.1° | −0.22 rad/s |
+| 2e-5 | 2.37m | 58.7° | ~0 (P1-P3 init only) |
+| 2e-4 (default) | 2.37m | 59.4° | −1.04 rad/s |
+| 2e-3 | 2.37m | 57.5° | −0.16 rad/s |
+| window=5s (2e-4) | 2.57m | 59.1° | +0.30 rad/s |
+
+Position is locked at ~2.37m across 3 orders of magnitude. The failure is rank-deficiency,
+not prior miscaling. Neither wider windows nor preintegration can fix this.
+
+**Note: dt_ori=0.0008 is NOT a spline bandwidth limit.** A cubic B-spline at dt_ori=0.008
+has 62.5 Hz Nyquist — well above the ~10–20 Hz bandwidth needed for a 0.5s backflip. The
+non-monotonic dt_ori sweep (worse at 0.004, worse still at 0.002, suddenly good at 0.0008)
+is an optimizer convergence/regularizer-scaling artifact, not a Nyquist argument. The jump
+at 0.0008 reflects a specific balance between knot density and lambda_ori_accel (scaled
+λ ∝ dt_ori³) that the batch optimizer can exploit but no fixed-lag smoother can replicate.
 
 ### C++ solver: extrinsic pitch optimization (implemented)
 
