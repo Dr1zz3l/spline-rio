@@ -388,6 +388,43 @@ issue — real-time output is the live edge and is continuous).
 For **fast_racing**, softer scale marginally improves live ori (4.163→4.093° at 1e-5) but worsens
 live pos (0.877→0.940m). Since the ori gain is <0.1°, baseline 2e-4 is retained for fast_racing.
 
+**Why S is ill-conditioned (cond≈5.5e10) — physically expected, not a bug**
+
+S encodes how well past measurements constrain the boundary state. With lambda_gyro=4.0 at 1000 Hz
+and spline Jacobian ∂ω/∂Ω ≈ 1/dt_ori = 125 rad/s per rad, each gyro sample contributes ~4×125² ≈
+62,500 information per boundary orientation knot. Position DOF get lambda_accel=0.01 with sparse
+radar → eigenvalue ~1e4. Ratio ~5.5e10 means the system genuinely knows boundary orientation
+~10^5× better than boundary position. S is numerically correct.
+
+The problem is not wrong code — it's information asymmetry. The prior double-counts gyro constraints
+(the next window also has gyro) while the dimension that actually needs inter-window help (position)
+is under-represented in S. Eigenvalue clipping directly addresses this asymmetry.
+
+**Eigenvalue clipping sweep — no universal winner**
+
+`marg_prior_eig_clip` clips max eigenvalue of S before LLT (implemented in `compute_prior()`).
+Tested 9 combinations (clip ∈ {1e5,1e6,1e7}, scale ∈ {0.01,0.05,0.2}):
+
+Best universal candidate: clip=1e7 scale=0.2 → slow live ori 2.21° (matches 1e-7 baseline),
+fast live ori 4.57° (worse than 4.16° baseline). **No (clip, scale) pair beats per-bag tuning
+on both bags simultaneously for live orientation.**
+
+Root cause: slow_racing (gentle dynamics) is best served by ~zero prior (windows self-sufficient);
+fast_racing (aggressive dynamics) needs a meaningful prior for inter-window position continuity.
+These are contradictory requirements — the information structure of S is different per mission type.
+
+**Prior residual norm** `marg_prior_residual_norm` = ||r||² at solution (squared Mahalanobis distance).
+Also implemented: `marg_prior_cauchy_delta` for CauchyLoss on the prior (disabled by default, delta=0).
+- slow_racing at scale=1e-7: ||r||² typically 2M–5.5T (boundary completely free, near-zero constraint)
+- fast_racing at scale=2e-4: ||r||² typically 300k median
+- fast_racing ||r||² > slow_racing ||r||² because aggressive dynamics produce larger orientation
+  deviations, so Cauchy gating would down-weight fast_racing (the bag that NEEDS the prior) and
+  keep slow_racing (which doesn't). Cauchy gating direction is backwards for this problem.
+
+**Conclusion:** per-bag `marg_prior_scale` in `bags.yaml` is the correct engineering solution.
+It represents mission-type configuration (not per-flight tuning) — slow/gentle missions use 1e-7,
+fast/aggressive missions use 2e-4.
+
 ### C++ solver: extrinsic pitch optimization (implemented)
 
 **Implemented.** `RadarDopplerWithPitchFunctor` in `radar_doppler.h` accepts a 1-DOF scalar
