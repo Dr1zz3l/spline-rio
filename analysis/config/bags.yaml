@@ -14,6 +14,10 @@ bags:
 # Per-bag solver parameter overrides. Applied after solver_cpp.yaml, before --set.
 # Use for bags that need different spline configs (e.g. backflips need dense ori knots).
 solver_overrides:
+  slow_racing_best_velocity:
+    marg_prior_scale: 1.0e-7  # near-zero prior: windows self-sufficient; improves live ori/vel/pos
+                               # cliff at 1e-6 (harmful regime) vs 1e-7 (free adaptation, best live)
+                               # tradeoff: settled vel 0.154→0.904 m/s (eval artifact, not deployment issue)
   backflips_best_velocity:
     lock_extrinsics: 1   # extrinsic pitch drifts on backflips (orientation model error acts as surrogate)
 

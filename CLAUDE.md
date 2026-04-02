@@ -38,13 +38,25 @@ cd analysis/
 
 # Live RIO solver — C++ sliding window (Phase 4b: Schur complement marginalization)
 ../.venv/bin/python3 validate_live_solver.py slow_racing_best_velocity --mocap-yaw --cpp --sliding-window
+../.venv/bin/python3 validate_live_solver.py fast_racing_best_velocity --mocap-yaw --cpp --sliding-window
 # --sliding-window: fixed-lag smoother with Schur complement marginalization
-# Default: window=3.0s, stride=0.3s, marg_prior_scale=2e-4
-# slow_racing: 0.205m / 1.57°  (vs batch 0.180m / 1.07°)  ~1.5s/window
-# fast_racing: 0.676m / 3.01°  (vs batch 1.110m / 2.56° — better in position!)
-# Evaluation trims last window_duration seconds (no subsequent window to correct final drift)
+# Default: window=3.0s, stride=0.3s, marg_prior_scale=2e-4 (fast_racing)
+# Per-bag override in bags.yaml: slow_racing uses marg_prior_scale=1e-7 (near-zero prior)
+#
+# SETTLED / LIVE edge results (settled = full retrospective trajectory; live = primary deployment metric)
+# slow_racing: settled 0.218m/1.57°, live 0.393m/2.21°  (marg_prior_scale=1e-7 per-bag override)
+# fast_racing: settled 0.804m/3.10°, live 0.877m/4.16°  (marg_prior_scale=2e-4 default)
+# backflips: batch-only (underconstrained at dt_ori=0.0008s, SW diverges)
+#
 # marg_prior_scale key: raw Schur info O(10^5) >> lambda_boundary=1000; scale down to match
-# Tune: --set marg_prior_scale=X  (sweep 1e-4 to 1e-3 for new datasets)
+# Non-monotonic behavior: there is a harmful regime around scale 1e-5–1e-6 where the prior
+# partially constrains without providing useful continuity — results WORSE than both extremes.
+# Tune new datasets starting at 2e-4 (default) and try 1e-7 if windows appear self-sufficient.
+#
+# Per-window diagnostics (printed per window):
+#   prior=OK/DROP  cond=  eig=[min,max]  rank=/   tr(Σ)=  ascale=  applied=  tr(S⁻¹)=  tr(H⁻¹)=  ratio=
+#   tr(S⁻¹): accumulated prior covariance;  tr(H⁻¹): current-window sensor-only boundary covariance
+#   ratio≈0.95 means prior and window sensor info are comparably informative
 
 # Live RIO solver — Python backend (~10 min)
 ../.venv/bin/python3 validate_live_solver.py slow_racing_best_velocity --mocap-yaw
@@ -149,10 +161,17 @@ Per-bag config auto-selected via `bags.yaml` solver_overrides:
 Extrinsic optimization note: racing bags converge to 27–28° from either 25.5° or 30° init.
 Backflips locks extrinsics — 22630 dense ori knots underconstrain pitch_delta (drifts to +18°).
 
-**Sliding window** (batch results above are better; sliding-window not re-tuned since angular accel change):
-- slow_racing: ~0.21m / 1.6° (sliding-win with old config)
-- fast_racing: ~0.68m / 3.0° (sliding-win with old config — better position than batch)
-- backflips: unstable with dt_ori=0.0008s (underconstrained per window), use batch
+**Sliding window** — settled / live edge results (live = primary deployment metric):
+
+| Bag | Settled pos | Settled ori | Live pos | Live vel | Live ori | marg_prior_scale |
+|-----|-------------|-------------|----------|----------|----------|-----------------|
+| slow_racing | 0.218m | 1.57° | **0.393m** | **0.391 m/s** | **2.21°** | 1e-7 (per-bag) |
+| fast_racing | 0.804m | 3.10° | **0.877m** | **0.478 m/s** | **4.16°** | 2e-4 (default) |
+| backflips | — | — | — | — | — | batch-only |
+
+Note: settled vel for slow_racing is 0.886 m/s (appears high because 1e-7 makes windows nearly
+independent → position jumps at stride boundaries in the retrospective eval). This is an eval
+artifact — real-time output is the live edge and does not exhibit jumps.
 
 Note: lever arm (ω × r_antenna) added to C++ RadarDopplerFunctor in Phase 4b.
 Pre-lever-arm batch: slow 0.146m/0.96°, fast 0.925m/2.35°, backflips 2.93m/10.7°.
@@ -323,6 +342,51 @@ non-monotonic dt_ori sweep (worse at 0.004, worse still at 0.002, suddenly good 
 is an optimizer convergence/regularizer-scaling artifact, not a Nyquist argument. The jump
 at 0.0008 reflects a specific balance between knot density and lambda_ori_accel (scaled
 λ ∝ dt_ori³) that the batch optimizer can exploit but no fixed-lag smoother can replicate.
+
+### Sliding window: marginalization quality diagnostics + covariance (implemented)
+
+Three diagnostics added to the SW solver (Steps 1–3):
+
+**Step 1 — Marginalization quality monitoring** (`dc2c374`)
+Per-window logging of Schur complement S condition number, eigenvalue range, and numerical rank.
+Silently dropped priors (all 7 failure modes) now log a reason. Output per window:
+```
+prior=OK  cond=5.5e+10  eig=[1.0e+04, 5.5e+14]  rank=15/30
+```
+Fields in `SolverResult`: `marg_prior_valid`, `marg_cond_number`, `marg_min/max_eigenvalue`,
+`marg_numerical_rank`, `marg_drop_reason`.
+
+**Step 2 — S^{-1} boundary covariance + adaptive prior scaling** (`be15104`)
+Computes S^{-1} = accumulated prior covariance (boundary state uncertainty from all past windows).
+`adaptive_scale = sqrt(lambda_boundary_pos / max_eigenvalue_S)` ≈ 1.35e-6 (computed each window).
+Optional: `use_adaptive_marg_scale=true` multiplies marg_prior_scale by adaptive_scale.
+Fields: `marg_trace_cov` = tr(S^{-1}), `marg_adaptive_scale`, `marg_applied_scale`.
+
+**Step 3 — Dual covariance view: S^{-1} vs H_bb^{-1}** (`b83bb66`)
+H_bb^{-1} = current-window-only boundary covariance (sensor information only, no prior).
+Computed by LDLT of H_bb already available in `compute_prior()` — essentially free.
+Output: `tr(S⁻¹)≈4.9e-4  tr(H⁻¹)≈4.7e-4  ratio≈0.95` (ratio: window info vs accumulated prior).
+Ratio ≈ 0.95 means window sensor information and the accumulated prior are comparably informative.
+Fields: `boundary_covariance` (S^{-1}, 30×30), `window_covariance` (H_bb^{-1}, 30×30).
+
+**marg_prior_scale non-monotonicity (slow_racing sweep)**
+
+There is a harmful intermediate regime for marg_prior_scale:
+
+| Scale (slow_racing) | Live ori | Live vel | Live pos | Settled vel | Behavior |
+|---|---|---|---|---|---|
+| 2e-4 (old default) | 2.282° | 0.408 | 0.623m | 0.154 | Strong prior → over-constrained |
+| 1e-6 | 2.393° | 0.416 | 0.513m | 0.182 | **Harmful regime: worse than baseline!** |
+| **1e-7** ← slow_racing default | **2.207°** | **0.389** | **0.383m** | 0.904 | Near-zero: free adaptation |
+| 1e-8 | 2.201° | 0.387 | 0.381m | 1.086 | Essentially zero prior |
+
+At 1e-6 to 1e-5: prior partially constrains without providing useful continuity → worst of both
+worlds. Below 1e-7: prior effectively zero, each window fits its own data freely → best live
+metrics but discontinuous settled trajectory (high settled vel is an eval artifact, not deployment
+issue — real-time output is the live edge and is continuous).
+
+For **fast_racing**, softer scale marginally improves live ori (4.163→4.093° at 1e-5) but worsens
+live pos (0.877→0.940m). Since the ori gain is <0.1°, baseline 2e-4 is retained for fast_racing.
 
 ### C++ solver: extrinsic pitch optimization (implemented)
 
