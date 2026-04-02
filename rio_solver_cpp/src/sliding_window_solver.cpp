@@ -557,6 +557,11 @@ SolverResult SlidingWindowSolver::solve_window(
     result.marg_numerical_rank = prior_.numerical_rank;
     result.marg_drop_reason    = prior_.drop_reason;
 
+    // Boundary state covariance diagnostics
+    result.marg_trace_cov     = prior_.trace_cov;
+    result.marg_adaptive_scale = prior_.adaptive_scale;
+    result.marg_applied_scale  = prior_.last_adaptive_scale;
+
     return result;
 }
 
@@ -583,9 +588,17 @@ void SlidingWindowSolver::add_prior_to_problem(ceres::Problem& problem) {
         params.push_back(traj_.ori_knot_data(prior_.ori_start + i));
     params.push_back(traj_.bias_data());
 
+    // Compute final scale: optionally multiply by data-driven adaptive_scale.
+    // adaptive_scale normalises max eigenvalue of S to lambda_boundary_pos,
+    // making marg_prior_scale a relative fine-tuner instead of an absolute hack.
+    double final_scale = cfg_.marg_prior_scale;
+    if (cfg_.use_adaptive_marg_scale && prior_.adaptive_scale > 0.0)
+        final_scale *= prior_.adaptive_scale;
+    prior_.last_adaptive_scale = final_scale;
+
     ceres::LossFunction* loss = nullptr;
-    if (cfg_.marg_prior_scale != 1.0) {
-        loss = new ceres::ScaledLoss(nullptr, cfg_.marg_prior_scale * cfg_.marg_prior_scale,
+    if (std::abs(final_scale - 1.0) > 1e-12) {
+        loss = new ceres::ScaledLoss(nullptr, final_scale * final_scale,
                                      ceres::TAKE_OWNERSHIP);
     }
     problem.AddResidualBlock(cost, loss, params);
@@ -724,7 +737,7 @@ void SlidingWindowSolver::compute_prior(
         return;
     }
 
-    // ---- Eigenvalue diagnostics of S ----------------------------------------
+    // ---- Eigenvalue diagnostics + covariance of S ---------------------------
     Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eig(S, Eigen::EigenvaluesOnly);
     if (eig.info() == Eigen::Success) {
         double lmin = eig.eigenvalues().minCoeff();
@@ -739,7 +752,19 @@ void SlidingWindowSolver::compute_prior(
             std::cerr << "[compute_prior] WARNING: ill-conditioned S"
                       << "  cond=" << prior_.cond_number
                       << "  rank=" << prior_.numerical_rank << "/" << d_b << "\n";
+
+        // Adaptive scale: normalises max eigenvalue of S to lambda_boundary_pos.
+        // With use_adaptive_marg_scale=true, final_scale = marg_prior_scale * adaptive_scale.
+        if (lmax > 0.0)
+            prior_.adaptive_scale = std::sqrt(cfg_.lambda_boundary_pos / lmax);
+        else
+            prior_.adaptive_scale = 1e-4;   // fallback
+        prior_.adaptive_scale = std::max(prior_.adaptive_scale, 1e-8);
     }
+
+    // Covariance S^{-1} via LLT back-solve (cost: O(d_b^3), negligible for d_b≤30)
+    prior_.covariance = llt.solve(Eigen::MatrixXd::Identity(d_b, d_b));
+    prior_.trace_cov  = prior_.covariance.trace();
 
     // ---- Store prior --------------------------------------------------------
     prior_.valid     = true;

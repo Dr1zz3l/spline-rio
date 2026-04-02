@@ -116,6 +116,17 @@ struct SolverConfig {
     // priors (lambda ~1000).  Scale < 1 softens the prior to prevent it from
     // over-constraining boundary CPs and blocking adaptation to new data.
     double marg_prior_scale{1.0};
+
+    // Adaptive marginalization prior scale (data-driven, opt-in).
+    // When true, final_scale = marg_prior_scale * adaptive_scale where
+    //   adaptive_scale = sqrt(lambda_boundary_pos / max_eigenvalue_of_S)
+    // This normalises the max eigenvalue of the Schur complement to match
+    // lambda_boundary_pos, making marg_prior_scale a relative fine-tuning
+    // multiplier instead of an absolute hack.
+    // Typical effect: adaptive_scale ≈ 1.3e-6 (for slow/fast_racing).
+    // NOTE: this makes the prior ~150× softer than marg_prior_scale=2e-4 alone.
+    //       Test carefully before enabling on tuned configs.
+    bool use_adaptive_marg_scale{false};
 };
 
 // ============================================================================
@@ -158,6 +169,14 @@ struct SolverResult {
     double      marg_max_eigenvalue{0.0};
     int         marg_numerical_rank{0};
     std::string marg_drop_reason;
+
+    // Boundary state covariance (S^{-1}) from Schur complement
+    // trace_cov = tr(S^{-1}): total posterior variance of boundary DOF
+    // adaptive_scale = sqrt(lambda_boundary_pos / max_eig_S): data-driven normaliser
+    // applied_scale: the actual final_scale used when attaching the prior
+    double marg_trace_cov{0.0};
+    double marg_adaptive_scale{0.0};
+    double marg_applied_scale{0.0};
 };
 
 // ============================================================================

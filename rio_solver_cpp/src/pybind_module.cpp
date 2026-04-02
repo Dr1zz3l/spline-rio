@@ -117,6 +117,7 @@ PYBIND11_MODULE(rio_solver, m) {
         .def_readwrite("n_fix_leading_pos", &SolverConfig::n_fix_leading_pos)
         .def_readwrite("n_fix_leading_ori", &SolverConfig::n_fix_leading_ori)
         .def_readwrite("marg_prior_scale", &SolverConfig::marg_prior_scale)
+        .def_readwrite("use_adaptive_marg_scale", &SolverConfig::use_adaptive_marg_scale)
         .def_readwrite("use_preintegration", &SolverConfig::use_preintegration)
         .def_readwrite("lambda_preint",   &SolverConfig::lambda_preint)
         .def_readwrite("lambda_preint_v", &SolverConfig::lambda_preint_v)
@@ -204,7 +205,10 @@ PYBIND11_MODULE(rio_solver, m) {
         .def_readonly("marg_min_eigenvalue",  &SolverResult::marg_min_eigenvalue)
         .def_readonly("marg_max_eigenvalue",  &SolverResult::marg_max_eigenvalue)
         .def_readonly("marg_numerical_rank",  &SolverResult::marg_numerical_rank)
-        .def_readonly("marg_drop_reason",     &SolverResult::marg_drop_reason);
+        .def_readonly("marg_drop_reason",      &SolverResult::marg_drop_reason)
+        .def_readonly("marg_trace_cov",        &SolverResult::marg_trace_cov)
+        .def_readonly("marg_adaptive_scale",   &SolverResult::marg_adaptive_scale)
+        .def_readonly("marg_applied_scale",    &SolverResult::marg_applied_scale);
 
     // ---- Main solve() interface (numpy-friendly) ----------------------------
     m.def("solve",

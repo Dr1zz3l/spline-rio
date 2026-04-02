@@ -51,6 +51,15 @@ struct MarginalizationPrior {
     double      max_eigenvalue{0.0};
     int         numerical_rank{0};
     std::string drop_reason;   // "" if valid; reason string if valid=false
+
+    // Covariance of boundary state = S^{-1}  (d_b × d_b)
+    // trace_cov = tr(S^{-1}): sum of marginal variances across all boundary DOF
+    // adaptive_scale = sqrt(lambda_boundary_pos / max_eigenvalue_of_S)
+    //   — the scale that would normalise max S eigenvalue to lambda_boundary_pos
+    Eigen::MatrixXd covariance;           // d_b × d_b (empty if not valid)
+    double          trace_cov{0.0};
+    double          adaptive_scale{0.0};
+    double          last_adaptive_scale{0.0};  // as applied in add_prior_to_problem
 };
 
 // ============================================================================

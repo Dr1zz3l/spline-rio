@@ -351,8 +351,9 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
     cfg.optimize_pitch_only     = solver_cfg.get('optimize_pitch_only', True)
     cfg.lambda_extrinsic_prior  = solver_cfg.get('lambda_extrinsic_prior', 10.0)
     cfg.max_iterations          = solver_cfg.get('max_iterations', 400)
-    cfg.marg_prior_scale        = solver_cfg.get('marg_prior_scale', 1.0)
-    cfg.use_preintegration      = solver_cfg.get('use_preintegration', False)
+    cfg.marg_prior_scale           = solver_cfg.get('marg_prior_scale', 1.0)
+    cfg.use_adaptive_marg_scale    = solver_cfg.get('use_adaptive_marg_scale', False)
+    cfg.use_preintegration         = solver_cfg.get('use_preintegration', False)
     cfg.lambda_preint           = solver_cfg.get('lambda_preint', 1.0)
     cfg.lambda_preint_v         = solver_cfg.get('lambda_preint_v', 0.0)
     cfg.lambda_preint_p         = solver_cfg.get('lambda_preint_p', 0.0)
@@ -438,7 +439,10 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
             prior_str = (f"  prior=OK"
                          f"  cond={result.marg_cond_number:.1e}"
                          f"  eig=[{result.marg_min_eigenvalue:.1e},{result.marg_max_eigenvalue:.1e}]"
-                         f"  rank={result.marg_numerical_rank}/{result.marg_prior_dim}")
+                         f"  rank={result.marg_numerical_rank}/{result.marg_prior_dim}"
+                         f"  tr(Σ)={result.marg_trace_cov:.2e}"
+                         f"  ascale={result.marg_adaptive_scale:.2e}"
+                         f"  applied={result.marg_applied_scale:.2e}")
         else:
             reason = f" ({result.marg_drop_reason})" if result.marg_drop_reason else ""
             prior_str = f"  prior=DROP{reason}"
@@ -1100,7 +1104,12 @@ def main():
         if arg == '--set' and i + 1 < len(sys.argv):
             k, _, v = sys.argv[i + 1].partition('=')
             try:
-                _SOLVER_CFG[k] = float(v) if ('.' in v or 'e' in v.lower()) else int(v)
+                if v.lower() in ('true', 'false'):
+                    _SOLVER_CFG[k] = v.lower() == 'true'
+                elif '.' in v or ('e' in v.lower() and any(c.isdigit() for c in v)):
+                    _SOLVER_CFG[k] = float(v)
+                else:
+                    _SOLVER_CFG[k] = int(v)
             except ValueError:
                 _SOLVER_CFG[k] = v
             print(f"  [--set] {k} = {_SOLVER_CFG[k]}")
