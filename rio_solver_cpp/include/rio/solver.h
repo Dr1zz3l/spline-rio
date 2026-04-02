@@ -149,6 +149,15 @@ struct SolverResult {
     double time_residual_eval_s{0.0};   // evaluating residuals (r)
     double time_jacobian_eval_s{0.0};   // autodiff Jacobians (J)
     double time_linear_solver_s{0.0};   // sparse Cholesky  (J'J + λI)Δx = -J'r
+
+    // Marginalization prior diagnostics (set by compute_prior each window)
+    bool        marg_prior_valid{false};
+    int         marg_prior_dim{0};
+    double      marg_cond_number{0.0};
+    double      marg_min_eigenvalue{0.0};
+    double      marg_max_eigenvalue{0.0};
+    int         marg_numerical_rank{0};
+    std::string marg_drop_reason;
 };
 
 // ============================================================================

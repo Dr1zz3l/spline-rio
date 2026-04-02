@@ -434,9 +434,18 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
         dt_w = time.time() - t0
 
         cost_str = f"{result.cost_history[-1]:.3f}" if result.cost_history else "n/a"
+        if result.marg_prior_valid:
+            prior_str = (f"  prior=OK"
+                         f"  cond={result.marg_cond_number:.1e}"
+                         f"  eig=[{result.marg_min_eigenvalue:.1e},{result.marg_max_eigenvalue:.1e}]"
+                         f"  rank={result.marg_numerical_rank}/{result.marg_prior_dim}")
+        else:
+            reason = f" ({result.marg_drop_reason})" if result.marg_drop_reason else ""
+            prior_str = f"  prior=DROP{reason}"
         print(f"  [sw {n_windows+1:3d}] t={t_w_start:.2f}–{t_w_end:.2f}s"
               f"  {len(window_radar):3d}fr  {int(imu_mask.sum()):4d}imu"
-              f"  cost={cost_str}  iter={len(result.cost_history)}  dt={dt_w:.2f}s")
+              f"  cost={cost_str}  iter={len(result.cost_history)}  dt={dt_w:.2f}s"
+              + prior_str)
 
         # Snapshot leading-edge estimate in stride zone [t_w_end - stride, t_w_end]
         t_snap_start = t_w_end - window_stride

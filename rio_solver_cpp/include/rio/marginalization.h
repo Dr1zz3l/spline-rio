@@ -44,6 +44,13 @@ struct MarginalizationPrior {
     // Global indices into the persistent Trajectory for boundary params
     int pos_start{0};    // first boundary pos CP global index
     int ori_start{0};    // first boundary ori knot global index
+
+    // Diagnostics from the last compute_prior() call (set regardless of valid)
+    double      cond_number{0.0};
+    double      min_eigenvalue{0.0};
+    double      max_eigenvalue{0.0};
+    int         numerical_rank{0};
+    std::string drop_reason;   // "" if valid; reason string if valid=false
 };
 
 // ============================================================================

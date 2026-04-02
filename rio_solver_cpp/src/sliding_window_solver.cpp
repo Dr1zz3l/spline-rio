@@ -547,6 +547,16 @@ SolverResult SlidingWindowSolver::solve_window(
     std::ostringstream oss;
     oss << summary.BriefReport();
     result.solver_summary = oss.str();
+
+    // Marginalization prior diagnostics
+    result.marg_prior_valid    = prior_.valid;
+    result.marg_prior_dim      = prior_.d_b;
+    result.marg_cond_number    = prior_.cond_number;
+    result.marg_min_eigenvalue = prior_.min_eigenvalue;
+    result.marg_max_eigenvalue = prior_.max_eigenvalue;
+    result.marg_numerical_rank = prior_.numerical_rank;
+    result.marg_drop_reason    = prior_.drop_reason;
+
     return result;
 }
 
@@ -596,9 +606,10 @@ void SlidingWindowSolver::compute_prior(
     int marg_ori_start = oi0_raw;
     int marg_ori_end   = oi0_raw + k_stride_ori - N_ORI;   // inclusive
 
+    prior_.drop_reason = "";  // clear from previous call
     if (marg_pos_end < marg_pos_start || marg_ori_end < marg_ori_start) {
-        // Stride too small to marginalize anything
         prior_.valid = false;
+        prior_.drop_reason = "stride too small";
         return;
     }
 
@@ -617,6 +628,7 @@ void SlidingWindowSolver::compute_prior(
     // Check bounds
     if (bound_pos_end >= traj_.n_pos_cps() || bound_ori_end >= traj_.n_ori_knots()) {
         prior_.valid = false;
+        prior_.drop_reason = "boundary index out of range";
         return;
     }
 
@@ -649,6 +661,7 @@ void SlidingWindowSolver::compute_prior(
     }
     if (res_set.empty()) {
         prior_.valid = false;
+        prior_.drop_reason = "no residuals touch marg/boundary blocks";
         return;
     }
 
@@ -663,12 +676,15 @@ void SlidingWindowSolver::compute_prior(
     ceres::CRSMatrix J_crs;
     if (!problem.Evaluate(eval_opts, &cost, nullptr, nullptr, &J_crs)) {
         prior_.valid = false;
+        prior_.drop_reason = "problem.Evaluate() failed";
         return;
     }
 
     if (J_crs.num_cols != d_a + d_b) {
         // Column count mismatch (can happen if some blocks are constant)
         prior_.valid = false;
+        prior_.drop_reason = "J column count mismatch (" + std::to_string(J_crs.num_cols)
+                             + " vs " + std::to_string(d_a + d_b) + ")";
         return;
     }
 
@@ -694,6 +710,7 @@ void SlidingWindowSolver::compute_prior(
     Eigen::LDLT<Eigen::MatrixXd> ldlt(H_aa);
     if (ldlt.info() != Eigen::Success) {
         prior_.valid = false;
+        prior_.drop_reason = "LDLT of H_aa failed (rank-deficient marginalized block)";
         return;
     }
     Eigen::MatrixXd S = H_bb - H_ab.transpose() * ldlt.solve(H_ab);
@@ -703,7 +720,25 @@ void SlidingWindowSolver::compute_prior(
     Eigen::LLT<Eigen::MatrixXd> llt(S);
     if (llt.info() != Eigen::Success) {
         prior_.valid = false;
+        prior_.drop_reason = "LLT of S failed (Schur complement not PSD)";
         return;
+    }
+
+    // ---- Eigenvalue diagnostics of S ----------------------------------------
+    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eig(S, Eigen::EigenvaluesOnly);
+    if (eig.info() == Eigen::Success) {
+        double lmin = eig.eigenvalues().minCoeff();
+        double lmax = eig.eigenvalues().maxCoeff();
+        prior_.min_eigenvalue = lmin;
+        prior_.max_eigenvalue = lmax;
+        prior_.cond_number    = (lmin > 0.0) ? (lmax / lmin)
+                                              : std::numeric_limits<double>::infinity();
+        prior_.numerical_rank = static_cast<int>(
+            (eig.eigenvalues().array() > 1e-6 * lmax).count());
+        if (prior_.cond_number > 1e10)
+            std::cerr << "[compute_prior] WARNING: ill-conditioned S"
+                      << "  cond=" << prior_.cond_number
+                      << "  rank=" << prior_.numerical_rank << "/" << d_b << "\n";
     }
 
     // ---- Store prior --------------------------------------------------------

@@ -197,7 +197,14 @@ PYBIND11_MODULE(rio_solver, m) {
         .def_readonly("solver_summary", &SolverResult::solver_summary)
         .def_readonly("time_residual_eval_s", &SolverResult::time_residual_eval_s)
         .def_readonly("time_jacobian_eval_s", &SolverResult::time_jacobian_eval_s)
-        .def_readonly("time_linear_solver_s", &SolverResult::time_linear_solver_s);
+        .def_readonly("time_linear_solver_s", &SolverResult::time_linear_solver_s)
+        .def_readonly("marg_prior_valid",     &SolverResult::marg_prior_valid)
+        .def_readonly("marg_prior_dim",       &SolverResult::marg_prior_dim)
+        .def_readonly("marg_cond_number",     &SolverResult::marg_cond_number)
+        .def_readonly("marg_min_eigenvalue",  &SolverResult::marg_min_eigenvalue)
+        .def_readonly("marg_max_eigenvalue",  &SolverResult::marg_max_eigenvalue)
+        .def_readonly("marg_numerical_rank",  &SolverResult::marg_numerical_rank)
+        .def_readonly("marg_drop_reason",     &SolverResult::marg_drop_reason);
 
     // ---- Main solve() interface (numpy-friendly) ----------------------------
     m.def("solve",
