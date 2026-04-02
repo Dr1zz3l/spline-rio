@@ -353,6 +353,8 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
     cfg.max_iterations          = solver_cfg.get('max_iterations', 400)
     cfg.marg_prior_scale           = solver_cfg.get('marg_prior_scale', 1.0)
     cfg.use_adaptive_marg_scale    = solver_cfg.get('use_adaptive_marg_scale', False)
+    cfg.marg_prior_cauchy_delta    = solver_cfg.get('marg_prior_cauchy_delta', 0.0)
+    cfg.marg_prior_eig_clip        = solver_cfg.get('marg_prior_eig_clip', 0.0)
     cfg.use_preintegration         = solver_cfg.get('use_preintegration', False)
     cfg.lambda_preint           = solver_cfg.get('lambda_preint', 1.0)
     cfg.lambda_preint_v         = solver_cfg.get('lambda_preint_v', 0.0)
@@ -436,13 +438,13 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
 
         cost_str = f"{result.cost_history[-1]:.3f}" if result.cost_history else "n/a"
         if result.marg_prior_valid:
+            r2 = result.marg_prior_residual_norm
+            r2_str = f"{r2:.1f}" if r2 >= 0 else "n/a"
             prior_str = (f"  prior=OK"
                          f"  cond={result.marg_cond_number:.1e}"
-                         f"  eig=[{result.marg_min_eigenvalue:.1e},{result.marg_max_eigenvalue:.1e}]"
                          f"  rank={result.marg_numerical_rank}/{result.marg_prior_dim}"
-                         f"  tr(Σ)={result.marg_trace_cov:.2e}"
-                         f"  ascale={result.marg_adaptive_scale:.2e}"
-                         f"  applied={result.marg_applied_scale:.2e}")
+                         f"  applied={result.marg_applied_scale:.2e}"
+                         f"  ||r||²={r2_str}")
         else:
             reason = f" ({result.marg_drop_reason})" if result.marg_drop_reason else ""
             prior_str = f"  prior=DROP{reason}"

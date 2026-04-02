@@ -127,6 +127,28 @@ struct SolverConfig {
     // NOTE: this makes the prior ~150× softer than marg_prior_scale=2e-4 alone.
     //       Test carefully before enabling on tuned configs.
     bool use_adaptive_marg_scale{false};
+
+    // Cauchy robust loss on the marginalization prior residual (||r||² space).
+    // delta = 0 (default): disabled, retains current quadratic behaviour.
+    // Note: requires care with delta choice — see marg_prior_residual_norm diagnostic.
+    double marg_prior_cauchy_delta{0.0};
+
+    // Eigenvalue clipping for the Schur complement S before forming sqrt_info.
+    // S is extremely ill-conditioned (cond≈5.5e10): gyro-dominated orientation DOF
+    // have eigenvalues ~5.5e14 while position DOF are ~1e4, ratio 5.5e10.
+    // With uniform scale, the prior over-constrains orientation DOF, preventing
+    // the boundary from adapting to new data (root cause of per-bag marg_prior_scale need).
+    //
+    // Clipping caps eigenvalues of S at eig_clip before Cholesky, removing the
+    // directional dominance.  Increase marg_prior_scale proportionally to compensate.
+    //
+    // Suggested starting point:
+    //   marg_prior_eig_clip = 1e6   (≈ position-DOF magnitude, 8 decades below max)
+    //   marg_prior_scale    = 0.05  (compensates for reduced max eigenvalue)
+    //   → effective max eigenvalue = (0.05)² × 1e6 = 2500  ≈ λ_boundary (1000)
+    //
+    // 0.0 (default): disabled, S used as-is.
+    double marg_prior_eig_clip{0.0};
 };
 
 // ============================================================================
@@ -177,6 +199,15 @@ struct SolverResult {
     double marg_trace_cov{0.0};
     double marg_adaptive_scale{0.0};
     double marg_applied_scale{0.0};
+
+    // Prior residual norm after solve: ||r||² = local_x^T * S * local_x
+    // This is the squared Mahalanobis distance between the solved boundary state
+    // and the prior mean.  Measures how much the current window's data disagreed
+    // with the prior.  Used to calibrate marg_prior_cauchy_delta:
+    //   small (~d_b=30)  → prior was consistent; delta should be above sqrt(30)≈5.5
+    //   large (>>30)     → prior was over-constraining; delta should be below this
+    // -1.0 if no prior was active this window.
+    double marg_prior_residual_norm{-1.0};  // ||r||² at solution
 
     // Post-solve boundary state covariance (set by compute_prior)
     // Two complementary views:

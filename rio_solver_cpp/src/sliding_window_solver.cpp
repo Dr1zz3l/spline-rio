@@ -525,6 +525,26 @@ SolverResult SlidingWindowSolver::solve_window(
 
     SolverResult result;   // declared early so covariance block can fill it
 
+    // ---- Evaluate prior residual norm at solution ---------------------------
+    // ||r||² = local_x^T * S * local_x: squared Mahalanobis distance between
+    // the solved boundary state and the prior mean.  Useful for calibrating
+    // marg_prior_cauchy_delta.  Evaluated BEFORE compute_prior() overwrites prior_.
+    if (prior_.valid) {
+        const int n_pos = static_cast<int>(prior_.bound_pos.size());
+        const int n_ori = static_cast<int>(prior_.bound_ori.size());
+        std::vector<double*> pparams;
+        for (int i = 0; i < n_pos; ++i)
+            pparams.push_back(traj_.pos_cp_data(prior_.pos_start + i));
+        for (int i = 0; i < n_ori; ++i)
+            pparams.push_back(traj_.ori_knot_data(prior_.ori_start + i));
+        pparams.push_back(traj_.bias_data());
+        Eigen::VectorXd r(prior_.d_b);
+        MargPriorFunctor functor(prior_);
+        std::vector<const double*> cpparams(pparams.begin(), pparams.end());
+        functor(cpparams.data(), r.data());
+        result.marg_prior_residual_norm = r.squaredNorm();
+    }
+
     // ---- Compute marginalization prior for next window ----------------------
     // Note: compute_prior() also populates prior_.covariance = S^{-1} (the Schur
     // complement boundary covariance), which is used as boundary_covariance below.
@@ -608,9 +628,13 @@ void SlidingWindowSolver::add_prior_to_problem(ceres::Problem& problem) {
         final_scale *= prior_.adaptive_scale;
     prior_.last_adaptive_scale = final_scale;
 
+    ceres::LossFunction* inner = nullptr;
+    if (cfg_.marg_prior_cauchy_delta > 0.0)
+        inner = new ceres::CauchyLoss(cfg_.marg_prior_cauchy_delta);
+
     ceres::LossFunction* loss = nullptr;
-    if (std::abs(final_scale - 1.0) > 1e-12) {
-        loss = new ceres::ScaledLoss(nullptr, final_scale * final_scale,
+    if (std::abs(final_scale - 1.0) > 1e-12 || inner != nullptr) {
+        loss = new ceres::ScaledLoss(inner, final_scale * final_scale,
                                      ceres::TAKE_OWNERSHIP);
     }
     problem.AddResidualBlock(cost, loss, params);
@@ -753,6 +777,24 @@ void SlidingWindowSolver::compute_prior(
     }
     Eigen::MatrixXd S = H_bb - H_ab.transpose() * ldlt.solve(H_ab);
 
+    // ---- Optional eigenvalue clipping to balance prior across DOF -----------
+    // Without clipping, S is dominated by gyro-constrained orientation DOF
+    // (eigenvalue ~5.5e14) vs position DOF (~1e4), cond≈5.5e10.  A single
+    // marg_prior_scale cannot simultaneously handle both extremes.  Clipping
+    // caps the max eigenvalue so no single DOF dominates, allowing a universal
+    // scale to work across different flight dynamics.
+    if (cfg_.marg_prior_eig_clip > 0.0) {
+        Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eig_clip(S);
+        if (eig_clip.info() == Eigen::Success) {
+            Eigen::VectorXd clipped = eig_clip.eigenvalues().array()
+                                          .min(cfg_.marg_prior_eig_clip)
+                                          .max(0.0);
+            S = eig_clip.eigenvectors()
+                * clipped.asDiagonal()
+                * eig_clip.eigenvectors().transpose();
+        }
+    }
+
     // ---- LLT Cholesky of S (PSD regularization) ----------------------------
     S += 1e-6 * Eigen::MatrixXd::Identity(d_b, d_b);
     Eigen::LLT<Eigen::MatrixXd> llt(S);
@@ -763,6 +805,7 @@ void SlidingWindowSolver::compute_prior(
     }
 
     // ---- Eigenvalue diagnostics + covariance of S ---------------------------
+    // Note: diagnostics reflect the (possibly clipped) S.
     Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eig(S, Eigen::EigenvaluesOnly);
     if (eig.info() == Eigen::Success) {
         double lmin = eig.eigenvalues().minCoeff();
