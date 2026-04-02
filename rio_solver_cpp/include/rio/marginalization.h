@@ -60,6 +60,12 @@ struct MarginalizationPrior {
     double          trace_cov{0.0};
     double          adaptive_scale{0.0};
     double          last_adaptive_scale{0.0};  // as applied in add_prior_to_problem
+
+    // Current-window-only boundary covariance = H_bb^{-1} = (J_b^T J_b)^{-1}
+    // Separates current-window sensor uncertainty from accumulated prior history.
+    // window_cov_trace >> trace_cov means prior dominates; << means window dominates.
+    Eigen::MatrixXd window_covariance;    // d_b × d_b
+    double          window_cov_trace{0.0};
 };
 
 // ============================================================================

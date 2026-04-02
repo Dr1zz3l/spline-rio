@@ -523,7 +523,11 @@ SolverResult SlidingWindowSolver::solve_window(
     ceres::Solver::Summary summary;
     ceres::Solve(options, &problem, &summary);
 
+    SolverResult result;   // declared early so covariance block can fill it
+
     // ---- Compute marginalization prior for next window ----------------------
+    // Note: compute_prior() also populates prior_.covariance = S^{-1} (the Schur
+    // complement boundary covariance), which is used as boundary_covariance below.
     int k_stride_pos = std::max(1, static_cast<int>(std::round(stride / cfg_.dt_pos)));
     int k_stride_ori = std::max(1, static_cast<int>(std::round(stride / cfg_.dt_ori)));
     compute_prior(problem, pi0_raw, oi0_raw, k_stride_pos, k_stride_ori);
@@ -532,7 +536,6 @@ SolverResult SlidingWindowSolver::solve_window(
     auto wall_end = std::chrono::high_resolution_clock::now();
     double elapsed = std::chrono::duration<double>(wall_end - wall_start).count();
 
-    SolverResult result;
     result.pos_cps    = traj_.pos_cps;
     result.ori_knots  = traj_.ori_knots;
     result.biases     = traj_.biases;
@@ -558,9 +561,18 @@ SolverResult SlidingWindowSolver::solve_window(
     result.marg_drop_reason    = prior_.drop_reason;
 
     // Boundary state covariance diagnostics
-    result.marg_trace_cov     = prior_.trace_cov;
+    result.marg_trace_cov      = prior_.trace_cov;
     result.marg_adaptive_scale = prior_.adaptive_scale;
     result.marg_applied_scale  = prior_.last_adaptive_scale;
+
+    // Two covariance views of boundary state (from compute_prior's restricted Jacobian)
+    result.boundary_cov_valid   = prior_.valid && prior_.covariance.size() > 0;
+    result.boundary_cov_trace   = prior_.trace_cov;          // S^{-1} trace
+    result.window_cov_trace     = prior_.window_cov_trace;   // H_bb^{-1} trace
+    if (result.boundary_cov_valid) {
+        result.boundary_covariance = prior_.covariance;       // S^{-1}
+        result.window_covariance   = prior_.window_covariance; // H_bb^{-1}
+    }
 
     return result;
 }
@@ -715,6 +727,19 @@ void SlidingWindowSolver::compute_prior(
     Eigen::MatrixXd H_aa = J_a.transpose() * J_a;
     Eigen::MatrixXd H_ab = J_a.transpose() * J_b;
     Eigen::MatrixXd H_bb = J_b.transpose() * J_b;
+
+    // ---- Current-window boundary covariance = H_bb^{-1} ---------------------
+    // This is the covariance of the boundary state from the current window's
+    // sensor data only (no marginalization of stride zone, no prior history).
+    // Complement to S^{-1} which encodes the accumulated prior information.
+    {
+        Eigen::MatrixXd H_bb_reg = H_bb + 1e-6 * Eigen::MatrixXd::Identity(d_b, d_b);
+        Eigen::LDLT<Eigen::MatrixXd> ldlt_bb(H_bb_reg);
+        if (ldlt_bb.info() == Eigen::Success) {
+            prior_.window_covariance = ldlt_bb.solve(Eigen::MatrixXd::Identity(d_b, d_b));
+            prior_.window_cov_trace  = prior_.window_covariance.trace();
+        }
+    }
 
     // ---- Schur complement: S = H_bb - H_ab^T * H_aa^{-1} * H_ab -----------
     const double reg_a = 1e-6;

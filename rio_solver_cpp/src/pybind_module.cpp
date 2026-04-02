@@ -208,7 +208,20 @@ PYBIND11_MODULE(rio_solver, m) {
         .def_readonly("marg_drop_reason",      &SolverResult::marg_drop_reason)
         .def_readonly("marg_trace_cov",        &SolverResult::marg_trace_cov)
         .def_readonly("marg_adaptive_scale",   &SolverResult::marg_adaptive_scale)
-        .def_readonly("marg_applied_scale",    &SolverResult::marg_applied_scale);
+        .def_readonly("marg_applied_scale",    &SolverResult::marg_applied_scale)
+        .def_readonly("boundary_cov_valid",    &SolverResult::boundary_cov_valid)
+        .def_readonly("boundary_cov_trace",    &SolverResult::boundary_cov_trace)
+        .def_readonly("window_cov_trace",      &SolverResult::window_cov_trace)
+        .def_property_readonly("boundary_covariance",
+            [](const SolverResult& r) -> py::object {
+                if (!r.boundary_cov_valid) return py::none();
+                return py::cast(r.boundary_covariance);
+            })
+        .def_property_readonly("window_covariance",
+            [](const SolverResult& r) -> py::object {
+                if (!r.boundary_cov_valid) return py::none();
+                return py::cast(r.window_covariance);
+            });
 
     // ---- Main solve() interface (numpy-friendly) ----------------------------
     m.def("solve",

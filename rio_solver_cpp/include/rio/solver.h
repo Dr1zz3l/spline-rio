@@ -177,6 +177,19 @@ struct SolverResult {
     double marg_trace_cov{0.0};
     double marg_adaptive_scale{0.0};
     double marg_applied_scale{0.0};
+
+    // Post-solve boundary state covariance (set by compute_prior)
+    // Two complementary views:
+    //   boundary_cov_trace (S^{-1}):      accumulated prior covariance — how well
+    //                                     previous windows constrain boundary state
+    //   window_cov_trace   (H_bb^{-1}):   current-window sensor-only covariance —
+    //                                     how well THIS window's data constrains it
+    // Ratio window_cov_trace / boundary_cov_trace < 1: window more informative than prior.
+    bool            boundary_cov_valid{false};
+    double          boundary_cov_trace{0.0};    // tr(S^{-1}), same as marg_trace_cov
+    double          window_cov_trace{0.0};      // tr(H_bb^{-1}): window-only
+    Eigen::MatrixXd boundary_covariance;        // S^{-1},  d_b × d_b
+    Eigen::MatrixXd window_covariance;          // H_bb^{-1}, d_b × d_b
 };
 
 // ============================================================================

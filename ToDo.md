@@ -1,9 +1,6 @@
 check if there is a radar config that also returns data when stationary
 add quantization to forward and reverse model?
 
-
-attitude ground truth, position fitted
-
 ---
 
 check if the full solver.yaml params are printed into the validation plot or not. including the extrinsics at start and end
@@ -15,10 +12,6 @@ joint calibratoin of radar time offset and full extrinsics. maybe dynamic time-w
 ---
 
 check if gyro has different time offset to mocap than accelerometer
-
----
-
-sliding window with frames
 
 ---
 
@@ -40,3 +33,11 @@ time step distance 0.3s window mit mocap vergleichen für error werte, nicht fin
 ---
 
 test ohne radar, nur IMU. attitude error verhalten evaluieren auf slow racing. hyperparameter gleich lassen
+
+---
+
+backflips bag cant be represented in sliding window, but can in batch solver. how about doing a sliding window with a very lare window size, so that we basically have a sliding batch? 
+
+---
+
+marginalisierung des window end state, mean und covariance als certainty measure und weight für optimierung. preceision metrics / covariance matrix aus residuals der sensor states ziehen

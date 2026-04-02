@@ -446,10 +446,17 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
         else:
             reason = f" ({result.marg_drop_reason})" if result.marg_drop_reason else ""
             prior_str = f"  prior=DROP{reason}"
+        if result.boundary_cov_valid:
+            ratio = result.window_cov_trace / result.boundary_cov_trace if result.boundary_cov_trace > 0 else float('inf')
+            bcov_str = (f"  tr(S⁻¹)={result.boundary_cov_trace:.2e}"
+                        f"  tr(H⁻¹)={result.window_cov_trace:.2e}"
+                        f"  ratio={ratio:.2f}")
+        else:
+            bcov_str = "  bcov=n/a"
         print(f"  [sw {n_windows+1:3d}] t={t_w_start:.2f}–{t_w_end:.2f}s"
               f"  {len(window_radar):3d}fr  {int(imu_mask.sum()):4d}imu"
               f"  cost={cost_str}  iter={len(result.cost_history)}  dt={dt_w:.2f}s"
-              + prior_str)
+              + prior_str + bcov_str)
 
         # Snapshot leading-edge estimate in stride zone [t_w_end - stride, t_w_end]
         t_snap_start = t_w_end - window_stride
