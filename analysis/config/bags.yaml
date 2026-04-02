@@ -19,6 +19,8 @@ solver_overrides:
                                # cliff at 1e-6 (harmful regime) vs 1e-7 (free adaptation, best live)
                                # tradeoff: settled vel 0.154→0.904 m/s (eval artifact, not deployment issue)
   backflips_best_velocity:
+    dt_ori: 0.0008       # 10x denser: needed to represent rapid angular acceleration of backflip
+    dt_pos: 0.010        # coarser position: compensates for increased solve time from dense ori knots
     lock_extrinsics: 1   # extrinsic pitch drifts on backflips (orientation model error acts as surrogate)
 
 radar_config:
