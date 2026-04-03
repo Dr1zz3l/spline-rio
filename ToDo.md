@@ -40,4 +40,4 @@ backflips bag cant be represented in sliding window, but can in batch solver. ho
 
 ---
 
-marginalisierung des window end state, mean und covariance als certainty measure und weight für optimierung. preceision metrics / covariance matrix aus residuals der sensor states ziehen
+existenz und qualität von marginalisierung des window end state prüfen. mean und covariance als certainty measure und weight für optimierung. preceision metrics / covariance matrix aus residuals der sensor states ziehen

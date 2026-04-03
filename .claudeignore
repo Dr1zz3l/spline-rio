@@ -26,6 +26,23 @@ mmwave_ti_ros/ros1_driver/install/
 # Large generated files
 analysis/codegen/generated_jacobians.py
 
+# Compiled Python extensions
+**/*.so
+
+# Temporary config files
+**/*.tmp.*
+
+# LaTeX build artifacts
+report/*.aux
+report/*.log
+report/*.out
+report/*.bbl
+report/*.blg
+report/*.fls
+report/*.fdb_latexmk
+report/*.synctex.gz
+report/*.pdf
+
 # Temporary/scratch files
 **/*.png
 **/*.log

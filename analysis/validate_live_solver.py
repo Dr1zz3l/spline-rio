@@ -1073,6 +1073,7 @@ def main():
     USE_MOCAP_HEADING = _legacy_mocap_yaw or '--mocap-heading' in sys.argv
 
     NO_PLOT = '--no-plot' in sys.argv
+    SAVE_ARRAYS = '--save-arrays' in sys.argv
     USE_PREINTEGRATE = '--preintegrate' in sys.argv
     USE_GNC = '--gnc' in sys.argv
     USE_CPP = '--cpp' in sys.argv
@@ -2004,6 +2005,19 @@ def main():
             print(f"\n  [P5] Gyro noise={noise_deg_per_sqrts:.1f} deg/sqrt(s) -> "
                   f"pos_rmse={pos_rmse:.4f} m  ori_rmse={rot_rmse:.4f} deg")
 
+        # ==================== Save arrays (before NO_PLOT check) ====================
+        if SAVE_ARRAYS:
+            _mocap_tag = ("_mocap-init" if USE_MOCAP_INIT else "") + ("_mocap-heading" if USE_MOCAP_HEADING else "")
+            _sw_tag    = '_sw' if USE_SLIDING_WINDOW else '_batch'
+            _arr_dir   = Path(__file__).parent.parent / 'plots' / bag_key / 'live_solver'
+            _arr_dir.mkdir(parents=True, exist_ok=True)
+            _arr_out   = _arr_dir / f'traj_arrays_{bag_key}{_mocap_tag}{_sw_tag}.npz'
+            _save_dict = dict(mocap=mocap_pos_eval, settled=estimated_positions_aligned)
+            if live_pos_aligned_plot is not None:
+                _save_dict['live'] = live_pos_aligned_plot
+            np.savez(_arr_out, **_save_dict)
+            print(f"  Saved arrays: {_arr_out}")
+
         # ==================== Plot ====================
         if NO_PLOT:
             print(f"\n  [--no-plot] Skipping plot generation.")
@@ -2275,12 +2289,16 @@ def main():
 
         # Figure 2: Multi-view trajectory
         fig2 = plt.figure(figsize=(14, 12))
-        gt  = mocap_pos_eval
-        est = estimated_positions_aligned
+        gt   = mocap_pos_eval
+        est  = estimated_positions_aligned
+        live = live_pos_aligned_plot   # None in batch mode, (M,3) array in SW mode
 
         def _setup_2d(ax, xi, yi, xlabel, ylabel, title):
             ax.plot(gt[:, xi], gt[:, yi], 'b-', label='MoCap', linewidth=2)
-            ax.plot(est[:, xi], est[:, yi], 'r--', label='Estimated', linewidth=1.5)
+            ax.plot(est[:, xi], est[:, yi], 'r--', label='Settled', linewidth=1.5)
+            if live is not None:
+                ax.plot(live[:, xi], live[:, yi], color='darkorange', linestyle=':',
+                        linewidth=1.5, label='Live edge', alpha=0.85)
             ax.plot(gt[0, xi], gt[0, yi], 'bs', markersize=8)
             ax.plot(est[0, xi], est[0, yi], 'rs', markersize=8)
             ax.set_xlabel(xlabel, fontsize=11); ax.set_ylabel(ylabel, fontsize=11)
@@ -2293,7 +2311,10 @@ def main():
 
         ax3d = fig2.add_subplot(2, 2, 4, projection='3d')
         ax3d.plot(gt[:, 0], gt[:, 1], gt[:, 2], 'b-', label='MoCap', linewidth=2)
-        ax3d.plot(est[:, 0], est[:, 1], est[:, 2], 'r--', label='Estimated', linewidth=1.5)
+        ax3d.plot(est[:, 0], est[:, 1], est[:, 2], 'r--', label='Settled', linewidth=1.5)
+        if live is not None:
+            ax3d.plot(live[:, 0], live[:, 1], live[:, 2], color='darkorange', linestyle=':',
+                      linewidth=1.5, label='Live edge', alpha=0.85)
         ax3d.plot([gt[0, 0]], [gt[0, 1]], [gt[0, 2]], 'bs', markersize=8)
         ax3d.plot([est[0, 0]], [est[0, 1]], [est[0, 2]], 'rs', markersize=8)
         ax3d.set_xlabel('X (m)', fontsize=10); ax3d.set_ylabel('Y (m)', fontsize=10)
