@@ -6,10 +6,15 @@ Phase 1 of the Python→C++ migration for the radar-inertial odometry solver.
 
 - [x] **Phase 1**: Splines + all residual factors (build + tests passing)
 - [x] **Phase 2**: Full problem + pybind11 integration with `validate_live_solver.py --cpp`
-  - pos 0.358m / ori 2.53° on slow_racing_best_velocity (Python baseline: 0.374m / 3.32°)
-  - Bugs fixed: gravity sign, gyro bias sign, boundary priors (vel+ori added, anchor corrected)
-- [ ] **Phase 3**: Performance + preintegrated IMU factor
-- [ ] **Phase 4**: Sliding window + ROS node
+  - Current (with lever arm + extrinsic opt): slow 0.174 m/1.08°, fast 0.758 m/2.58°, backflips 1.817 m/8.31°
+  - Phase 2 initial (pre-lever-arm): slow 0.358 m/2.53° (Python baseline: 0.374 m/3.32°)
+- [x] **Phase 3**: Extrinsic pitch optimization, angular-acceleration regularization, lever-arm correction, full-rate IMU, per-bag config overrides
+- [x] **Phase 4**: Sliding window + Schur complement marginalization (`--sliding-window`)
+  - `SlidingWindowSolver` in `src/sliding_window_solver.cpp`
+  - `MargPriorFunctor` in `include/rio/marginalization.h`
+  - Per-window diagnostics: S condition number, eigenvalue range, tr(S⁻¹), tr(H_bb⁻¹)
+  - Live-edge (settled) results: slow 0.393 m/2.21° (0.218 m/1.57°), fast 0.877 m/4.16° (0.804 m/3.10°)
+- [ ] **Phase 5**: ROS node (real-time subscriber + odometry publisher)
 
 ## Build
 

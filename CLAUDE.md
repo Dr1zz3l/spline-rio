@@ -2,6 +2,19 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Documentation Map
+
+| Document | Role |
+|----------|------|
+| **CLAUDE.md** (this file) | Operational hub: how to run, current config, current results, known gaps |
+| `report/IEEE-conference-template-062824.tex` | IEEE conference paper: methodology, ablations, negative results |
+| `documentation/Forward Model.md` | Math reference: sensor forward models, coordinate frames, Doppler sign convention |
+| `documentation/Backward Model.md` | Math reference: state parameterization (cumulative SO(3) B-spline), factor-graph MAP, Ceres LM, Schur-complement marginalization |
+| `documentation/FINDINGS.md` | Foundational calibration findings: body frame, time offsets, Doppler sign fix (§11), extrinsics |
+| `documentation/RESEARCH_NOTES.md` | Design rationale: C++ solver perf profile, Doppler unwrapping layers, preintegration investigation, SW Phase 4a→4b narrative |
+| `analysis/lib/rosbag_loader/README.md` | Rosbag loader API and ROS topic reference |
+| `rio_solver_cpp/README.md` | C++ Ceres solver: build instructions, Phase status, Python API |
+
 ## Project Overview
 
 Radar-inertial odometry (RIO) research system using a TI IWR6843AOPEVM mmWave radar on an Agiros quadrotor with Pixhawk IMU and Vicon MoCap ground truth. The goal is to fit full 6-DOF trajectories from radar Doppler velocity measurements, accelerometer, and gyroscope data using B-spline parameterization and factor graph optimization.
@@ -128,6 +141,22 @@ Flags: `--no-flip` (override per-bag yaw flip), `--flip` (force flip on), `--no-
 | `config/solver.yaml` | Python solver hyperparameters (default) |
 | `config/solver_cpp.yaml` | C++ solver overrides loaded on `--cpp` (IMU rate, snap, gyro weight, bias prior) |
 | `diagnostics/diagnose_doppler_sign.py` | Compares both Doppler code paths at MoCap ground truth; tests sign convention |
+
+### Import Convention
+
+Root `analysis/` scripts add `lib/` to `sys.path` and use bare imports:
+```python
+sys.path.insert(0, str(Path(__file__).parent / 'lib'))
+from rosbag_loader.loader import load_bag_topics
+from radar_velocity_utils import rotation_matrix_from_euler
+```
+
+Scripts in subdirectories (`diagnostics/`, `viz/`, etc.) add both `analysis/`
+and `analysis/lib/`:
+```python
+sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / 'lib'))
+```
 
 ### C++ Ceres Solver (`rio_solver_cpp/`)
 
@@ -479,10 +508,10 @@ orientation through ∂r_v/∂R_i if enabled before the optimizer has converged.
 | Topic | Content |
 |-------|---------|
 | `/mmWaveDataHdl/RScanVelocity` | Radar point cloud (x, y, z, velocity, intensity, range, noise, frame_number) |
-| `/agiros_pilot/imu` | IMU (accel + gyro) |
-| `/mocap_node/Agiros/pose` | MoCap 6-DOF pose |
-| `/mocap_node/Agiros/accel` | MoCap linear acceleration |
-| `/agiros_pilot/state` | Full Agiros state |
-| `/agiros_pilot/odometry` | Agiros odometry |
+| `/angrybird2/imu` | IMU (accel + gyro) |
+| `/mocap/angrybird2/pose` | MoCap 6-DOF pose |
+| `/mocap/angrybird2/accel` | MoCap linear acceleration (actually TwistStamped despite topic name) |
+| `/angrybird2/agiros_pilot/state` | Full Agiros state |
+| `/angrybird2/agiros_pilot/odometry` | Agiros odometry |
 
 See `analysis/lib/rosbag_loader/RADAR_FIELDS.md` for field-level documentation and `analysis/lib/rosbag_loader/README.md` for module overview.

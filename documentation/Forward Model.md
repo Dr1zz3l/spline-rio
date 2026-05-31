@@ -1,180 +1,239 @@
 # Radar-Inertial Odometry: The Forward Measurement Model
 
-This document defines the mathematical **Forward Model** for a drone equipped with an IMU (Accelerometer/Gyroscope) and a Doppler Radar (TI IWR6843AOP).
+This document defines the **Forward Model** for a quadrotor equipped with a
+Pixhawk IMU and a TI IWR6843AOPEVM mmWave radar.
 
-The **Forward Model** answers the question: *"Given a known drone state (position, velocity, orientation), what values will the sensors produce?"*
+The **Forward Model** answers: *"Given a known drone state (position, velocity,
+orientation), what values will the sensors produce?"*
 
-The estimation pipeline (the "Reverse" model) attempts to invert these equations to find the state that best explains the observed measurements.
+The estimation pipeline (the "Reverse Model") attempts to invert these equations
+to find the state that best explains observed measurements.  See `Backward Model.md`.
+
+> **Orientation parameterization note:**  This document describes the
+> **current** cumulative SO(3) B-spline representation, which does **not**
+> require a MoCap-nominal trajectory.  Earlier versions of this document used a
+> tangent-space perturbation `δ(t)` around a MoCap-SLERP reference — that
+> formulation is superseded.
+
+---
 
 ## 1. Coordinate Systems & Notation
 
-We define three Cartesian coordinate frames. All frames are Right-Handed.
+All frames are right-handed.
 
-1. **World Frame ($\mathcal{W}$):** The fixed inertial frame.
-   * **Z-axis:** Aligned with gravity (pointing opposite to gravity vector).
-   * **Origin:** Arbitrary (usually the drone's start position).
+1. **World Frame (W):** The fixed inertial frame.
+   - Z-axis: aligned with gravity direction (pointing **away** from Earth,
+     i.e., gravity vector is `[0, 0, −9.81]` m/s²).
+   - Origin: drone start position.
 
-2. **Body Frame ($\mathcal{B}$):** The moving frame attached to the drone.
-   * **Origin:** The center of the IMU (specifically the Accelerometer).
-   * **Orientation:** Aligned with the flight controller's axes — **FLU** (X-Forward, Y-Left, Z-Up).
-   * **Note:** Some bags (`circle_fwd`, `loopings`, `backflips`, `slow_racing_best_velocity`) were previously believed to require a 180° yaw-flip. This was a workaround for a sign error in the Doppler forward model — see FINDINGS.md §11 for the full investigation. With the sign fix applied, the need for per-bag flipping is under re-evaluation.
+2. **Body Frame (B):** The moving frame attached to the drone.
+   - **FLU**: X=Forward, Y=Left, Z=Up.
+   - Origin: center of the Pixhawk IMU.
+   - **Not** the radar board's own IMU — the Pixhawk is the only IMU in use.
 
-3. **Sensor/Radar Frame ($\mathcal{S}$):** The moving frame attached to the Radar.
-   * **Origin:** The phase center of the radar antenna array.
-   * **Orientation:** Defined by the radar hardware (often different from Body frame).
+3. **Sensor/Radar Frame (S):** The frame attached to the radar.
+   - Origin: phase center of the antenna array.
+   - Related to B via the extrinsic calibration below.
 
-### Extrinsic Calibration
-The relationship between Body ($\mathcal{B}$) and Sensor ($\mathcal{S}$) is fixed and rigid.
-* $\mathbf{T}_{b\gets s}$: Translation vector from Body Origin to Sensor Origin, expressed in the **Body Frame**.
-* $\mathbf{R}_{s\gets b}$: Rotation matrix rotating a vector from the **Body Frame** to the **Sensor Frame**.
-* $\mathbf{R}_{b\gets s}$: Rotation matrix rotating a vector from the **Sensor Frame** to the **Body Frame** ($\mathbf{R}_{b\gets s} = \mathbf{R}_{s\gets b}^T$).
+### 1.1 Extrinsic Calibration
 
-## 2. The Drone State Vector
+The radar is mounted **upside-down** (180° roll) with a ~30° downward tilt.
+All solver computations use (single source of truth: `analysis/config/extrinsics.yaml`):
 
-At any continuous time $t$, the physical state of the drone is defined by:
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| Roll  | 180° | upside-down mounting |
+| Pitch | 25.5° | solver-calibrated from 30° physical mount; batch racing bags converge to 27–28° |
+| Yaw   | 0° | unobservable from Doppler; locked |
+| Translation `t_bs` | `[0.08, +0.02, −0.01]` m | 8 cm fwd, 2 cm left, 1 cm down in body frame |
 
-| Symbol | Definition | Frame |
-| :--- | :--- | :--- |
-| $\mathbf{p}_w(t)$ | Position of the Body Center | World ($\mathcal{W}$) |
-| $\mathbf{v}_w(t)$ | Linear Velocity of the Body Center ($\dot{\mathbf{p}}_w$) | World ($\mathcal{W}$) |
-| $\mathbf{a}_w(t)$ | Linear Acceleration of the Body Center ($\ddot{\mathbf{p}}_w$) | World ($\mathcal{W}$) |
-| $\mathbf{R}_{w\gets b}(t)$ | Orientation (Rotation from Body to World) | $\mathcal{B} \to \mathcal{W}$ |
-| $\boldsymbol{\omega}_b(t)$ | Angular Velocity of the Body | Body ($\mathcal{B}$) |
+`R_bs`: rotation from Sensor frame to Body frame (i.e., `R_bs = Rx(180°)·Ry(25.5°)`).
+`t_bs`: translation from body origin to radar antenna center, expressed in body frame.
 
-### 2.1 Orientation Parameterization
+**Extrinsic observability**: only the pitch angle is observable from Doppler
+(rotating the radar about its boresight does not meaningfully change radial velocity
+predictions).  `optimize_pitch_only: true` in the solver; roll and yaw are locked.
 
-The orientation is parameterized using a tangent-space perturbation around a nominal trajectory:
+---
 
-$$\mathbf{R}_{w\gets b}(t) = \mathbf{R}_{nom}(t) \cdot \exp(\boldsymbol{\delta}(t))$$
+## 2. State Representation
 
-Where $\mathbf{R}_{nom}(t)$ is the nominal (reference) rotation from MoCap and $\boldsymbol{\delta}(t) \in \mathbb{R}^3$ is a correction in the Lie algebra so(3). See the Backward Model for details.
+### 2.1 Position B-Spline
 
-### 2.2 Angular Velocity Model
+The world-frame position trajectory `p_w(t) ∈ ℝ³` is a **quintic (degree-5)
+uniform B-spline** with knot spacing `Δt_p = 5 ms`.
 
-The angular velocity in the body frame is derived from the orientation parameterization:
+Velocity `v_w(t) = ṗ_w(t)` and acceleration `a_w(t) = p̈_w(t)` are obtained as
+analytical derivatives of the spline (see `Backward Model.md §2`).
 
-$$\boldsymbol{\omega}_b(t) = \exp(-[\boldsymbol{\delta}]_\times) \, \boldsymbol{\omega}_{nom}(t) + \mathbf{J}_r(\boldsymbol{\delta}) \, \dot{\boldsymbol{\delta}}(t)$$
+### 2.2 Orientation: Cumulative SO(3) B-Spline
 
-Where:
-* $\boldsymbol{\omega}_{nom}(t)$: Nominal angular velocity (from MoCap, interpolated)
-* $\mathbf{J}_r(\boldsymbol{\delta})$: The **right Jacobian of SO(3)**, computed exactly via SymForce
-* $\dot{\boldsymbol{\delta}}(t)$: Time derivative of the perturbation spline
+The orientation is parameterized as a **cumulative SO(3) B-spline** following
+Sommer et al. 2020 and the basalt VIO formulation:
 
-This is the **exact** formula (not a small-angle approximation). For $\boldsymbol{\delta} \to 0$, it simplifies to $\boldsymbol{\omega}_b \approx \boldsymbol{\omega}_{nom} + \dot{\boldsymbol{\delta}}$.
+$$R(t) = R_{\text{base}}[k-3] \cdot \prod_{j=k-3}^{k} \text{Exp}\!\bigl(\tilde{B}_j(t)\,\Omega_j\bigr)$$
 
-## 3. The Inertial Forward Model (Accelerometer)
+where:
+- `k` = the active knot span index for time `t`
+- `Ω_j ∈ so(3)` = incremental rotation control knots (optimization variables)
+- `B̃_j(t)` = cumulative cubic basis functions (suffix sums of standard B-spline basis)
+- `R_base[i]` = precomputed left anchor: `Exp(Ω_0)·…·Exp(Ω_i)`; refreshed
+  after each parameter update
+- Knot spacing: `Δt_o = 8 ms`
 
-The accelerometer is the reference for the Body Frame. It measures **Specific Force**, not coordinate acceleration.
+**Key properties:**
+- Exact on-manifold representation — no re-linearization around a MoCap nominal needed.
+- `R_base` is recomputed from scratch at each optimizer update; it is not an optimization variable.
+- `Ω_j = 0` → identity increments → initial `R(t)` from gyro-integrated orientation (P1 init).
 
-### Physics
-The accelerometer measures the difference between the body's kinematic acceleration and the gravitational field vector. When hovering stationary, the drone must exert an upward force to counteract gravity; the accelerometer measures this upward force (approx $9.81 \, m/s^2$).
+### 2.3 Angular Velocity
 
-### The Equation
-$$
-\mathbf{z}_{acc}(t) = \mathbf{R}_{b\gets w}(t) \left( \mathbf{a}_w(t) - \mathbf{g}_w \right) + \mathbf{b}_a + \mathbf{n}_a(t)
-$$
+The body-frame angular velocity at time `t` (within knot span `k`) is:
 
-### Parameter Breakdown
-* $\mathbf{z}_{acc}(t)$: The measured 3D acceleration vector from the IMU [m/s²].
-* $\mathbf{R}_{b\gets w}(t) = \mathbf{R}_{w\gets b}(t)^T$: Rotates the World Frame force into the Body Frame.
-* $\mathbf{a}_w(t)$: The true 2nd derivative of the position trajectory.
-* $\mathbf{g}_w$: The gravity vector in World Frame.
-  * Convention: $\mathbf{g}_w = [0, 0, -9.81]^T$.
-* $\mathbf{b}_a$: Accelerometer Bias (modeled as constant over the trajectory window; estimated when `LOCK_BIASES=False`).
-* $\mathbf{n}_a(t)$: Additive White Gaussian Noise (AWGN).
+$$\omega_b(t) = \sum_{j=k-3}^{k} \frac{d\tilde{B}_j}{dt}(t) \cdot R_{\text{suffix},j}^\top \, \Omega_j$$
 
-## 4. The Gyroscope Forward Model
+where `R_suffix,j = Exp(B̃_{j+1}·Ω_{j+1})·…·Exp(B̃_k·Ω_k)` is the partial
+product of exponential factors **after** index `j` within the span.
 
-The gyroscope measures angular velocity in the body frame.
+This is obtained analytically from `evaluate_lie()` in the C++ solver
+(`basalt::CeresSplineHelper<N>::evaluate_lie()`) or from
+`analysis/lib/cumulative_so3_bspline.py`.
 
-### The Equation
-$$
-\mathbf{z}_{gyr}(t) = \boldsymbol{\omega}_b(t) + \mathbf{b}_g + \mathbf{n}_g(t)
-$$
+### 2.4 Sensor Biases
 
-Expanding using the orientation parameterization:
+Constant accelerometer bias `b_a ∈ ℝ³` and gyroscope bias `b_g ∈ ℝ³`.
+Real MEMS thermal drift is present — biases differ between flights.
 
-$$
-\mathbf{z}_{gyr}(t) = \exp(-[\boldsymbol{\delta}]_\times) \, \boldsymbol{\omega}_{nom}(t) + \mathbf{J}_r(\boldsymbol{\delta}) \, \dot{\boldsymbol{\delta}}(t) + \mathbf{b}_g + \mathbf{n}_g(t)
-$$
+---
 
-### Parameter Breakdown
-* $\mathbf{z}_{gyr}(t)$: The measured 3D angular velocity from the IMU [rad/s].
-* $\boldsymbol{\omega}_{nom}(t)$: Nominal angular velocity from the reference trajectory.
-* $\boldsymbol{\delta}(t)$: Orientation perturbation (B-spline, optimization variable).
-* $\mathbf{J}_r(\boldsymbol{\delta})$: SO(3) right Jacobian (exact, via SymForce codegen).
-* $\mathbf{b}_g$: Gyroscope Bias (modeled as constant; estimated when `LOCK_BIASES=False`). Real MEMS gyro z-bias of ~0.18–0.28 rad/s has been confirmed across bags (thermal drift between flights).
-* $\mathbf{n}_g(t)$: Additive White Gaussian Noise.
+## 3. Accelerometer Forward Model
 
-## 5. The Radar Forward Model (Doppler)
+The accelerometer measures **Specific Force** — not coordinate acceleration.
 
-The radar measures the **Relative Radial Velocity** along the line-of-sight.
+$$z_a(t) = R_{bw}(t)\,\bigl(a_w(t) - g_w\bigr) + b_a + n_a(t)$$
 
-### 5.1. Kinematics: Antenna Velocity
-First, we calculate the velocity of the radar antenna itself in the **Body Frame**. This includes the drone's linear velocity plus the "Lever Arm" effect caused by the drone's rotation.
+where:
+- `R_bw(t) = R_wb(t)ᵀ = R(t)ᵀ`: rotation from world to body at time `t`
+- `a_w(t)`: true coordinate acceleration from the position B-spline 2nd derivative
+- `g_w = [0, 0, −9.81]ᵀ` m/s²: gravity in world frame
+- `b_a`: accelerometer bias
+- `n_a`: additive white Gaussian noise
 
-$$
-\mathbf{v}_{ant, b} = \mathbf{v}_b(t) + \boldsymbol{\omega}_b(t) \times \mathbf{T}_{b\gets s}
-$$
+During stationary hover: `a_w ≈ 0`, `R_bw g_w ≈ [0,0,−9.81]ᵀ` in world → the
+sensor reads approximately `[0, 0, +9.81]ᵀ` in body (FLU body, z=up). ✓
 
-* $\mathbf{v}_b(t) = \mathbf{R}_{w\gets b}^T \mathbf{v}_w$: Body linear velocity.
-* $\boldsymbol{\omega}_b(t)$: Body angular velocity (from §2.2).
-* $\mathbf{T}_{b\gets s}$: The fixed offset of the radar from the body origin.
-* $\times$: Cross product.
+---
 
-### 5.2. Geometry: The Ray Direction
-The radar detects a point at $\mathbf{p}_s$ (in Sensor Frame). The unit direction vector of this ray in the **Sensor Frame** is:
-$$
-\hat{\mathbf{u}}_s = \frac{\mathbf{p}_s}{||\mathbf{p}_s||}
-$$
+## 4. Gyroscope Forward Model
 
-To compare this with our Body Frame velocity $\mathbf{v}_{ant, b}$, we must rotate this ray into the **Body Frame** using $\mathbf{R}_{b\gets s}$:
-$$
-\hat{\mathbf{u}}_b = \mathbf{R}_{b\gets s} \hat{\mathbf{u}}_s
-$$
+$$z_g(t) = \omega_b(t) + b_g + n_g(t)$$
 
-### 5.3. The Projection (Doppler Constraint)
-The TI IWR6843 reports Doppler as **positive when the target is receding** (range rate $\dot{r} > 0$). This is the **opposite** of the naive dot-product sign. The forward model is:
+where:
+- `ω_b(t)`: body-frame angular velocity from the cumulative SO(3) B-spline (§2.3)
+- `b_g`: gyroscope bias (~0.18–0.28 rad/s z-axis thermal drift confirmed across bags)
+- `n_g`: additive white Gaussian noise
 
-$$
-v_{D} = -\hat{\mathbf{u}}_{b} \cdot \mathbf{v}_{ant, b} + \epsilon
-$$
+The Pixhawk IMU measures at ~993 Hz (raw rate used directly in the C++ solver).
+`z_g` is in the **body frame** (confirmed: body-frame RMSE ≪ world-frame RMSE
+in `diagnostics/diagnose_gyro.py`).
 
-Substituting the full terms:
+---
 
-$$
-v_{D} = -(\mathbf{R}_{b\gets s} \hat{\mathbf{u}}_s) \cdot \left( \mathbf{R}_{w\gets b}^T \mathbf{v}_w(t) + \boldsymbol{\omega}_b(t) \times \mathbf{T}_{b\gets s} \right) + \epsilon
-$$
+## 5. Radar Doppler Forward Model
 
-### Sign Convention (Confirmed)
-The negation was confirmed experimentally by `diagnostics/diagnose_doppler_sign.py` on the `slow_racing_best_velocity` bag:
-* `corr(v_meas, -dot(u,v)) = +0.85` (correct sign, flip=OFF)
-* `corr(v_meas, +dot(u,v)) = -0.85` (wrong sign)
-* RMSE with correct sign: 0.83 m/s (vs 2.92 m/s with wrong sign)
-* Only 4.3% of points Huber-suppressed with correct sign (vs 76.4% with wrong sign)
+### 5.1 Antenna Velocity (with Lever Arm)
 
-This is implemented in `predict_doppler_velocity()` (returns `-dot`) and in the SymForce residual source (`derive_jacobians_symforce.py`: `v_pred = -u_body.dot(v_ant)`).
+The velocity of the radar antenna in the body frame includes the lever-arm
+contribution from body rotation:
 
-## 6. Summary Table: What We Estimate vs. What We Measure
+$$v_{ant,b}(t) = v_b(t) + \omega_b(t) \times t_{bs}$$
 
-| Quantity | Type | Source | Role in Pipeline |
-| :--- | :--- | :--- | :--- |
-| $\mathbf{p}_w(t)$ | **State** | Position B-spline control points | **Unknown** (To be solved) |
-| $\mathbf{v}_w(t)$ | **State** | Position B-spline 1st derivative | **Unknown** (derived from position CPs) |
-| $\mathbf{a}_w(t)$ | **State** | Position B-spline 2nd derivative | **Unknown** (derived from position CPs) |
-| $\boldsymbol{\delta}(t)$ | **State** | Orientation B-spline control points | **Unknown** (To be solved) |
-| $\boldsymbol{\omega}_b(t)$ | **State** | Orientation B-spline value + derivative | **Unknown** (derived from ori CPs via §2.2) |
-| $\mathbf{b}_a$ | **State** | Estimator variable | **Unknown** (To be solved, or locked to zero) |
-| $\mathbf{b}_g$ | **State** | Estimator variable | **Unknown** (To be solved, or locked to zero) |
-| $\mathbf{R}_{nom}(t)$ | **Prior** | MoCap SLERP | Nominal orientation (re-linearization point) |
-| $\boldsymbol{\omega}_{nom}(t)$ | **Prior** | MoCap angular velocity | Nominal angular velocity |
-| $\mathbf{z}_{acc}$ | **Measurement** | IMU Topic | Constrains $\mathbf{a}_w$ and $\boldsymbol{\delta}$ |
-| $\mathbf{z}_{gyr}$ | **Measurement** | IMU Topic | Constrains $\boldsymbol{\delta}$ and $\dot{\boldsymbol{\delta}}$ |
-| $v_{D,k}$ | **Measurement** | Radar Topic | Constrains $\mathbf{v}_w$, $\boldsymbol{\delta}$, and $\dot{\boldsymbol{\delta}}$ |
+where:
+- `v_b(t) = R_bw · v_w(t)`: linear velocity rotated into body frame
+- `ω_b(t)`: angular velocity from the SO(3) spline (§2.3)
+- `t_bs = [0.08, 0.02, −0.01]ᵀ` m: offset from body origin to antenna center
 
-## 7. Rosbag Topics
+The lever-arm term `ω × t_bs` is most significant during the backflips bag
+(angular rates ~10 rad/s × 8 cm offset ≈ 0.8 m/s correction per axis).
+
+### 5.2 Bearing Direction
+
+A radar point detected at position `p_s` in the sensor frame has bearing:
+
+$$\hat{u}_s = \frac{p_s}{\|p_s\|}$$
+
+Rotated into the body frame via the extrinsic rotation:
+
+$$\hat{u}_b = R_{bs} \, \hat{u}_s$$
+
+### 5.3 Doppler Measurement (Confirmed Sign Convention)
+
+The TI IWR6843 reports Doppler **positive for a receding target** (range rate
+`ṙ > 0`). The forward model is:
+
+$$v_D = -\hat{u}_b^\top v_{ant,b}(t) + \epsilon$$
+
+Expanding:
+
+$$\boxed{v_D = -\hat{u}_b^\top \!\left( R_{bw}(t)\,v_w(t) + \omega_b(t) \times t_{bs} \right) + \epsilon}$$
+
+**Sign convention confirmed** (`diagnostics/diagnose_doppler_sign.py`,
+`slow_racing_best_velocity`):
+
+| Convention | corr(v_meas, v_pred) | RMSE | Huber-suppressed |
+|---|---|---|---|
+| `−dot(u, v)` (correct) | **+0.85** | **0.83 m/s** | **4.3 %** |
+| `+dot(u, v)` (wrong)   | −0.85     | 2.92 m/s     | 76.4 %   |
+
+The negation in `v_pred = −u·v` is physically correct. **Do not remove it.**
+
+### 5.4 Known Systematic Bias
+
+Limited elevation diversity (2 TX antennas) causes a systematic z-velocity
+underestimate of −0.5 to −0.65 m/s.  Huber loss threshold `δ = 1.0 m/s` is
+chosen to be ≥ this bias magnitude (the 0.049 m/s Doppler bin size in the
+best-velocity firmware configuration sets a lower bound but does not drive the
+choice).
+
+### 5.5 Doppler Aliasing
+
+The radar firmware aliases Doppler into `[−v_max, +v_max]`.  In the best-velocity
+configuration `v_max ≈ 3.136 m/s`.  The solver unwraps aliases in-loop:
+`k = round(−r / (2·v_max))`.  An IMU-aided pre-unwrapping pass also runs before
+the solver (see RESEARCH_NOTES.md §2).
+
+---
+
+## 6. Summary: What We Measure vs. What We Estimate
+
+| Quantity | Type | Derived from |
+|----------|------|--------------|
+| `p_w(t)` | **State** | Position B-spline control points |
+| `v_w(t)` | **State** | Position B-spline 1st derivative |
+| `a_w(t)` | **State** | Position B-spline 2nd derivative |
+| `R(t)`   | **State** | Cumulative SO(3) B-spline (Ω_j knots) |
+| `ω_b(t)` | **State** | Analytical derivative of SO(3) spline (§2.3) |
+| `b_a`    | **State** | Optimization variable |
+| `b_g`    | **State** | Optimization variable |
+| `z_a`    | **Measurement** | IMU accelerometer ~993 Hz |
+| `z_g`    | **Measurement** | IMU gyroscope ~993 Hz |
+| `v_D`    | **Measurement** | Radar Doppler ~11 Hz per point |
+
+---
+
+## 7. ROS Topics
+
 | Topic | Description |
-| :--- | :--- |
-| `/angrybird2/agiros_pilot/state` | Kalman-smoothed MoCap data. Pose is accurate; used for nominal orientation $\mathbf{R}_{nom}$. Angular velocity is body-frame Kalman-filtered (confirmed, NOT world-frame). |
-| `/angrybird2/imu` | Raw IMU data from the **drone's own Pixhawk IMU** (accelerometer + gyroscope). This is NOT the radar board IMU — the sensor is at the drone center, so `R_bs` does NOT apply to IMU data. |
-| `/mmWaveDataHdl/RScanVelocity` | Raw Radar Data. The radar is mounted **upside-down** (180° roll) and tilted 30° downward from horizontal. `ROTATION_EULER_DEG = [180, 30, 0]`. Translation: `[0.08, 0.02, -0.01]` m in body frame (8 cm forward, 2 cm left, 1 cm down). |
+|-------|-------------|
+| `/angrybird2/imu` | Raw IMU (accelerometer + gyroscope) from Pixhawk |
+| `/mmWaveDataHdl/RScanVelocity` | Radar point cloud (x, y, z, velocity, intensity, …) |
+| `/angrybird2/agiros_pilot/state` | MoCap-derived state — used only for RMSE evaluation |
+
+---
+
+## 8. References
+
+- Sommer et al., "Why and How to Avoid the Flipped Quaternion Multiplication" (2020)
+- Hug et al., "Continuous-Time Radar-Inertial and Lidar-Inertial Odometry" (2022)
+- Usenko et al., "Visual-Inertial Mapping with Non-Linear Factor Recovery" (basalt, 2020)
+- Furgale et al., "Unified Temporal and Spatial Calibration for Multi-Sensor Systems" (2013)

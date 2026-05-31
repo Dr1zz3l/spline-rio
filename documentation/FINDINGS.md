@@ -1,27 +1,45 @@
 # Physics Validation & Calibration Findings
 
-**Date:** 2025-02-18 (last updated 2026-03-16)
-**Script:** `analysis/validate_physics.py`, `analysis/validate_nonlinear_solver.py`, `analysis/diagnose_gyro.py`, `analysis/diagnostics/diagnose_doppler_sign.py`
-**Status:** Active investigation
+**Date:** 2025-02-18 (last updated 2026-05-31)
+**Script:** `analysis/validate_physics.py`, `analysis/validate_nonlinear_solver.py`, `analysis/diagnostics/diagnose_gyro.py`, `analysis/diagnostics/diagnose_doppler_sign.py`
+**Status:** Foundational calibration findings; kept as reference
+
+> **Scope note:** This document records the foundational physical/calibration
+> discoveries (body-frame convention, time offsets, Doppler sign, extrinsics).
+> Current RMSE results, hyperparameters, and solver config live in `CLAUDE.md`.
+> §6 and §12 describe experiments run in the **older MoCap-initialized batch
+> pipeline**; the current live solver is MoCap-free (P1–P3 sensor-only init).
 
 ---
 
 ## 1. Sensor Extrinsic Calibration (UPDATED: 180° ROLL MOUNT)
 
 ### Physical Mounting
-User confirmed: radar mounted **upside-down** (180° roll) looking forward, 3D-printed adapter creates 30° **downward** tilt.
+User confirmed: radar mounted **upside-down** (180° roll) looking forward, 3D-printed adapter creates ~30° **downward** tilt.
 
-`ROTATION_EULER_DEG = [180, +30, 0]` (roll, pitch, yaw). This is `R_x(180°) · R_y(+30°)`.
+Physical mount: `[180, +30, 0]` (roll, pitch, yaw) = `Rx(180°)·Ry(+30°)`.
+
+**Solver-calibrated value:** pitch self-calibrates to **25.5°** (single source of
+truth: `analysis/config/extrinsics.yaml`).  Racing bags consistently converge to
+27–28° from either 25.5° or 30° init when extrinsic pitch is optimized.
+For current solver use, always load from `extrinsics.yaml`.
 
 The previous value of `[0, +30, 0]` was incorrect — it did not account for the upside-down mounting. The 180° roll was discovered through radar boresight analysis.
 
 ### Extrinsic Accuracy
-- **Pitch (30°):** From a 3D-printed mount, not precisely calibrated. Could be ±2°.
+- **Pitch (25.5° config / ~30° physical):** 3D-printed mount introduces ±2° uncertainty;
+  solver online pitch optimization absorbs this.  Only pitch is observable from Doppler;
+  roll and yaw are locked (`optimize_pitch_only: true`).
 - **Translation ([0.08, 0.02, -0.01]):** 8 cm forward, 2 cm left, 1 cm down in body frame. Updated from eyeballed 7 cm forward estimate.
-- **Impact of errors:** A 2° pitch error causes ~0.05 m/s systematic Doppler error. Translation errors are invisible at current Doppler resolution (0.63 m/s bins). Future calibration with MoCap ground truth is planned.
+- **Impact of errors:** A 2° pitch error causes ~0.05 m/s systematic Doppler error.
+  Translation errors (lever arm) are significant at high angular rates — added to
+  `RadarDopplerFunctor` in Phase 4b.
 
 ### Current Status
-**Use `[180, +30, 0]`** for normal bags. For flipped bags, additionally apply `R_z(180°)` (see Section 11).
+**Use `analysis/config/extrinsics.yaml` as single source of truth.**
+Solver-calibrated pitch 25.5° is the baseline; the batch optimizer moves it to
+27–28° when extrinsic optimization is enabled.  For flipped bags, additionally
+apply `Rz(180°)` (see Section 11).
 
 ---
 
@@ -42,15 +60,20 @@ The previous value of `[0, +30, 0]` was incorrect — it did not account for the
 ### Method
 Cross-correlation between MoCap-derived angular velocity and IMU gyroscope readings, sweeping lag from -200ms to +200ms.
 
-### Results
-Consistent across all tested bags:
-- **Offset: +20 ms** applied to IMU/radar timestamps (they lag MoCap by ~20ms)
+### Results (historical — empirically retuned since)
+Cross-correlation originally identified:
+- **Offset: +20 ms** applied to IMU/radar timestamps (they lag MoCap by ~20 ms)
 - Gyro RMSE improves: 0.18 → 0.069 rad/s (original bag), 0.42 → 0.33 rad/s (backflips)
-- Per-axis breakdown: X=-20ms, Y=-25ms, Z=-20ms (median=-20ms)
+- Per-axis breakdown: X=−20 ms, Y=−25 ms, Z=−20 ms (median=−20 ms)
 
-**Convention:** `IMU_MOCAP_OFFSET = +0.020` means we ADD 20ms to IMU/radar timestamps to align them with MoCap timestamps. Equivalently, IMU timestamps are 20ms behind MoCap.
+**Current values** (see `analysis/config/extrinsics.yaml` — single source of truth):
+- `imu_mocap_offset_sec: 0.0150` (IMU clock behind MoCap by 15 ms)
+- `radar_imu_offset_sec: 0.1350` (radar processing latency behind IMU)
 
-**Action:** Applied in solver: `IMU_MOCAP_OFFSET = +0.020` shifts IMU and radar timestamps forward before fusion.
+**Convention:** positive `imu_mocap_offset_sec` means we ADD this to IMU timestamps
+before MoCap interpolation (IMU is behind MoCap).  Radar total offset =
+`imu_mocap_offset - radar_imu_offset = 0.015 − 0.135 = −0.120 s`
+(radar data arrives ~120 ms late relative to MoCap).
 
 ---
 
@@ -215,8 +238,13 @@ Earlier investigation found that `validate_physics.py` correlation improved with
 
 ## 12. Nonlinear Solver — Preconditioning & Damping Experiments (2026-02-19)
 
+> **Pipeline note:** These experiments were run on the **older Python batch solver**
+> with MoCap SLERP initialization and tangent-space perturbation `δ(t)` around the
+> nominal.  The current C++ Ceres solver with cumulative SO(3) B-spline was not yet
+> implemented.  Findings motivated the switch; see `RESEARCH_NOTES.md §7` for details.
+
 ### Context
-Phase 3 nonlinear solver on **backflips** bag (30s offset, 5s window, DT_ORI=0.1s).
+Phase 3 Python solver on **backflips** bag (30 s offset, 5 s window, DT_ORI=0.1 s).
 Biases locked to zero. Orientation initialized from MoCap SLERP, position from Phase 2 linear solver.
 288 state variables: 117 position + 165 orientation + 6 biases (locked).
 
