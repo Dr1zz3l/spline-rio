@@ -151,6 +151,15 @@ principle to continuous-time B-spline control points and document
 the practical challenges of prior scaling when information asymmetry
 spans ten orders of magnitude.
 
+Hug et al.~\cite{hug2022continuous} is the most closely related work,
+applying a continuous-time sliding-window estimator with Schur
+complement marginalization to a 2D FMCW radar; our system extends this
+to 3D and adds sensor-only initialization and online extrinsic pitch
+self-calibration.  Direct numerical comparison to Doer et
+al.~\cite{doer2021ekf} and Kramer et al.~\cite{kramer2020rve} is not
+possible: those systems use different radar hardware (76\,GHz
+automotive), firmware configurations, and datasets.
+
 %==================================================================
 \section{System Overview}
 \label{sec:overview}
@@ -272,12 +281,16 @@ predicted Doppler for a point at sensor-frame bearing $\vu_s$ is:
   \right),
   \label{eq:doppler}
 \end{equation}
-where $\vu_b = \vR_{bs}\,\vu_s$ and
+where $\vu_b = \vR_{bs}\,\vu_s$, $\vR_{bs}$ is the rotation from
+radar sensor to body frame (extrinsic $[\text{roll}{=}180\degree,\,
+\text{pitch}{=}25.5\degree,\,\text{yaw}{=}0\degree]$), and
 $\vR_{bw} = \vR_{wb}^{\top}$.  The residual
 $r_k = v_{D,\text{meas}} - v_{D,\text{pred}}$ uses Huber
-loss with $\delta = 1.0$\,m/s (above the 0.049\,m/s quantization
-step and sufficient to handle the $\pm0.5$--\SI{0.65}{\metre\per\second}
-systematic z-velocity bias from limited elevation diversity).
+loss with $\delta = 1.0$\,m/s, chosen to accommodate the
+$\pm0.5$--\SI{0.65}{\metre\per\second} systematic z-velocity bias from
+limited elevation diversity (2\,TX antennas); the
+\SI{0.049}{\metre\per\second} Doppler resolution sets a lower bound but
+does not drive the choice.
 
 \textbf{Accelerometer.}
 \begin{equation}
@@ -294,11 +307,14 @@ weighted $\lambda_a = 0.01$.
 weighted $\lambda_g = 4.0$ (L2 loss).
 
 \textbf{Gravity direction.}
-A Mahony-style tilt factor $\mathbf{r}_{\text{tilt}} =
-\mathrm{normalize}(\vz_a{-}\vb_a) - \vR_{bw}^{\top}\hat{\vg}$
-is active only when $\|\vz_a{-}\vb_a\|$ is within
-3\,m/s$^2$ of $g$, providing roll/pitch anchoring during
-near-hover phases without contaminating dynamic flight.
+\begin{equation}
+  \mathbf{r}_{\mathrm{tilt}} =
+    \frac{\vz_a - \vb_a}{\|\vz_a - \vb_a\|} - \vR_{bw}^{\top}\hat{\vg},
+  \label{eq:tilt}
+\end{equation}
+active when $\bigl|\,\|\vz_a{-}\vb_a\| - g\,\bigr| < 3\,\mathrm{m/s}^2$.
+This provides roll/pitch anchoring during near-hover phases without
+contaminating dynamic flight.
 
 \textbf{Heading prior.}
 Yaw is unobservable from Doppler alone (all yaw-equivalent
@@ -404,6 +420,12 @@ $\lambda_{\text{bnd}} = 1000$ for position and velocity.
   \node[green!55!black, anchor=west] at (2.9, -0.65) {boundary state};
   \node[green!55!black, anchor=west, font=\footnotesize] at (2.9, -1.00) {30-dim prior};
 
+  % Prior propagation: boundary CPs feed the next window
+  \draw[-{Latex[length=2mm]}, green!55!black, thick]
+    (4.2, -1.30) to[out=0, in=180] (5.5, -1.30);
+  \node[green!55!black, font=\footnotesize, anchor=west] at (5.55, -1.30)
+    {prior $\to w{+}1$};
+
 \end{tikzpicture}%
 }% end scalebox
 \caption{Sliding window: red CPs (stride zone) are marginalized
@@ -469,8 +491,10 @@ Backflips\textsuperscript{*} & 18.1 & $\sim$4.3 (95\%) & $\sim$10.9 (95\%) & 181
 \end{table}
 
 \textbf{IMU rate:} $\sim$993\,Hz (full rate, no downsampling for C++ solver).
-\textbf{Evaluation:} SE3 alignment (constant rotation + translation)
-to MoCap ground truth.  The final 3\,s is trimmed.
+\textbf{Evaluation:} SE3 alignment (rigid body, no scale) to MoCap ground
+truth.  The final 3\,s is trimmed.  Velocity RMSE is computed from the
+analytical first derivative of the position B-spline, not from finite
+differences of the estimated trajectory.
 For sliding window, \emph{live (leading-edge)} RMSE is computed by
 snapshotting the estimate at $[t_\text{end}{-}\text{stride},\, t_\text{end}]$
 of each window at 50\,Hz before any subsequent refinement.  The
@@ -516,7 +540,8 @@ at 25.5\degree\ or 30\degree.
 Table~\ref{tab:sw} reports sliding window results
 (3\,s window, 0.3\,s stride, Schur marginalization).
 Figures~\ref{fig:traj_slow} and~\ref{fig:traj_fast} show
-trajectory overlays for both bags.
+trajectory overlays for both bags; Fig.~\ref{fig:error_time} shows
+the corresponding error timeseries.
 
 \begin{table}[t]
 \centering
@@ -567,6 +592,16 @@ desktop CPU (no embedded optimization).
   \label{fig:traj_fast}
 \end{figure}
 
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/error_over_time.pdf}
+  \caption{Position and velocity error norm vs.\ time for slow racing
+    (top) and fast racing (bottom).  Batch estimate (red dashed) and
+    SW live edge (orange dotted).  Fast racing errors accumulate
+    primarily during the high-speed sections visible as error spikes.}
+  \label{fig:error_time}
+\end{figure}
+
 \subsection{Radar Contribution}
 Table~\ref{tab:ablation_radar} isolates the radar contribution by
 running the same sliding window with \texttt{-{}-no-radar}.
@@ -610,29 +645,43 @@ Table~\ref{tab:ablations} summarizes key design choices.
 \toprule
 Configuration & Pos (m) & Ori (\degree) \\
 \midrule
-\multicolumn{3}{l}{\textit{IMU rate (slow\_racing batch)}} \\
+\multicolumn{3}{l}{\textit{IMU rate (slow\_racing batch, no lever arm\textsuperscript{\dag})}} \\
 \quad 200\,Hz & 0.358 & 3.32 \\
 \quad \textbf{1000\,Hz (default)} & \textbf{0.147} & \textbf{0.96} \\
+\midrule
+\multicolumn{3}{l}{\textit{Lever-arm correction $\boldsymbol{\omega}{\times}\mathbf{t}_{bs}$ (batch)}} \\
+\quad No correction --- slow racing   & 0.146 & 0.96 \\
+\quad\quad\quad\quad\quad\ --- fast racing   & 0.925 & 2.35 \\
+\quad\quad\quad\quad\quad\ --- backflips     & 2.93  & 10.7 \\
+\quad \textbf{With correction --- slow}     & \textbf{0.174}  & \textbf{1.08} \\
+\quad\quad\quad\quad\quad\quad\ \textbf{--- fast}     & \textbf{0.758}  & \textbf{2.58} \\
+\quad\quad\quad\quad\quad\quad\ \textbf{--- backflips} & \textbf{1.817} & \textbf{8.31} \\
+\midrule
+\multicolumn{3}{l}{\textit{IMU preintegration vs.\ raw factors (slow\_racing batch)}} \\
+\quad Forster TRO-2017 preint.\ at 100\,Hz & --- & 6.0 \\
+\quad \textbf{Raw gyro/accel at 1\,kHz (default)} & \textbf{0.147} & \textbf{0.96} \\
 \midrule
 \multicolumn{3}{l}{\textit{Orientation regularization (backflips batch)}} \\
 \quad Min-$\omega$ ($\lambda_{\omega}{=}0.001$) & 2.1 & 9.2 \\
 \quad \textbf{Min-$\alpha$, $\lambda_\alpha{=}0.1$ (default)} & \textbf{1.817} & \textbf{8.31} \\
 \quad Min-$\alpha$, $\lambda_\alpha{=}1.0$ & --- & 44.2 \\
 \midrule
-\multicolumn{3}{l}{\textit{SW window duration (slow\_racing SW, settled pos)}} \\
+\multicolumn{3}{l}{\textit{SW window duration (slow\_racing SW, settled)}} \\
 \quad 1.5\,s & 1.000 & 1.34 \\
 \quad \textbf{3.0\,s (default)} & \textbf{0.217} & \textbf{1.57} \\
 \quad 5.0\,s & 0.262 & 1.15 \\
 \midrule
-\multicolumn{3}{l}{\textit{Marginalization (slow\_racing SW)}} \\
-\quad None (Phase 4a, boundary prior only) & 0.358 & 1.34 \\
-\quad \textbf{Schur complement (Phase 4b)} & \textbf{0.217} & \textbf{1.57} \\
+\multicolumn{3}{l}{\textit{Marginalization (slow\_racing SW, settled)}} \\
+\quad None (boundary prior only) & 0.358 & 1.34 \\
+\quad \textbf{Schur complement (default)} & \textbf{0.217} & \textbf{1.57} \\
 \midrule
 \multicolumn{3}{l}{\textit{Extrinsic optimization (slow\_racing batch)}} \\
 \quad Free roll+yaw+pitch & 0.17 & 8.7 \\
 \quad \textbf{Pitch only (default)} & \textbf{0.174} & \textbf{1.08} \\
 \quad Locked & 0.176 & 1.12 \\
 \bottomrule
+\multicolumn{3}{l}{\textsuperscript{\dag}Lever arm disabled for isolation; see Lever-arm rows}\\
+\multicolumn{3}{l}{for the current default (0.174\,m/1.08\degree).}\\
 \end{tabular}
 \end{table}
 
@@ -676,22 +725,27 @@ happens to work for the batch problem.
 \subsection{Prior Scaling Has No Universal Optimum}
 \label{sec:prior_scale}
 Table~\ref{tab:prior_scale} shows the effect of
-\texttt{marg\_prior\_scale} on live-edge orientation RMSE.
+\texttt{marg\_prior\_scale} on live-edge RMSE; Fig.~\ref{fig:prior_scale}
+plots the orientation sweep.
 
 \begin{table}[t]
 \centering
-\caption{Prior Scale Sensitivity (SW, live-edge orientation RMSE)}
+\caption{Prior Scale Sensitivity (SW, live-edge RMSE)}
 \label{tab:prior_scale}
 \small
-\begin{tabular}{@{}lcc@{}}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}lcccc@{}}
 \toprule
-\texttt{marg\_prior\_scale} & Slow (Ori \degree) & Fast (Ori \degree) \\
+\texttt{scale} & \multicolumn{2}{c}{Slow racing} & \multicolumn{2}{c}{Fast racing} \\
+ & Pos (m) & Ori (\degree) & Pos (m) & Ori (\degree) \\
 \midrule
-$2{\times}10^{-4}$ & 2.28 & \textbf{4.16} \\
-$10^{-6}$ & 2.39 & --- \\
-$\bm{10^{-7}}$ \textbf{(slow default)} & \textbf{2.21} & 4.57 \\
-$10^{-8}$ & 2.20 & --- \\
+$2{\times}10^{-4}$                       & 0.623 & 2.28 & \textbf{0.877} & \textbf{4.16} \\
+$10^{-5}$                                & ---   & ---  & 0.940 & 4.09 \\
+$10^{-6}$ \textit{(harmful)}             & 0.513 & 2.39$^*$ & --- & --- \\
+$\bm{10^{-7}}$ \textbf{(slow default)}  & \textbf{0.383} & \textbf{2.21} & --- & 4.57 \\
+$10^{-8}$                                & 0.381 & 2.20 & --- & --- \\
 \bottomrule
+\multicolumn{5}{l}{$^*$Harmful regime: worse than $10^{-4}$ \emph{and} $10^{-7}$ (see text).}
 \end{tabular}
 \end{table}
 
@@ -701,7 +755,8 @@ inter-window coupling is harmful.  Fast racing needs the prior
 ($2{\times}10^{-4}$) for inter-window position continuity.
 A harmful intermediate regime at $10^{-5}$--$10^{-6}$ partially
 constrains without providing useful continuity, giving results
-\emph{worse} than either extreme.
+\emph{worse} than either extreme (e.g., slow racing at $10^{-6}$:
+0.513\,m vs.\ 0.383\,m at $10^{-7}$).
 
 The information asymmetry in $S$ (orientation eigenvalues
 $\sim$$5.5{\times}10^{14}$, position $\sim$$10^4$, condition
@@ -720,6 +775,17 @@ gating down-weights the bag that \emph{needs} the prior most.
 mission-type parameter (slow/gentle: $\sim$$10^{-7}$;
 fast/aggressive: $\sim$$2{\times}10^{-4}$), not a per-flight tuning
 knob.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/prior_scale_sensitivity.pdf}
+  \caption{Live-edge orientation RMSE vs.\ \texttt{marg\_prior\_scale}
+    for slow and fast racing.  The harmful intermediate regime
+    ($10^{-5}$--$10^{-6}$) is worse than both extremes for slow racing.
+    No single scale beats per-mission-type tuning on both bags
+    simultaneously.}
+  \label{fig:prior_scale}
+\end{figure}
 
 \subsection{Other Negative Results}
 \label{sec:negative}

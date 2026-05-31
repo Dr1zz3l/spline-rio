@@ -32,6 +32,7 @@ rosbags/
 # C++ build artifacts
 rio_solver_cpp/build_release/
 rio_solver_cpp/build_debug/
+build/
 
 # Compiled Python extensions (pybind11)
 *.so
@@ -41,6 +42,9 @@ rio_solver_cpp/build_debug/
 
 # Generated plot outputs
 plots/
+
+# Generated figure PDFs (outputs, not source)
+report/figures/*.pdf
 
 # LaTeX build artifacts
 report/*.pdf

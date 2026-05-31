@@ -69,10 +69,10 @@ for bag_key, mocap_tag in BAGS:
 
     fig, axes = plt.subplots(1, 2, figsize=(9, 4.2))
 
-    for ax, (xi, yi, xlabel, ylabel, title) in zip(axes, [
+    for i, (ax, (xi, yi, xlabel, ylabel, title)) in enumerate(zip(axes, [
         (0, 1, 'X (m)', 'Y (m)', 'X–Y plane'),
         (1, 2, 'Y (m)', 'Z (m)', 'Y–Z plane'),
-    ]):
+    ])):
         ax.plot(gt[:, xi],      gt[:, yi],      color=C_MOCAP, lw=2.0,
                 linestyle='-',  label='MoCap',          zorder=3)
         ax.plot(settled[:, xi], settled[:, yi], color=C_BATCH, lw=1.6,
@@ -80,12 +80,17 @@ for bag_key, mocap_tag in BAGS:
         if live is not None:
             ax.plot(live[:, xi], live[:, yi],   color=C_LIVE,  lw=1.4,
                     linestyle=':', alpha=0.9, label='SW live edge', zorder=4)
-        # start markers
+        # start markers for all three traces
         ax.plot(gt[0, xi],      gt[0, yi],      'bs', markersize=7, zorder=5)
         ax.plot(settled[0, xi], settled[0, yi], 'rs', markersize=7, zorder=5)
+        if live is not None:
+            ax.plot(live[0, xi], live[0, yi],   color=C_LIVE, marker='s',
+                    markersize=7, linestyle='none', zorder=5)
         ax.set_xlabel(xlabel); ax.set_ylabel(ylabel)
         ax.set_title(title)
-        ax.legend(loc='best')
+        # legend only on the first panel
+        if i == 0:
+            ax.legend(loc='best')
         ax.grid(True, alpha=0.3)
         ax.set_aspect('equal')
 

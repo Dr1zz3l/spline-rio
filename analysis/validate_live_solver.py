@@ -2012,9 +2012,23 @@ def main():
             _arr_dir   = Path(__file__).parent.parent / 'plots' / bag_key / 'live_solver'
             _arr_dir.mkdir(parents=True, exist_ok=True)
             _arr_out   = _arr_dir / f'traj_arrays_{bag_key}{_mocap_tag}{_sw_tag}.npz'
-            _save_dict = dict(mocap=mocap_pos_eval, settled=estimated_positions_aligned)
+            _save_dict = dict(
+                mocap          = mocap_pos_eval,
+                settled        = estimated_positions_aligned,
+                mocap_vel      = mocap_velocities,
+                settled_vel    = estimated_velocities_aligned,
+                pos_errors     = pos_errors,
+                vel_errors     = vel_errors,
+                rot_errors     = rot_errors,
+                t_rel          = eval_times - eval_times[0],
+            )
             if live_pos_aligned_plot is not None:
-                _save_dict['live'] = live_pos_aligned_plot
+                _save_dict['live']          = live_pos_aligned_plot
+                _save_dict['live_vel']      = live_vel_aligned_plot
+                _save_dict['live_pos_errs'] = live_pos_errs_plot
+                _save_dict['live_vel_errs'] = live_vel_errs_plot
+                _save_dict['live_rot_errs'] = live_rot_errs_plot
+                _save_dict['live_t_rel']    = live_time_rel_plot
             np.savez(_arr_out, **_save_dict)
             print(f"  Saved arrays: {_arr_out}")
 
