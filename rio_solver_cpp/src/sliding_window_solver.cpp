@@ -167,6 +167,17 @@ SolverResult SlidingWindowSolver::solve_window(
         if (ori0 < oi0 || ori0 + N_ORI - 1 > oi1) continue;
         if (pos0 < pi0 || pos0 + N_POS - 1 > pi1) continue;
 
+        // ω-gate: skip this frame if body angular rate exceeds threshold.
+        if (cfg_.omega_gate_threshold > 0.0) {
+            const double* kp[N_ORI];
+            for (int k = 0; k < N_ORI; ++k) kp[k] = traj_.ori_knot_data(ori0 + k);
+            Sophus::SO3d dummy_R;
+            Eigen::Vector3d omega;
+            CeresSplineHelper<N_ORI>::template evaluate_lie<double, Sophus::SO3>(
+                kp, u_ori, inv_dt_ori, &dummy_R, &omega, nullptr);
+            if (omega.norm() > cfg_.omega_gate_threshold) continue;
+        }
+
         for (const auto& pt : frame.points) {
             double range = std::sqrt(pt.x*pt.x + pt.y*pt.y + pt.z*pt.z);
             if (range < cfg_.min_range) continue;

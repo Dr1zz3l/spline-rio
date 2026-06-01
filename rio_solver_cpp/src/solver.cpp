@@ -135,6 +135,19 @@ SolverResult solve(
         int pos0;
         if (!traj.pos_index(frame.timestamp, u_pos, pos0)) continue;
 
+        // ω-gate: skip this frame if body angular rate exceeds threshold.
+        // Evaluated from the current spline state (not inside the functor),
+        // so this is a fixed gate at problem-build time.
+        if (cfg.omega_gate_threshold > 0.0) {
+            const double* kp[N_ORI];
+            for (int i = 0; i < N_ORI; ++i) kp[i] = traj.ori_knot_data(ori0 + i);
+            Sophus::SO3d dummy_R;
+            Eigen::Vector3d omega;
+            CeresSplineHelper<N_ORI>::template evaluate_lie<double, Sophus::SO3>(
+                kp, u_ori, inv_dt_ori, &dummy_R, &omega, nullptr);
+            if (omega.norm() > cfg.omega_gate_threshold) continue;
+        }
+
         for (const auto& pt : frame.points) {
             // Range filter
             double range = std::sqrt(pt.x*pt.x + pt.y*pt.y + pt.z*pt.z);

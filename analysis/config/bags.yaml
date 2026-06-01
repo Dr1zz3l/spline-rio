@@ -19,12 +19,12 @@ solver_overrides:
                                # cliff at 1e-6 (harmful regime) vs 1e-7 (free adaptation, best live)
                                # tradeoff: settled vel 0.154→0.904 m/s (eval artifact, not deployment issue)
   backflips_best_velocity:
-    dt_ori: 0.0008       # 10x denser: needed to represent rapid angular acceleration of backflip
+    dt_ori: 0.0008       # 10x denser: needed for batch convergence at fine scale; SW solver stays near P1-P3 init
     dt_pos: 0.010        # coarser position: compensates for increased solve time from dense ori knots
     lock_extrinsics: 1   # extrinsic pitch drifts on backflips (orientation model error acts as surrogate)
     lock_gyro_bias: 1    # E1: post-solve gyro clamp; rank-deficient windows let bias run away to >1 rad/s
     lambda_heading: 10.0 # E2: stronger pseudo-magnetometer; absolute yaw anchor through the flip
-    marg_prior_scale: 0.0  # E3: disable marg prior; S is rank-deficient (375 ori knots vs ~300 gyro in stride zone)
+    marg_prior_scale: 0.0  # E3: disable marg prior; S is rank-deficient (stride zone: 375 ori knots vs ~300 gyro)
 
 radar_config:
   default:

@@ -104,6 +104,15 @@ struct SolverConfig {
     // dt_ori=0.0008 where orientation DoF exceed gyro constraints per window).
     bool lock_gyro_bias{false};
 
+    // ω-gated radar: skip radar frames when |ω_body| exceeds this threshold (rad/s).
+    // During rapid maneuvers (backflips, ~10 rad/s peak), even a small orientation
+    // spline error creates a large Doppler residual via the lever-arm term (ω × r).
+    // Dropping radar at those instants lets accel+gyro carry position through the
+    // flip without corruption from bad radar projections.
+    // Gate is evaluated from the initial spline at problem-build time (not per-iteration).
+    // 0.0 (default): disabled. Suggested starting point for backflips: 5.0 rad/s.
+    double omega_gate_threshold{0.0};
+
     // Optimizer
     int max_iterations{40};
 

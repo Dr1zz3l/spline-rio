@@ -537,33 +537,59 @@ At 100 Hz (dt_ori=0.01s): model bandwidth insufficient — same bad results as d
 At 1250 Hz (dt_ori=0.0008s): dt_preint=0.0008 < IMU period=0.001 → degenerate factors
 
 **Backflips sliding window**: Phase 1 (bias anchor fix) moved settled from 2.37m/57.5° to
-1.89m/42.0° and eliminated gyro bias runaway. Phase 2 (ω-gated radar + dt_ori=0.008) is
-next — see "Phase 2 / Phase 2.5" section below.
+1.89m/42.0° and eliminated gyro bias runaway.
 
 **If enabling preint in the future**, start with `lambda_preint_v=0, lambda_preint_p=0` (r_R only).
 r_v residuals are ~0.1 m/s at init (P1-P3 velocity ≠ IMU-integrated velocity) and corrupt
 orientation through ∂r_v/∂R_i if enabled before the optimizer has converged.
 
-### Phase 2: backflips SW via dt_ori=0.008 (planned)
+### Phase 2: ω-gated radar — implemented, batch-only benefit
 
-**Goal**: reach batch quality (1.82m/8.31°) in SW by switching backflips to `dt_ori=0.008`,
-which gives 8:1 overconstrained per-window (healthy rank). The dt_ori sweep showed ori is
-~8° at both 0.008 and 0.0008; only **position** degrades at 0.008 (3.37m vs 1.81m).
+**ω-gate implementation** (shipped): `omega_gate_threshold` in `SolverConfig` (default 0.0 = disabled).
+In both `solver.cpp` and `sliding_window_solver.cpp`, radar frames where the body angular rate
+`|ω_body|` exceeds the threshold are skipped at problem-build time. Gate is evaluated from the
+initial spline (pre-computed, not inside AutoDiff). Python loading wired in `validate_live_solver.py`.
 
-Root cause of pos degradation at dt_ori=0.008: brief peak orientation error during the flip
-corrupts the Doppler velocity projection → integrated position drift. When `|ω_body|` is
-large (the flip peak, ~10 rad/s), even a small orientation error in the spline creates a
-large Doppler residual that misguides the position solver.
+**Batch result at dt_ori=0.008**: The ω-gate + `lambda_ori_accel` sweep found that
+`dt_ori=0.008 + lambda_ori_accel=0.001 + omega_gate=4.0 rad/s` achieves **1.904m/6.98°** batch —
+close to the dt_ori=0.0008 result (1.82m/8.31°). Better orientation because coarser knots + weak
+regularizer fit orientation more smoothly without overfitting gyro noise.
 
-**Planned fix — ω-gated Huber on radar**: skip or heavily down-weight radar points when
-`|ω_body| > threshold` (~5 rad/s, to be swept). During the flip peak the lever-arm
-correction `ω × r` is large and sensitive to orientation error; suppressing radar at that
-instant lets accel/gyro carry position through the flip without the corrupting radar signal.
-Implementation: add `omega_gate_threshold` to `SolverConfig`; in `RadarDopplerFunctor`
-compute `|omega_body|` and apply a HuberLoss scale-down or skip the residual.
+Key finding from lambda_ori_accel sweep at dt_ori=0.008 (batch, no gate):
 
-Target: batch pos < 2m at `dt_ori=0.008` → SW windows become 8:1 overconstrained → full-rank
-Schur complement → healthy marginalization → SW reaches batch quality.
+| lambda_ori_accel | pos RMSE | ori RMSE | notes |
+|---|---|---|---|
+| 0.1 (default) | 3.67m | 7.49° | too tight at coarser dt |
+| 0.01 | **1.98m** | 7.60° | just under 2m |
+| 0.001 | 2.00m | 7.64° | |
+| 0.0 (none) | 2.21m | 7.57° | no regularizer |
+
+With gate=4.0 at lambda_ori_accel=0.001: **1.904m/6.98°** (best combination).
+
+**Why ω-gate doesn't help SW**: The batch "improvement" at dt_ori=0.008 is actually harmful in SW.
+At dt_ori=0.0008 (Phase 1 config), the SW solver is essentially FROZEN near the P1-P3 MoCap
+initialization — the rank-deficient Jacobian (iter=2 due to H_aa singular) prevents the solver
+from moving away from the accurate MoCap-derived warm-start. This is why SW Phase 1 gives 1.89m:
+the P1-P3 trajectory IS the solution.
+
+At dt_ori=0.008 (Phase 2 attempt), the Jacobian is well-conditioned (8:1 overconstrained) and
+the solver ACTUALLY OPTIMIZES in 2 iterations (converges, not stuck). This moves the trajectory
+away from the P1-P3 initialization to a worse local optimum driven by sparse radar + no marg prior.
+Result: **7.20m/10.08° settled** — position catastrophically worse despite improved orientation.
+
+Phase 2 boundary rank analysis:
+- rank=15/30 at dt_ori=0.008 (WORSE than 18/30 at 0.0008)
+- Position boundary (5 pos CPs × 3 DOF = 15 DOF) is underconstrained by radar:
+  the boundary spans the last 50ms of the stride zone (dt_pos=0.010, N_POS=6), which contains
+  0-1 radar frames → rank 3-6/15 for position; orientation is fully constrained (9/9) by gyro
+- rank=15/30 is an INHERENT structural limit, not a function of dt_ori
+
+**Conclusion**: Phase 2 dt_ori=0.008 is NOT the right path for SW improvement. The Phase 1 config
+(dt_ori=0.0008) achieves better SW results because the P1-P3 initialization is the dominant
+contributor — the rank-deficient per-window solver barely changes it. The ω-gate remains
+available as a batch-only tool (e.g., for reduced-compute scenarios at dt_ori=0.008).
+
+The bags.yaml config for backflips retains dt_ori=0.0008 (Phase 1).
 
 ### Phase 2.5: MoCap-aided stationary bias detection (planned)
 
