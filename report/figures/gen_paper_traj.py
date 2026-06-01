@@ -1,9 +1,16 @@
 """
-Generate paper-quality trajectory comparison figures (Figs 3 & 4).
+Generate paper-quality trajectory comparison figures (Figs 3, 4, and backflips).
 
 Uses pre-saved .npz array files produced by:
   validate_live_solver.py <bag> --mocap-yaw --cpp --save-arrays --no-plot
   validate_live_solver.py <bag> --mocap-yaw --cpp --sliding-window --save-arrays --no-plot
+
+  # Backflips batch uses bags.yaml overrides (dt_ori=0.0008, locked extrinsics)
+  validate_live_solver.py backflips_best_velocity --mocap-yaw --cpp --save-arrays --no-plot
+  # Backflips SW uses Phase-3 config
+  validate_live_solver.py backflips_best_velocity --mocap-yaw --cpp --sliding-window \
+    --set dt_ori=0.008 --set lambda_ori_accel=0.001 --set lock_gyro_bias=0 \
+    --set marg_prior_scale=0.0 --set lambda_pos_init_prior=1000.0 --save-arrays --no-plot
 
 Combines:
   - MoCap ground truth  (blue solid)
@@ -26,6 +33,7 @@ from pathlib import Path
 BAGS = [
     ('slow_racing_best_velocity', 'mocap-init_mocap-heading'),
     ('fast_racing_best_velocity', 'mocap-init_mocap-heading'),
+    ('backflips_best_velocity',   'mocap-init_mocap-heading'),
 ]
 
 PLOTS_ROOT = Path(__file__).parent.parent.parent / 'plots'

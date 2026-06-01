@@ -2,6 +2,7 @@
 \IEEEoverridecommandlockouts
 
 \usepackage{cite}
+\usepackage{url}
 \usepackage{amsmath,amssymb,amsfonts}
 \usepackage{algorithmic}
 \usepackage{graphicx}
@@ -39,8 +40,9 @@
 
 \title{Continuous-Time Radar-Inertial Odometry\\with B-Spline Sliding Window Optimization}
 
-\author{\IEEEauthorblockN{Anonymous Authors}
-\IEEEauthorblockA{Submitted for review}}
+\author{\IEEEauthorblockN{Timo Weiss}
+\IEEEauthorblockA{Technical University of Munich (TUM)\\
+timo.weiss@tum.de}}
 
 \maketitle
 
@@ -50,23 +52,25 @@ We present a radar-inertial odometry (RIO) system for 6-DOF state
 estimation on a quadrotor using a 60\,GHz mmWave FMCW radar and
 a 1\,kHz IMU.  The state trajectory is represented in continuous time
 as a quintic position B-spline and a cumulative SO(3) orientation
-B-spline, enabling asynchronous sensor fusion and exact analytical
-derivatives.  Optimization is performed by a fixed-lag smoother with
-Schur complement marginalization, running at a 0.3\,s stride over a
-3\,s sliding window.  A sensor-only initialization pipeline (gyro
-integration for orientation, radar dead-reckoning for position)
-eliminates the need for an external pose reference during
-initialization; a heading reference (here: MoCap yaw) is still
-required because yaw is unobservable from Doppler.  At the
-\emph{live leading edge} (the estimate a deployed system would emit),
-velocity/orientation RMSE is \SI{0.39}{\metre\per\second}/\SI{2.2}{\degree} on gentle
-racing and \SI{0.48}{\metre\per\second}/\SI{4.2}{\degree} on aggressive racing,
-versus \SI{2.01}{\metre\per\second}/\SI{7.6}{\degree} and
-\SI{1.72}{\metre\per\second}/\SI{6.8}{\degree} for IMU-only.  We also document
-failure modes that emerged during development: backflips are solvable
-in batch but cause rank-deficient windows, IMU preintegration
-degrades accuracy at full IMU rate, and prior scaling for
-marginalization has no universal optimum across mission types.
+B-spline, enabling asynchronous sensor fusion and closed-form
+trajectory derivatives.  Optimization is performed by a fixed-lag
+smoother with Schur complement marginalization, running at a 0.3\,s
+stride over a 3\,s sliding window.  A sensor-only initialization
+pipeline (gyro integration for orientation, radar dead-reckoning for
+position) requires no external \emph{pose} reference; an external
+\emph{heading} reference (here: MoCap yaw; a magnetometer or visual
+compass in deployment) is still required throughout, as yaw is
+unobservable from Doppler alone.  At the \emph{live leading edge}
+(the estimate a deployed system would emit), position/orientation
+RMSE is \SI{0.34}{\metre}/\SI{2.1}{\degree} on gentle racing and
+\SI{0.83}{\metre}/\SI{3.6}{\degree} on aggressive racing, reducing
+position error by 87--89\% versus IMU-only.  We also document failure
+modes and their partial resolution: backflips are solvable in batch
+(1.82\,m/8.4\degree) and achievable in sliding-window via a
+position-initialization prior (2.53\,m/10.8\degree\ settled);
+IMU preintegration degrades accuracy at full IMU rate; and prior
+scaling for marginalization has no universal optimum across mission
+types.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -88,7 +92,7 @@ environments.
 
 Combining a mmWave radar with an IMU (RIO) for ego-motion estimation
 has been explored with discrete-time EKF and graph-optimization
-formulations~\cite{doer2021ekf,kramer2020rve}.  However, the
+formulations~\cite{doer2020ekf,kramer2020rve}.  However, the
 asynchronous nature of radar-IMU data (radar at $\sim$11\,Hz, IMU at
 $\sim$1\,kHz) motivates a continuous-time representation where the
 trajectory is a smooth function evaluated at any sensor timestamp
@@ -118,6 +122,24 @@ We contribute the following:
         and negative results.
 \end{itemize}
 
+\textbf{Research objectives.}
+This work investigates (1) whether a continuous-time B-spline
+representation can bridge the asynchronous radar--IMU data rate
+gap without interpolation approximation;
+(2) whether Schur complement marginalization can propagate information
+across sliding-window boundaries efficiently enough for online
+deployment; and (3) what the practical accuracy ceiling of
+radar-inertial-only odometry (with heading reference) is on a
+high-agility quadrotor platform.  The experiments span gentle
+racing, aggressive racing, and backflips, deliberately including
+a regime where the sliding window fails, to bound what the approach
+can and cannot achieve.
+
+\textbf{Data and code.}
+The datasets (Vicon MoCap lab, TI IWR6843AOPEVM, Pixhawk) and the
+C++ Ceres solver with Python bindings used in this work are available
+at \url{https://github.com/Dr1zz3l/radar-iwr6843-driver}.
+
 %==================================================================
 \section{Related Work}
 \label{sec:related}
@@ -128,7 +150,7 @@ demonstrated by Kellner et al.~\cite{kellner2014instantaneous} and
 extended to 3D with weighted least squares by
 Kramer et al.~\cite{kramer2020rve}, whose RVE system fuses radar
 with IMU in a discrete-time EKF.  Doer et
-al.~\cite{doer2021ekf} present an EKF-based RIO with online
+al.~\cite{doer2020ekf} present an EKF-based RIO with online
 extrinsic calibration. Our work uses the same per-frame WLS
 ego-velocity estimator but embeds it in a continuous-time
 batch/sliding-window optimizer.
@@ -156,7 +178,7 @@ applying a continuous-time sliding-window estimator with Schur
 complement marginalization to a 2D FMCW radar; our system extends this
 to 3D and adds sensor-only initialization and online extrinsic pitch
 self-calibration.  Direct numerical comparison to Doer et
-al.~\cite{doer2021ekf} and Kramer et al.~\cite{kramer2020rve} is not
+al.~\cite{doer2020ekf} and Kramer et al.~\cite{kramer2020rve} is not
 possible: those systems use different radar hardware (76\,GHz
 automotive), firmware configurations, and datasets.
 
@@ -255,12 +277,15 @@ formulation~\cite{sommer2020efficient}:
            \prod_{j=k-3}^{k} \Exp\!\bigl(\tilde{B}_j(t)\,\vOm_j\bigr),
   \label{eq:ori_spline}
 \end{equation}
-where $\vOm_j \in \so$ are incremental rotation control points,
+where $k$ is the active knot index for time $t$,
+$\vOm_j \in \so$ are incremental rotation control points
+(using the $\Exp$/$\Log$ map convention of~\cite{sola2018micro}),
 $\tilde{B}_j(t)$ are cumulative cubic basis functions, and
 $\vR_{\mathrm{base}}$ is the left anchor rotation.  Knot spacing
 is $\Delta t_o = 8$\,ms.  Body-frame angular velocity $\vom_b(t)$
-and its analytical expression are obtained directly from
-\texttt{evaluate\_lie()} without numerical differentiation.
+is obtained as a closed-form derivative of~\eqref{eq:ori_spline}
+directly from \texttt{evaluate\_lie()} without numerical
+differentiation.
 
 \textbf{Biases and extrinsics.}
 A constant 6-DoF IMU bias $[\vb_a, \vb_g]$ is estimated jointly.
@@ -348,7 +373,12 @@ was best across all bags (1.0 caused backflip divergence).
 \label{sec:init}
 
 \textbf{P1: Orientation.}
-Initial roll/pitch are derived from the stationary accelerometer
+A stationary segment before flight is detected automatically; the IMU
+biases $[\vb_a, \vb_g]$ are seeded from the gravity residual and mean
+gyroscope reading during this segment (MoCap orientation is used for a
+full 3-D accelerometer bias estimate when available; otherwise a gravity-
+aligned scalar correction is applied).
+Initial roll/pitch are then derived from the stationary accelerometer
 (gravity direction).  Yaw is set to zero (gauge freedom; corrected
 later by the heading prior).  The full orientation trajectory is
 obtained by forward-integrating debiased gyroscope readings:
@@ -478,15 +508,15 @@ evaluation.
 \caption{Dataset Summary}
 \label{tab:datasets}
 \small
-\begin{tabular}{@{}lccccc@{}}
+\begin{tabular}{@{}lcccc@{}}
 \toprule
-Bag & Dur.\ (s) & Max $v$ (m/s) & Max $|\omega|$ (rad/s) & Radar fr. \\
+Bag & Dur.\ (s) & $v_{\max}$ (m/s) & $|\omega|_{\max}$ (rad/s) & Frames \\
 \midrule
 Slow racing & 25.8 & 3.65 & 2.62 & 258 \\
 Fast racing & 18.0 & 5.66 & 9.14 & 179 \\
 Backflips\textsuperscript{*} & 18.1 & $\sim$4.3 (95\%) & $\sim$10.9 (95\%) & 181 \\
 \bottomrule
-\multicolumn{6}{l}{\textsuperscript{*}95th percentile; MoCap tracking artifacts dominate peaks.}
+\multicolumn{5}{l}{\textsuperscript{*}95th percentile; MoCap tracking artifacts dominate peaks.}
 \end{tabular}
 \end{table}
 
@@ -500,6 +530,17 @@ snapshotting the estimate at $[t_\text{end}{-}\text{stride},\, t_\text{end}]$
 of each window at 50\,Hz before any subsequent refinement.  The
 \emph{settled} RMSE evaluates the same trajectory after all windows
 have refined each point.
+
+\textbf{Solver implementation.}
+The Ceres LM problem is solved with \texttt{SPARSE\_NORMAL\_CHOLESKY}
+(SuiteSparse), up to 400 iterations.
+The two highest-frequency IMU factors (gyroscope and accelerometer,
+$\sim$1\,kHz each) use hand-derived analytic Jacobians based on the
+basalt cumulative-spline Jacobian struct; all other factors use Ceres
+automatic differentiation.  Analytic Jacobians reduce Jacobian evaluation
+time by $1.6\times$ ($5.5\,\text{s} \to 3.5\,\text{s}$) with no change
+in RMSE; the linear solve is the remaining bottleneck ($\sim$58\% of
+batch wall time, $\sim$13\,s per trajectory).
 
 %==================================================================
 \section{Results}
@@ -520,16 +561,16 @@ settings).
 \toprule
 Bag & Pos (m) & Vel (m/s) & Ori (\degree) & Time (s) \\
 \midrule
-Slow racing & 0.174 & 0.151 & 1.08 & $\sim$13 \\
-Fast racing & 0.758 & 0.386 & 2.58 & $\sim$10 \\
-Backflips\textsuperscript{\dag} & 1.817 & 1.951 & 8.31 & --- \\
+Slow racing & 0.169 & 0.146 & 1.02 & $\sim$13 \\
+Fast racing & 0.768 & 0.387 & 2.64 & $\sim$10 \\
+Backflips\textsuperscript{\dag} & 1.814 & 1.935 & 8.44 & --- \\
 \bottomrule
 \multicolumn{5}{l}{\textsuperscript{\dag}$\Delta t_o{=}0.8$\,ms, locked extrinsics (see Sec.~\ref{sec:backflips}).}
 \end{tabular}
 \end{table}
 
 The extrinsic pitch self-calibrates from the nominal 25.5\degree\ to
-27.1\degree\ (slow racing) and 27.6\degree\ (fast racing), consistent
+26.4\degree\ (slow racing) and 27.1\degree\ (fast racing), consistent
 with the physical 30\degree\ mount angle.  Racing bags converge to
 the same pitch estimate regardless of whether initialization starts
 at 25.5\degree\ or 30\degree.
@@ -554,27 +595,37 @@ the corresponding error timeseries.
 Bag & Mode & Pos (m) & Vel (m/s) & Ori (\degree) \\
 \midrule
 \multirow{2}{*}{Slow racing}
-  & Settled & 0.217 & 0.887$^\dagger$ & 1.57 \\
-  & \textbf{Live edge} & \textbf{0.393} & \textbf{0.391} & \textbf{2.21} \\
+  & Settled & 0.224 & 0.889$^\dagger$ & 1.57 \\
+  & \textbf{Live edge} & \textbf{0.337} & \textbf{0.388} & \textbf{2.08} \\
 \midrule
 \multirow{2}{*}{Fast racing}
-  & Settled & 0.803 & 0.383 & 3.10 \\
-  & \textbf{Live edge} & \textbf{0.876} & \textbf{0.478} & \textbf{4.16} \\
+  & Settled & 0.727 & 0.379 & 3.20 \\
+  & \textbf{Live edge} & \textbf{0.829} & \textbf{0.487} & \textbf{3.64} \\
+\midrule
+\multirow{2}{*}{Backflips\textsuperscript{$\ddagger$}}
+  & Settled & 2.533 & ---$^*$ & 10.79 \\
+  & \textbf{Live edge} & \textbf{3.319} & \textbf{1.88} & \textbf{9.36} \\
 \bottomrule
-\multicolumn{5}{l}{$^\dagger$Artifact: \texttt{marg\_prior\_scale}$=10^{-7}$ makes windows}\\
-\multicolumn{5}{l}{near-independent; position jumps at stride boundaries in}\\
-\multicolumn{5}{l}{settled eval. Real-time output (live edge) is unaffected.}
+\multicolumn{5}{@{}p{\columnwidth}@{}}{\scriptsize
+  $^\dagger$Prior scale $10^{-7}$ makes windows near-independent;
+  position jumps at stride boundaries inflate settled vel.
+  Live edge unaffected.}\\
+\multicolumn{5}{@{}p{\columnwidth}@{}}{\scriptsize
+  $^\ddagger$Phase-3 SW: $\Delta t_o{=}8$\,ms,
+  $\lambda_{\mathrm{pos\text{-}init}}{=}1000$, scale$=0$;
+  see Sec.~\ref{sec:backflips}.
+  $^*$Scale$=0$ $\Rightarrow$ fully independent windows; same artifact.}
 \end{tabular}
 \end{table}
 
-Live-edge orientation degrades 0.64\degree\ (slow) and 1.06\degree\
+Live-edge orientation degrades 0.51\degree\ (slow) and 0.44\degree\
 (fast) relative to settled; this is expected because subsequent
-windows refine previous estimates.  Velocity degrades more than
-position ($+166\%$ vs.\ $+47\%$ for slow racing): the spline's
-first derivative is more sensitive to the first-pass approximation
-than the integrated position.  Per-window solve time is
-$1.93 \pm 0.49$\,s (slow) and $1.66 \pm 0.51$\,s (fast) on a
-desktop CPU (no embedded optimization).
+windows refine previous estimates.  Live-edge velocity is better
+than settled velocity for slow racing because \texttt{marg\_prior\_scale}$=10^{-7}$
+makes windows near-independent, causing stride-boundary position
+jumps that inflate the settled velocity derivative (the live edge
+is unaffected).  Per-window solve time is below 2\,s on a desktop
+CPU (no embedded optimization).
 
 \begin{figure}[t]
   \centering
@@ -588,17 +639,22 @@ desktop CPU (no embedded optimization).
 \begin{figure}[t]
   \centering
   \includegraphics[width=\columnwidth]{figures/traj_fast_racing_best_velocity.pdf}
-  \caption{fast\_racing: same color convention as Fig.~\ref{fig:traj_slow}.}
+  \caption{fast\_racing: MoCap ground truth (solid blue), batch
+    estimate (dashed red), SW live edge (dotted orange).  X--Y and
+    Y--Z projections; start marked~$\blacksquare$.  Larger deviations
+    reflect higher dynamics ($\omega_{\max} = 9.1$\,rad/s) compared
+    to slow racing.}
   \label{fig:traj_fast}
 \end{figure}
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=\columnwidth]{figures/error_over_time.pdf}
-  \caption{Position and velocity error norm vs.\ time for slow racing
-    (top) and fast racing (bottom).  Batch estimate (red dashed) and
-    SW live edge (orange dotted).  Fast racing errors accumulate
-    primarily during the high-speed sections visible as error spikes.}
+  \caption{Position, velocity, and orientation error vs.\ time for slow
+    racing (top) and fast racing (bottom).  Batch estimate (red dashed)
+    and SW live edge (orange dotted).  Fast racing position error
+    accumulates monotonically with trajectory length; velocity and
+    orientation errors spike at high-speed, high-dynamics sections.}
   \label{fig:error_time}
 \end{figure}
 
@@ -617,20 +673,20 @@ Bag & Sensor & Pos (m) & Vel (m/s) & Ori (\degree) \\
 \midrule
 \multirow{2}{*}{Slow racing}
   & IMU only & 3.061 & 2.014 & 7.55 \\
-  & \textbf{RIO} & \textbf{0.393} & \textbf{0.391} & \textbf{2.21} \\
+  & \textbf{RIO} & \textbf{0.337} & \textbf{0.388} & \textbf{2.08} \\
 \midrule
 \multirow{2}{*}{Fast racing}
   & IMU only & 6.870 & 1.718 & 6.83 \\
-  & \textbf{RIO} & \textbf{0.876} & \textbf{0.478} & \textbf{4.16} \\
+  & \textbf{RIO} & \textbf{0.829} & \textbf{0.487} & \textbf{3.64} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Radar reduces live-edge position error by 87\% on both bags and
-velocity error by 72--81\%.  IMU-only position drifts rapidly via
-double integration; radar Doppler provides continuous velocity
-constraints that bound this drift directly.  Orientation improvement
-is more modest (39--71\%) because the gyroscope already constrains
+Radar reduces live-edge position error by 87--89\% and velocity
+error by 72--81\%.  IMU-only position drifts rapidly via double
+integration; radar Doppler provides continuous velocity constraints
+that bound this drift directly.  Orientation improvement is more
+modest (47--72\%) because the gyroscope already constrains
 orientation strongly at 1\,kHz.
 
 \subsection{Ablation Studies}
@@ -646,44 +702,69 @@ Table~\ref{tab:ablations} summarizes key design choices.
 Configuration & Pos (m) & Ori (\degree) \\
 \midrule
 \multicolumn{3}{l}{\textit{IMU rate (slow\_racing batch, no lever arm\textsuperscript{\dag})}} \\
-\quad 200\,Hz & 0.358 & 3.32 \\
-\quad \textbf{1000\,Hz (default)} & \textbf{0.147} & \textbf{0.96} \\
+\quad 200\,Hz & 0.525 & 1.64 \\
+\quad \textbf{1000\,Hz (default)} & \textbf{0.183} & \textbf{1.02} \\
 \midrule
 \multicolumn{3}{l}{\textit{Lever-arm correction $\boldsymbol{\omega}{\times}\mathbf{t}_{bs}$ (batch)}} \\
-\quad No correction --- slow racing   & 0.146 & 0.96 \\
-\quad\quad\quad\quad\quad\ --- fast racing   & 0.925 & 2.35 \\
-\quad\quad\quad\quad\quad\ --- backflips     & 2.93  & 10.7 \\
-\quad \textbf{With correction --- slow}     & \textbf{0.174}  & \textbf{1.08} \\
-\quad\quad\quad\quad\quad\quad\ \textbf{--- fast}     & \textbf{0.758}  & \textbf{2.58} \\
-\quad\quad\quad\quad\quad\quad\ \textbf{--- backflips} & \textbf{1.817} & \textbf{8.31} \\
+\quad No correction --- slow racing   & 0.183 & 1.02 \\
+\quad\quad\quad\quad\quad\ --- fast racing   & 0.862 & 2.73 \\
+\quad\quad\quad\quad\quad\ --- backflips     & 1.814 & 8.64 \\
+\quad \textbf{With correction --- slow}     & \textbf{0.169}  & \textbf{1.02} \\
+\quad\quad\quad\quad\quad\quad\ \textbf{--- fast}     & \textbf{0.768}  & \textbf{2.64} \\
+\quad\quad\quad\quad\quad\quad\ \textbf{--- backflips} & \textbf{1.814} & \textbf{8.44} \\
 \midrule
 \multicolumn{3}{l}{\textit{IMU preintegration vs.\ raw factors (slow\_racing batch)}} \\
-\quad Forster TRO-2017 preint.\ at 100\,Hz & --- & 6.0 \\
-\quad \textbf{Raw gyro/accel at 1\,kHz (default)} & \textbf{0.147} & \textbf{0.96} \\
+\quad Forster TRO-2017 preint.\ at 100\,Hz & 0.288 & 6.40 \\
+\quad \textbf{Raw gyro/accel at 1\,kHz (default)} & \textbf{0.169} & \textbf{1.02} \\
 \midrule
 \multicolumn{3}{l}{\textit{Orientation regularization (backflips batch)}} \\
-\quad Min-$\omega$ ($\lambda_{\omega}{=}0.001$) & 2.1 & 9.2 \\
-\quad \textbf{Min-$\alpha$, $\lambda_\alpha{=}0.1$ (default)} & \textbf{1.817} & \textbf{8.31} \\
-\quad Min-$\alpha$, $\lambda_\alpha{=}1.0$ & --- & 44.2 \\
+\quad Min-$\omega$ ($\lambda_{\omega}{=}0.001$) & 1.816 & 8.62 \\
+\quad \textbf{Min-$\alpha$, $\lambda_\alpha{=}0.1$ (default)} & \textbf{1.814} & \textbf{8.44} \\
+\quad Min-$\alpha$, $\lambda_\alpha{=}1.0$ & 2.069 & 83.8 \\
 \midrule
-\multicolumn{3}{l}{\textit{SW window duration (slow\_racing SW, settled)}} \\
-\quad 1.5\,s & 1.000 & 1.34 \\
-\quad \textbf{3.0\,s (default)} & \textbf{0.217} & \textbf{1.57} \\
-\quad 5.0\,s & 0.262 & 1.15 \\
+\multicolumn{3}{l}{\textit{SW window dur.\ (slow\_racing SW, settled / live edge)}} \\
+\quad 1.5\,s & 0.488 / 0.675 & 2.14 / 2.47 \\
+\quad \textbf{3.0\,s (default)} & \textbf{0.225 / 0.338} & \textbf{1.57 / 2.08} \\
+\quad 5.0\,s & 0.167 / 0.371 & 1.31 / 2.03 \\
 \midrule
-\multicolumn{3}{l}{\textit{Marginalization (slow\_racing SW, settled)}} \\
-\quad None (boundary prior only) & 0.358 & 1.34 \\
-\quad \textbf{Schur complement (default)} & \textbf{0.217} & \textbf{1.57} \\
+\multicolumn{3}{l}{\textit{Marginalization (fast\_racing SW, settled)}\textsuperscript{\ddag}} \\
+\quad None (boundary prior only) & 1.391 & 3.36 \\
+\quad \textbf{Schur complement (default)} & \textbf{0.726} & \textbf{3.19} \\
 \midrule
-\multicolumn{3}{l}{\textit{Extrinsic optimization (slow\_racing batch)}} \\
-\quad Free roll+yaw+pitch & 0.17 & 8.7 \\
-\quad \textbf{Pitch only (default)} & \textbf{0.174} & \textbf{1.08} \\
-\quad Locked & 0.176 & 1.12 \\
+\multicolumn{3}{l}{\textit{Extrinsic optimization (slow\_racing batch)}\textsuperscript{\S}} \\
+\quad \textbf{Pitch $\delta$ optimized (default)} & \textbf{0.169} & \textbf{1.02} \\
+\quad Pitch $\delta$ locked & 0.157 & 1.02 \\
 \bottomrule
-\multicolumn{3}{l}{\textsuperscript{\dag}Lever arm disabled for isolation; see Lever-arm rows}\\
-\multicolumn{3}{l}{for the current default (0.174\,m/1.08\degree).}\\
+\multicolumn{3}{@{}p{\columnwidth}@{}}{\scriptsize
+  \textsuperscript{\dag}Lever arm disabled for isolation; see Lever-arm rows
+  for the current default (0.169\,m/1.02\degree).
+  \textsuperscript{\ddag}Marginalization compared at \texttt{fast\_racing} where
+  scale$=2{\times}10^{-4}$ is meaningful; slow\_racing uses scale$=10^{-7}$
+  (near-zero), so both variants give equivalent settled results.
+  \textsuperscript{\S}C++ solver supports only 1-DOF pitch offset (roll/yaw
+  unobservable from Doppler; free 3-angle optimization tested in Python
+  solver showed 6--8\degree\ orientation runaway --- see
+  Sec.~\ref{sec:negative}).}\\
 \end{tabular}
 \end{table}
+
+\textbf{Key observations from Table~\ref{tab:ablations}.}
+Full-rate IMU (1\,kHz) improves position by $2.9\times$ over 200\,Hz,
+motivating the tight bias priors in \texttt{solver\_cpp.yaml}.
+Lever-arm correction helps racing ($8$--$11\%$ position) but has
+negligible effect on backflips: at $\Delta t_o{=}0.8$\,ms the dense
+spline absorbs the $|\bm{\omega}{\times}\mathbf{t}_{bs}|\approx1$\,m/s
+term through orientation DOF.
+Schur marginalization reduces settled position by 48\% for fast racing
+(1.391\,m $\to$ 0.726\,m); for slow racing the optimal prior scale is
+$10^{-7}$ (near-zero), so both variants give equivalent results ---
+the benefit is captured in Table~\ref{tab:prior_scale} instead.
+Window duration: 5\,s gives best settled position (0.167\,m) but
+slightly worse live edge than 3\,s (0.371 vs.\ 0.338\,m); 3\,s is the
+practical optimum for a deployed system (lower latency, better live
+accuracy).  Pitch-only extrinsic optimization is the default;
+locking pitch to nominal is slightly better for slow racing (0.157 vs.\
+0.169\,m) but the optimizer correctly self-calibrates on fast/backflips bags.
 
 %==================================================================
 \section{Limitations and Negative Results}
@@ -699,28 +780,82 @@ or a visual compass would replace it in a deployed system.
 
 \subsection{Extreme Dynamics: Backflips}
 \label{sec:backflips}
-The batch solver handles backflips by using $\Delta t_o {=} 0.8$\,ms
+
+\textbf{Batch.}
+The batch solver handles backflips with $\Delta t_o {=} 0.8$\,ms
 (10$\times$ denser than racing, 22{,}630 knots over 18\,s) and
-locked extrinsics.  The sliding window fails regardless of prior
-tuning: at this density, a 3\,s window has $\sim$3{,}750 orientation
-knots ($\sim$11{,}250 orientation DoF) versus $\sim$3{,}000 gyroscope
-measurements ($\sim$9{,}000 constraints), a ratio of 1.26 DoF per
-constraint.  Ceres exits after 2 iterations per window with a
-rank-deficient Jacobian, and the gyro bias diverges.
+locked extrinsics (free pitch drifts to $+18\degree$ due to dense
+under-constrained orientation DOF), achieving 1.814\,m/8.44\degree\ (Table~\ref{tab:batch}).
 
-We swept \texttt{marg\_prior\_scale} over four orders of magnitude
-($2{\times}10^{-6}$ to $2{\times}10^{-3}$) and window duration from
-3\,s to 5\,s: all configurations produce $\approx$2.4\,m/59\degree\
-RMSE.  The failure is rank deficiency, not prior miscaling.  The
-batch solver succeeds because global angular-acceleration
-regularization couples all 22{,}630 knots simultaneously; a 3\,s
-local window lacks sufficient chain length to replicate this.
+\textbf{Sliding window — fundamental limitation.}
+Sliding-window estimation is not a viable operating mode for backflips,
+regardless of whether the live or settled edge is evaluated.
+The best achievable SW result after exhaustive tuning ---
+2.53\,m/10.79\degree\ settled and 3.32\,m/9.36\degree\ live
+(Table~\ref{tab:sw}; Fig.~\ref{fig:traj_backflips}) ---
+falls far short of the 1.81\,m/8.4\degree\ batch ceiling
+and is not operationally acceptable.
+Two structural reasons make this gap irreducible.
 
-We note that $\Delta t_o {=} 0.8$\,ms is not a bandwidth argument
-(a cubic B-spline at 8\,ms has 62.5\,Hz Nyquist, well above the
-$\sim$10--20\,Hz bandwidth of the flip dynamics); it is an
-optimizer convergence artifact where a specific regularizer scaling
-happens to work for the batch problem.
+\emph{Reason~1: rank deficiency at the required orientation bandwidth.}
+Backflips require $\Delta t_o{=}0.8$\,ms; at this density, a 3\,s window
+has $\sim$3{,}750 orientation knots ($\sim$11{,}250 DoF) versus only
+$\sim$3{,}000 gyroscope samples ($\sim$9{,}000 constraints) --- ratio
+1.26 DoF/constraint.
+The per-window Jacobian is rank-deficient, and Ceres exits after 2
+iterations without meaningful optimization.
+
+\emph{Reason~2: insufficient observation horizon.}
+Even with workarounds that restore a well-conditioned Jacobian
+(coarser $\Delta t_o{=}8$\,ms, Reason~1 relieved), a 3\,s window cannot
+replicate what makes batch viable: 18\,s of global accelerometer
+integration for gravity-direction refinement, and global
+angular-acceleration regularization coupling all 22{,}630 knots
+simultaneously.
+Within a short window, sparse radar cannot pin position; the only
+anchor is the P1--P3 dead-reckoning initialization, which carries
+$\sim$2.4\,m error.
+
+\emph{Bounding the limit through mitigation.}
+The original SW failure (gyroscope bias runaway to $-1.19$\,rad/s,
+settled $\sim$2.37\,m/57\degree) was traced to a bias-prior bug: the
+per-window prior was centred on the warm-start rather than the
+stationary calibration, allowing bias to ratchet across windows.
+Fixing this anchor, strengthening the heading prior to
+$\lambda_\psi{=}10$, and clamping the gyro bias before each Schur
+prior (\emph{Phase~1}) recovered 1.89\,m/42\degree\ settled.
+The 42\degree\ orientation error confirms Reason~1: the solver is
+frozen near the P1--P3 init and cannot optimize.
+Switching to $\Delta t_o{=}8$\,ms (Reason~1 relieved) and anchoring
+each position CP to its P1--P3 estimate
+($\lambda_{\mathrm{pos\text{-}init}}{=}1000$, \emph{Phase~3})
+reduces orientation error to 9.4--10.8\degree, giving
+2.53\,m/10.8\degree\ settled --- the best the fixed-lag smoother
+achieves.
+
+The apparent position regression from Phase~1 (1.89\,m) to Phase~3
+(2.53\,m) is a SE3-alignment artifact: at 42\degree\ the alignment
+absorbs part of the position offset; at 10\degree\ the true 2.4\,m
+P1--P3 position error is fully exposed, but all six DoF improve.
+Note that $\Delta t_o{=}0.8$\,ms is not a Nyquist requirement (62.5\,Hz
+at 8\,ms suffices for the $\sim$10--20\,Hz flip dynamics); the
+non-monotonic sweep behaviour is an optimizer convergence artifact that
+the batch solver can exploit globally but a fixed-lag smoother cannot
+replicate window-by-window.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/traj_backflips_best_velocity.pdf}
+  \caption{backflips: MoCap ground truth (solid blue), batch estimate
+    ($\Delta t_o{=}0.8$\,ms, dashed red), SW live edge (Phase~3
+    config, dotted orange).  X--Y and Y--Z projections; the vertical
+    backflip maneuvers are visible in the Y--Z plane.
+    Start marked~$\blacksquare$.  The large visual spread of the batch
+    estimate in X--Y reflects the 8.4\degree\ orientation error, which
+    rotates the frame-aligned trajectory residual into the horizontal
+    plane after SE3 alignment (see Sec.~\ref{sec:backflips}).}
+  \label{fig:traj_backflips}
+\end{figure}
 
 \subsection{Prior Scaling Has No Universal Optimum}
 \label{sec:prior_scale}
@@ -739,24 +874,29 @@ plots the orientation sweep.
 \texttt{scale} & \multicolumn{2}{c}{Slow racing} & \multicolumn{2}{c}{Fast racing} \\
  & Pos (m) & Ori (\degree) & Pos (m) & Ori (\degree) \\
 \midrule
-$2{\times}10^{-4}$                       & 0.623 & 2.28 & \textbf{0.877} & \textbf{4.16} \\
-$10^{-5}$                                & ---   & ---  & 0.940 & 4.09 \\
-$10^{-6}$ \textit{(harmful)}             & 0.513 & 2.39$^*$ & --- & --- \\
-$\bm{10^{-7}}$ \textbf{(slow default)}  & \textbf{0.383} & \textbf{2.21} & --- & 4.57 \\
-$10^{-8}$                                & 0.381 & 2.20 & --- & --- \\
+$2{\times}10^{-4}$                       & 0.543 & 2.16 & \textbf{0.825} & \textbf{3.64} \\
+$10^{-5}$                                & ---   & ---  & 0.942 & 3.58 \\
+$10^{-6}$                                & 0.442 & 2.21$^*$ & 0.951 & 3.57 \\
+$\bm{10^{-7}}$ \textbf{(slow default)}  & \textbf{0.338} & \textbf{2.08} & 1.279 & 3.57 \\
+$10^{-8}$                                & 0.336 & 2.08 & 1.344 & 3.57 \\
 \bottomrule
-\multicolumn{5}{l}{$^*$Harmful regime: worse than $10^{-4}$ \emph{and} $10^{-7}$ (see text).}
+\multicolumn{5}{l}{$^*$Orientation local maximum: 2.21\degree\ $>$ 2.16\degree\ (2e-4) and
+  2.08\degree\ (1e-7).}\\
+\multicolumn{5}{l}{---: scale not evaluated for this bag.}
 \end{tabular}
 \end{table}
 
 Slow racing is best served by a near-zero prior ($10^{-7}$): with
 gentle dynamics, each 3\,s window is self-sufficient and additional
 inter-window coupling is harmful.  Fast racing needs the prior
-($2{\times}10^{-4}$) for inter-window position continuity.
-A harmful intermediate regime at $10^{-5}$--$10^{-6}$ partially
-constrains without providing useful continuity, giving results
-\emph{worse} than either extreme (e.g., slow racing at $10^{-6}$:
-0.513\,m vs.\ 0.383\,m at $10^{-7}$).
+($2{\times}10^{-4}$) for inter-window position continuity ---
+without it (scale$=10^{-7}$) fast racing position degrades from
+0.825\,m to 1.279\,m.
+For slow racing, scale$=10^{-6}$ yields a local \emph{orientation}
+maximum (2.21\degree; worse than both 2$\times$10$^{-4}$ at 2.16\degree\
+and $10^{-7}$ at 2.08\degree), while position improves monotonically
+with decreasing scale.  This partial-constraint effect illustrates why
+no single scale is universally optimal.
 
 The information asymmetry in $S$ (orientation eigenvalues
 $\sim$$5.5{\times}10^{14}$, position $\sim$$10^4$, condition
@@ -779,11 +919,13 @@ knob.
 \begin{figure}[t]
   \centering
   \includegraphics[width=\columnwidth]{figures/prior_scale_sensitivity.pdf}
-  \caption{Live-edge orientation RMSE vs.\ \texttt{marg\_prior\_scale}
-    for slow and fast racing.  The harmful intermediate regime
-    ($10^{-5}$--$10^{-6}$) is worse than both extremes for slow racing.
-    No single scale beats per-mission-type tuning on both bags
-    simultaneously.}
+  \caption{Live-edge orientation (left) and position (right, dual
+    y-axes) RMSE vs.\ \texttt{marg\_prior\_scale}.  Orientation
+    (left): slow racing shows a local maximum at $10^{-6}$;
+    fast racing orientation is insensitive to scale.
+    Position (right): slow racing worsens monotonically with
+    increasing scale while fast racing improves sharply ---
+    the two bags require opposite scale regimes.}
   \label{fig:prior_scale}
 \end{figure}
 
@@ -794,9 +936,10 @@ knob.
 Replacing per-sample gyro/accel factors with Forster
 TRO-2017~\cite{forster2017manifold} preintegrated factors at 100\,Hz
 reduces constraint density from 8:1 (samples per knot) to 1:1,
-degrading orientation RMSE from 0.96\degree\ to 6.0\degree\ on slow
-racing.  The smaller Jacobian gives a 3.3$\times$ speedup per
-iteration, but accuracy loss is unacceptable.
+degrading orientation RMSE from 1.02\degree\ to 6.40\degree\ and
+position RMSE from 0.169\,m to 0.288\,m on slow racing.
+The smaller Jacobian yields a faster iteration time,
+but the accuracy loss is unacceptable.
 
 \textbf{GNC (Graduated Non-Convexity).}
 Geman-McClure loss annealing~\cite{yang2020gnc} was tested on radar
@@ -805,10 +948,12 @@ residuals.  It improved results only when extrinsics were incorrect
 degraded both bags and added $3\times$ runtime.
 
 \textbf{Full extrinsic optimization.}
-Optimizing all three extrinsic rotation angles (instead of pitch
-only) causes roll and yaw to drift 5--7\degree, using the
-unobservable modes as a residual trash can and corrupting
-orientation by 6--8\degree.
+The C++ solver only supports the 1-DOF pitch offset $\delta_\text{pitch}$
+(Sec.~\ref{sec:state}), because Doppler cannot observe roll or yaw.
+When tested in an earlier Python-based solver that allowed all three
+angles to optimize freely, roll and yaw drifted 5--7\degree,
+using the unobservable modes as a residual trash can and corrupting
+orientation by 6--8\degree.  The C++ design avoids this by construction.
 
 %==================================================================
 \section{Conclusion}
@@ -816,25 +961,27 @@ orientation by 6--8\degree.
 
 We presented a continuous-time B-spline RIO system with a fixed-lag
 smoother and Schur complement marginalization.  At the live leading
-edge the system achieves \SI{0.39}{\metre}/\SI{2.2}{\degree} (slow
-racing) and \SI{0.88}{\metre}/\SI{4.2}{\degree} (fast racing),
-reducing position error 87\% and velocity error 72--81\% versus
-IMU-only.  We showed that Schur complement marginalization with a
-re-centered prior improves settled position by 40\% over a simple
-sliding window without marginalization.
+edge the system achieves \SI{0.34}{\metre}/\SI{2.1}{\degree} (slow
+racing) and \SI{0.83}{\metre}/\SI{3.6}{\degree} (fast racing),
+reducing position error 87--89\% and velocity error 72--81\% versus
+IMU-only.  Schur complement marginalization with a re-centered prior
+improves settled position by 48\% over a boundary-prior-only baseline
+(0.726\,m vs.\ 1.391\,m on fast racing at the appropriate
+prior scale of $2{\times}10^{-4}$).
+For extreme maneuvers (backflips), only the batch solver is viable:
+1.81\,m/8.4\degree\ vs.\ 2.53\,m/10.8\degree\ settled and
+3.32\,m/9.4\degree\ live for the best fixed-lag configuration
+--- a structural limit, not a tuning gap.
 
 The main open limitations are: (1) heading observability requires an
-external reference; (2) extreme-dynamics bags with very dense
-orientation knots cannot run in sliding-window mode due to
-per-window rank deficiency; and (3) the marginalization prior scale
-has no universal optimum across mission types.  Future work will
-address these with a fused magnetometer/visual heading source,
-adaptive knot spacing, and per-modality prior scaling.
-
-%==================================================================
-\section*{Acknowledgment}
-The authors thank the Agiros team for the drone platform and the
-flight infrastructure used to collect the datasets.
+external reference (magnetometer or visual compass); (2) backflips
+require batch optimization --- fixed-lag smoothing cannot replicate
+18\,s of global accelerometer integration or joint angular-acceleration
+regularization over the full maneuver horizon;
+and (3) the marginalization prior scale has no universal optimum across
+mission types.  Future work will address these with a fused
+magnetometer/visual heading source, adaptive knot spacing, and
+per-modality prior scaling.
 
 %==================================================================
 \bibliographystyle{IEEEtran}

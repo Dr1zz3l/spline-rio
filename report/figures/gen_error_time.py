@@ -9,7 +9,7 @@ Requires extended .npz arrays produced by:
   python validate_live_solver.py fast_racing_best_velocity --mocap-yaw --cpp --sliding-window --save-arrays --no-plot
 
 Two-row layout: slow racing (top), fast racing (bottom).
-Each row has two subplots: position error norm and velocity error norm vs time.
+Each row has three subplots: position error, velocity error, and orientation error vs time.
 """
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'analysis'))
@@ -45,7 +45,7 @@ matplotlib.rcParams.update({
 C_BATCH = '#d62728'
 C_LIVE  = 'darkorange'
 
-fig, axes = plt.subplots(len(BAGS), 2, figsize=(9, 4.5 * len(BAGS)))
+fig, axes = plt.subplots(len(BAGS), 3, figsize=(13, 4.5 * len(BAGS)))
 if len(BAGS) == 1:
     axes = axes[np.newaxis, :]
 
@@ -73,15 +73,18 @@ for row, (bag_key, bag_label) in enumerate(BAGS):
     t_batch      = b['t_rel']
     pos_err_b    = b['pos_errors']
     vel_err_b    = b['vel_errors']
+    rot_err_b    = b['rot_errors']    # deg
 
     has_live = 'live_t_rel' in s and s['live_t_rel'] is not None
     if has_live:
         t_live    = s['live_t_rel']
         pos_err_l = s['live_pos_errs']
         vel_err_l = s['live_vel_errs']
+        rot_err_l = s['live_rot_errs']   # deg
 
     ax_pos = axes[row, 0]
     ax_vel = axes[row, 1]
+    ax_ori = axes[row, 2]
 
     # Position error
     ax_pos.plot(t_batch, pos_err_b, color=C_BATCH, linestyle='--',
@@ -107,6 +110,18 @@ for row, (bag_key, bag_label) in enumerate(BAGS):
     ax_vel.set_title(f'{bag_label} — velocity')
     ax_vel.grid(True, alpha=0.3)
     ax_vel.set_ylim(bottom=0)
+
+    # Orientation error
+    ax_ori.plot(t_batch, rot_err_b, color=C_BATCH, linestyle='--',
+                label='Batch estimate', zorder=2)
+    if has_live:
+        ax_ori.plot(t_live, rot_err_l, color=C_LIVE, linestyle=':',
+                    alpha=0.9, label='SW live edge', zorder=3)
+    ax_ori.set_xlabel('Time (s)')
+    ax_ori.set_ylabel('Orientation error (°)')
+    ax_ori.set_title(f'{bag_label} — orientation')
+    ax_ori.grid(True, alpha=0.3)
+    ax_ori.set_ylim(bottom=0)
 
 fig.tight_layout()
 

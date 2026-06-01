@@ -28,15 +28,15 @@ matplotlib.rcParams.update({
 })
 
 # ── Data ────────────────────────────────────────────────────────────────────
-# slow_racing sweep (all live-edge)
+# slow_racing sweep (all live-edge, 2026-06-01 run)
 slow_scales  = np.array([2e-4, 1e-6,  1e-7,  1e-8 ])
-slow_ori     = np.array([2.282, 2.393, 2.207, 2.201])
-slow_pos     = np.array([0.623, 0.513, 0.383, 0.381])
+slow_ori     = np.array([2.159, 2.210, 2.081, 2.077])
+slow_pos     = np.array([0.543, 0.442, 0.338, 0.336])
 
-# fast_racing sweep (partial — only scales that were tested)
-fast_scales  = np.array([2e-4, 1e-5,  1e-7 ])
-fast_ori     = np.array([4.163, 4.093, 4.57 ])
-fast_pos     = np.array([0.877, 0.940, np.nan])   # 1e-7 pos not measured
+# fast_racing sweep (live-edge, 2026-06-01 run)
+fast_scales  = np.array([2e-4, 1e-5,  1e-6,  1e-7,  1e-8 ])
+fast_ori     = np.array([3.644, 3.577, 3.575, 3.574, 3.567])
+fast_pos     = np.array([0.825, 0.942, 0.951, 1.279, 1.344])
 
 C_SLOW = '#1f77b4'  # blue
 C_FAST = '#d62728'  # red
@@ -44,34 +44,42 @@ C_FAST = '#d62728'  # red
 # ── Plot ────────────────────────────────────────────────────────────────────
 fig, (ax_ori, ax_pos) = plt.subplots(1, 2, figsize=(9, 4))
 
-for ax, slow_y, fast_y, ylabel, unit in [
-    (ax_ori, slow_ori, fast_ori, 'Live-edge orientation RMSE', '°'),
-    (ax_pos, slow_pos, fast_pos, 'Live-edge position RMSE',   'm'),
-]:
-    ax.semilogx(slow_scales, slow_y, 'o-', color=C_SLOW,
+# --- Orientation panel (both series, shared axis) ---
+ax_ori.semilogx(slow_scales, slow_ori, 'o-', color=C_SLOW,
                 label='Slow racing', zorder=3)
-    mask = ~np.isnan(fast_y)
-    ax.semilogx(fast_scales[mask], fast_y[mask], 's--', color=C_FAST,
+ax_ori.semilogx(fast_scales, fast_ori, 's--', color=C_FAST,
                 label='Fast racing', zorder=3)
-
-    # Mark harmful regime
-    ax.axvspan(5e-7, 2e-5, alpha=0.08, color='red', zorder=0)
-    ymin, ymax = slow_y.min(), slow_y.max()
-    ax.text(2.5e-6, ymin + (ymax - ymin) * 0.05,
-            'harmful\nregime', ha='center', va='bottom', fontsize=9,
+ax_ori.axvspan(5e-7, 2e-5, alpha=0.08, color='red', zorder=0)
+ax_ori.text(2.5e-6, slow_ori.min() + (slow_ori.max() - slow_ori.min()) * 0.1,
+            'local max\n(slow ori)', ha='center', va='bottom', fontsize=8,
             color='red', alpha=0.75)
-
-    # Mark defaults
-    ax.axvline(1e-7, color=C_SLOW, lw=0.8, linestyle=':', alpha=0.6)
-    ax.axvline(2e-4, color=C_FAST, lw=0.8, linestyle=':', alpha=0.6)
-
-    ax.set_xlabel('marg_prior_scale')
-    ax.set_ylabel(f'{ylabel} ({unit})')
-    ax.legend(loc='upper right')
-    ax.grid(True, alpha=0.3, which='both')
-
+ax_ori.axvline(1e-7, color=C_SLOW, lw=0.8, linestyle=':', alpha=0.6)
+ax_ori.axvline(2e-4, color=C_FAST, lw=0.8, linestyle=':', alpha=0.6)
+ax_ori.set_xlabel('marg_prior_scale')
+ax_ori.set_ylabel('Live-edge orientation RMSE (°)')
 ax_ori.set_title('Orientation RMSE vs. prior scale')
+ax_ori.legend(loc='upper right')
+ax_ori.grid(True, alpha=0.3, which='both')
+
+# --- Position panel: dual y-axes for legibility ---
+ax2 = ax_pos.twinx()
+ax_pos.semilogx(slow_scales, slow_pos, 'o-', color=C_SLOW,
+                label='Slow (left axis)', zorder=3)
+ax2.semilogx(fast_scales, fast_pos, 's--', color=C_FAST,
+             label='Fast (right axis)', zorder=3)
+ax_pos.axvline(1e-7, color=C_SLOW, lw=0.8, linestyle=':', alpha=0.6)
+ax_pos.axvline(2e-4, color=C_FAST, lw=0.8, linestyle=':', alpha=0.6)
+ax_pos.set_xlabel('marg_prior_scale')
+ax_pos.set_ylabel('Live-edge pos. RMSE — Slow racing (m)', color=C_SLOW)
+ax2.set_ylabel('Live-edge pos. RMSE — Fast racing (m)', color=C_FAST)
+ax_pos.tick_params(axis='y', labelcolor=C_SLOW)
+ax2.tick_params(axis='y', labelcolor=C_FAST)
 ax_pos.set_title('Position RMSE vs. prior scale')
+# Combined legend
+lines1, labs1 = ax_pos.get_legend_handles_labels()
+lines2, labs2 = ax2.get_legend_handles_labels()
+ax_pos.legend(lines1 + lines2, labs1 + labs2, loc='upper left', fontsize=9)
+ax_pos.grid(True, alpha=0.3, which='both')
 
 fig.tight_layout()
 
