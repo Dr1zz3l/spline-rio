@@ -1072,9 +1072,23 @@ def main():
     #   --mocap-init    : use MoCap position + orientation at t=0 only
     #   --mocap-heading : build continuous heading priors from MoCap (pseudo-magnetometer)
     #   --mocap-yaw     : shorthand for --mocap-init --mocap-heading (legacy)
+    #
+    # IMPORTANT: --mocap-heading requires --mocap-init.
+    # The heading prior residual is (yaw_spline - yaw_mocap).  yaw_mocap is measured in
+    # the Vicon world frame.  If the spline is NOT initialised from MoCap (--mocap-init),
+    # the spline's own frame starts at yaw=0 (gravity-derived, unobservable), which
+    # differs from the Vicon frame by an arbitrary heading offset.  Every heading prior
+    # then pulls the trajectory toward a systematically wrong heading.
+    # Enforce the combination; reject --mocap-heading alone.
     _legacy_mocap_yaw = '--mocap-yaw' in sys.argv
     USE_MOCAP_INIT    = _legacy_mocap_yaw or '--mocap-init' in sys.argv
     USE_MOCAP_HEADING = _legacy_mocap_yaw or '--mocap-heading' in sys.argv
+    if USE_MOCAP_HEADING and not USE_MOCAP_INIT:
+        print("ERROR: --mocap-heading requires --mocap-init (heading prior is in the MoCap "
+              "world frame; without --mocap-init the spline starts at yaw=0 in its own frame "
+              "and every heading prior pulls toward a wrong heading). "
+              "Use --mocap-yaw for both, or add --mocap-init.")
+        return
 
     NO_PLOT = '--no-plot' in sys.argv
     SAVE_ARRAYS = '--save-arrays' in sys.argv
@@ -1580,15 +1594,29 @@ def main():
     if USE_MOCAP_HEADING and LAMBDA_HEADING > 0 and mocap_slerp is not None:
         print(f"\n{'Heading Priors (MoCap pseudo-magnetometer)':-^80}")
         heading_dt = 0.01   # 100 Hz, matches raw MoCap rate (/mocap/angrybird2/pose @ 100 Hz)
+        # Gate: skip samples where pitch is close to ±90° (gimbal lock).
+        # atan2(R[1,0], R[0,0]) extracts ZYX yaw = atan2(sin(ψ)cos(θ), cos(ψ)cos(θ)).
+        # At |pitch| → 90° both entries → 0; the formula becomes noise-dominated and
+        # crosses a discontinuity past 90° (atan2(0,-ε) = ±180°).  For manoeuvres that
+        # sweep through ±90° pitch (backflips), this injects spurious yaw constraints at
+        # the flip apex.  Gate at 70° leaves a comfortable margin.
+        HEADING_PITCH_GATE_DEG = 70.0
+        n_gated = 0
         t_spline_start_rel = pos_bspline.t_start
         t_spline_end_rel   = pos_bspline.t_end
         for t_rel in np.arange(t_spline_start_rel, t_spline_end_rel, heading_dt):
             t_abs = t_rel + t_ref
             t_clamped = np.clip(t_abs, _mc_times[0], _mc_times[-1])
             R_gt = mocap_slerp(t_clamped).as_matrix()
+            # R[2,0] = -sin(pitch) in ZYX convention
+            pitch_deg = abs(np.degrees(np.arcsin(np.clip(-R_gt[2, 0], -1.0, 1.0))))
+            if pitch_deg > HEADING_PITCH_GATE_DEG:
+                n_gated += 1
+                continue
             heading_priors.append((t_abs, R_gt))
         print(f"  Built {len(heading_priors)} heading priors at {1/heading_dt:.0f} Hz  "
-              f"lambda_heading={LAMBDA_HEADING}")
+              f"lambda_heading={LAMBDA_HEADING}"
+              + (f"  ({n_gated} gated: |pitch| > {HEADING_PITCH_GATE_DEG}°)" if n_gated else ""))
 
     # ==================== Create initial state ====================
     initial_state = TrajectoryState(
