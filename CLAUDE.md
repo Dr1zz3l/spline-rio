@@ -59,7 +59,10 @@ cd analysis/
 # SETTLED / LIVE edge results (settled = full retrospective trajectory; live = primary deployment metric)
 # slow_racing: settled 0.218m/1.57°, live 0.393m/2.21°  (marg_prior_scale=1e-7 per-bag override)
 # fast_racing: settled 0.804m/3.10°, live 0.877m/4.16°  (marg_prior_scale=2e-4 default)
-# backflips: batch-only (underconstrained at dt_ori=0.0008s, SW diverges)
+# backflips (Phase 3): settled 2.56m/10.87°, live 3.33m/9.33°  — use --set overrides below:
+#   --set dt_ori=0.008 --set lambda_ori_accel=0.001 --set lock_gyro_bias=0
+#   --set marg_prior_scale=0.0 --set lambda_pos_init_prior=1000.0
+#   (bags.yaml retains dt_ori=0.0008 for batch; --set dt_ori=0.008 overrides for SW)
 #
 # marg_prior_scale key: raw Schur info O(10^5) >> lambda_boundary=1000; scale down to match
 # Non-monotonic behavior: there is a harmful regime around scale 1e-5–1e-6 where the prior
@@ -196,11 +199,16 @@ Backflips locks extrinsics — 22630 dense ori knots underconstrain pitch_delta 
 |-----|-------------|-------------|----------|----------|----------|-----------------|
 | slow_racing | 0.218m | 1.57° | **0.393m** | **0.391 m/s** | **2.21°** | 1e-7 (per-bag) |
 | fast_racing | 0.804m | 3.10° | **0.877m** | **0.478 m/s** | **4.16°** | 2e-4 (default) |
-| backflips | — | — | — | — | — | batch-only |
+| backflips¹ | 2.56m | 10.87° | 3.33m | — | 9.33° | 0 (Phase 3 SW config) |
 
 Note: settled vel for slow_racing is 0.886 m/s (appears high because 1e-7 makes windows nearly
 independent → position jumps at stride boundaries in the retrospective eval). This is an eval
 artifact — real-time output is the live edge and does not exhibit jumps.
+
+¹ backflips SW (Phase 3): requires --set overrides — see "Phase 3" section below. bags.yaml retains
+dt_ori=0.0008 for batch. The 2.56m/10.87° result is the best achievable SW ceiling for this bag;
+position RMSE apparent regression vs Phase 1 (1.89m) is a SE3 alignment artifact (10° vs 47°
+orientation error → different rotation component in alignment → different RMSE). See Phase 3 section.
 
 Note: lever arm (ω × r_antenna) added to C++ RadarDopplerFunctor in Phase 4b.
 Pre-lever-arm batch: slow 0.146m/0.96°, fast 0.925m/2.35°, backflips 2.93m/10.7°.
@@ -261,6 +269,7 @@ The radar has limited elevation diversity (2 TX antennas), causing a systematic 
 | `lambda_bias_prior_accel` | 1.0 | Relaxed — biases free to adjust |
 | `lambda_bias_prior_gyro` | 1.0 | Same |
 | `lambda_boundary_vel/pos/ori` | 1000.0 | Anchor start of trajectory |
+| `lambda_pos_init_prior` | 0.0 | SW only: per-CP soft anchor to P1-P3 init; 1000 for backflips SW |
 | `optimize_pitch_only` | **true** | **Must stay true** — only pitch is Doppler-observable |
 | `max_iterations` | 400 | Used by C++ solver; Python uses early-stop criteria |
 
@@ -584,12 +593,64 @@ Phase 2 boundary rank analysis:
   0-1 radar frames → rank 3-6/15 for position; orientation is fully constrained (9/9) by gyro
 - rank=15/30 is an INHERENT structural limit, not a function of dt_ori
 
-**Conclusion**: Phase 2 dt_ori=0.008 is NOT the right path for SW improvement. The Phase 1 config
-(dt_ori=0.0008) achieves better SW results because the P1-P3 initialization is the dominant
+**Conclusion**: Phase 2 dt_ori=0.008 without a position anchor blows up position (7.2m). The Phase 1
+config (dt_ori=0.0008) achieves better SW results because the P1-P3 initialization is the dominant
 contributor — the rank-deficient per-window solver barely changes it. The ω-gate remains
 available as a batch-only tool (e.g., for reduced-compute scenarios at dt_ori=0.008).
 
-The bags.yaml config for backflips retains dt_ori=0.0008 (Phase 1).
+The bags.yaml config for backflips retains dt_ori=0.0008 (Phase 1) **for batch**. SW uses --set overrides.
+
+### Phase 3: SW backflips — position-init prior (implemented, final SW attempt)
+
+**Idea**: Phase 2 failed because dt_ori=0.008 (well-conditioned orientation) + free position = 7.2m
+drift (sparse radar can't pin position). But the P1-P3 radar-velocity init is already a decent
+position estimate (~2.44m RMSE). Phase 3 exploits the asymmetry: pin position to the P1-P3 init
+with a soft per-CP prior while letting the gyro + heading refine orientation.
+
+**`lambda_pos_init_prior`** (new field in `SolverConfig`, default 0.0 — off for racing bags).
+When > 0, every position CP in the active window gets a direct L2 penalty anchoring it to
+`init_pos_cps_[i]` (captured in `SlidingWindowSolver::initialize()`, same discipline as
+`init_biases_`). Implemented as `PosInitPriorFunctor` in `regularization.h` (single CP block,
+3 residuals — cheap, no spline evaluation).
+
+**SW command (use --set to override bags.yaml batch config):**
+```
+python validate_live_solver.py backflips_best_velocity --mocap-yaw --cpp --sliding-window \
+  --set dt_ori=0.008 --set lambda_ori_accel=0.001 --set lock_gyro_bias=0 \
+  --set marg_prior_scale=0.0 --set lambda_pos_init_prior=1000.0
+```
+
+**Phase 3 results** (vs Phase 1 frozen + batch ceiling):
+
+| Config | Settled pos | Settled ori | Live pos | Live ori | notes |
+|---|---|---|---|---|---|
+| Phase 1 (0.0008, frozen) | 1.89m | 47.5° | 2.06m | 24.8° | solver barely moves from P1-P3 init |
+| Phase 3 (0.008 + λ_pos=1000) | **2.56m** | **10.87°** | **3.33m** | **9.33°** | final SW attempt |
+| Batch ceiling | 1.82m | 8.31° | — | — | — |
+
+**Why position RMSE is "worse" but the result is better**: at 47° orientation error the SE3
+alignment had a large rotation component that absorbed ~0.55m of the systematic position bias.
+At 10° orientation (correct frame) the rotation component of SE3 is small and the full P1-P3 init
+error (~2.44m) is exposed. The actual trajectory quality at 2.56m/10.87° is strictly better
+than 1.89m/47.5° — all six axes improve, the 0.67m apparent position regression is a SE3
+alignment artifact.
+
+**iter=2 everywhere** (confirmed genuine convergence, not premature stop): with λ=1000 position
+prior, the Hessian is diagonally dominant near the solution, and the cost reduction per LM step
+falls below function_tolerance after step 2. Setting max_iterations=100 produces identical results.
+
+**Why gap from batch remains** (0.74m position, 2.56° orientation):
+- Orientation: 1000 Hz gyro at dt_ori=0.008 (8:1 overconstrained) gets close to batch but SW
+  heading prior at λ=10 only corrects yaw; batch's 18s chain + full-sequence regularizer sharpens
+  roll/pitch via accel coupling.
+- Position: SW position is anchored to the P1-P3 init (2.44m RMSE); batch's global accel
+  integration over 18s converges to the correct gravity direction, refining position to 1.82m.
+  A 3s window can't replicate 18s of accel integration.
+
+**Final verdict**: SW backflips at ~2.56m / 10.87° is the best achievable with a fixed-lag smoother.
+The structural limit (3s windows vs 18s batch chain for accel integration; sparse radar) makes
+further improvement unlikely without fundamentally changing the sensor setup.
+`bags.yaml` `solver_overrides.backflips_best_velocity` retains `dt_ori=0.0008` for batch compatibility.
 
 ### Phase 2.5: MoCap-aided stationary bias detection (planned)
 

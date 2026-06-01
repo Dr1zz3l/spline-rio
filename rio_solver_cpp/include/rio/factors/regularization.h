@@ -182,6 +182,36 @@ struct BoundaryOriFunctor {
 };
 
 // ============================================================================
+// PosInitPriorFactor
+// ============================================================================
+// Soft anchor: penalises deviation of a single position CP from its P1-P3
+// initialisation value.  Applied to every CP in the active window when
+// lambda_pos_init_prior > 0 (sliding-window only).
+//
+// Unlike BoundaryPosFunctor (which evaluates the spline at a query time and
+// involves N_POS blocks), this functor attaches to ONE CP directly, making it
+// cheap to apply densely.  It prevents radar-sparse windows from drifting
+// the position trajectory far from the radar-velocity-integrated init while
+// the orientation solver refines the gyro spline.
+//
+// Parameter blocks: [pos_cp (3 params)]
+
+struct PosInitPriorFunctor {
+    Eigen::Vector3d p_init;
+
+    explicit PosInitPriorFunctor(const Eigen::Vector3d& p_init_)
+        : p_init(p_init_) {}
+
+    template <class T>
+    bool operator()(T const* const* params, T* residuals) const {
+        residuals[0] = params[0][0] - T(p_init[0]);
+        residuals[1] = params[0][1] - T(p_init[1]);
+        residuals[2] = params[0][2] - T(p_init[2]);
+        return true;
+    }
+};
+
+// ============================================================================
 // PitchDeltaPriorFactor
 // ============================================================================
 // Anchors pitch_delta near zero (= nominal extrinsic pitch).

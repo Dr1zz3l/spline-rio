@@ -79,6 +79,13 @@ private:
     // anchor tied to the stationary calibration estimate.
     std::array<double, 6> init_biases_{};
 
+    // Initial position CPs from P1-P3 radar-velocity integration (captured in
+    // initialize()).  Used as the anchor for lambda_pos_init_prior when > 0:
+    // each window CP is softly pinned to its init value, preventing radar-sparse
+    // windows from drifting position while orientation is being refined.
+    // Same discipline as init_biases_: anchors to the init, never the warm-start.
+    std::vector<std::array<double, 3>> init_pos_cps_;
+
     // Add the marginalization prior to a Ceres problem.
     // Connects to traj_ indices [prior_.pos_start, +n_bound_pos) etc.
     void add_prior_to_problem(ceres::Problem& problem);

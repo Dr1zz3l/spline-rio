@@ -70,7 +70,8 @@ void SlidingWindowSolver::initialize(
     traj_.pos_cps   = pos_cps;
     traj_.ori_knots = ori_knots;
     traj_.biases    = biases;
-    init_biases_    = biases;   // absolute anchor: never updated after initialization
+    init_biases_    = biases;    // absolute anchor: never updated after initialization
+    init_pos_cps_   = pos_cps;  // absolute anchor for position-init prior
     traj_.extrinsic_euler_deg = {ext_.roll_deg, ext_.pitch_deg, ext_.yaw_deg};
     traj_.pitch_delta = 0.0;
     prior_.valid    = false;
@@ -523,6 +524,35 @@ SolverResult SlidingWindowSolver::solve_window(
                 problem.AddResidualBlock(cost,
                     new ceres::ScaledLoss(nullptr, cfg_.lambda_boundary_ori, ceres::TAKE_OWNERSHIP), params);
             }
+        }
+    }
+
+    // ---- Position-to-init prior (SW only, lambda_pos_init_prior > 0) ----------
+    // Anchors every position CP in the window to its P1-P3 radar-velocity-
+    // integrated init value (init_pos_cps_, captured in initialize()).
+    // Each CP gets one cheap 3-residual factor (no spline evaluation, just
+    // a direct CP-level penalty): r = cp_i - init_cp_i.
+    //
+    // Purpose: at dt_ori=0.008 (well-conditioned orientation, ~10 Hz radar)
+    // the optimizer freely adjusts position to minimise radar residuals, but
+    // ~10 Hz radar is too sparse to constrain position well → 7.2m drift.
+    // A soft prior prevents that drift while the gyro + heading factors drive
+    // the orientation improvement (target ~2m / ~10° for backflips).
+    //
+    // Scale guidance: 10 → position allowed to move ~0.3m from init per
+    // window; 100 → ~0.1m; 1 → ~1m.  Start at 10 for backflips.
+    if (cfg_.lambda_pos_init_prior > 0.0) {
+        for (int i = pi0; i <= pi1; ++i) {
+            Eigen::Vector3d p_init(
+                init_pos_cps_[i][0],
+                init_pos_cps_[i][1],
+                init_pos_cps_[i][2]);
+            auto* f = new PosInitPriorFunctor(p_init);
+            auto* cost = make_auto_cost_sw(f, 3, {3});
+            problem.AddResidualBlock(cost,
+                new ceres::ScaledLoss(nullptr, cfg_.lambda_pos_init_prior,
+                                      ceres::TAKE_OWNERSHIP),
+                {traj_.pos_cp_data(i)});
         }
     }
 

@@ -104,6 +104,15 @@ struct SolverConfig {
     // dt_ori=0.0008 where orientation DoF exceed gyro constraints per window).
     bool lock_gyro_bias{false};
 
+    // Position-to-init prior (sliding window only).
+    // When > 0, every position CP in the active window is softly anchored to its
+    // P1-P3 initialisation value via a direct CP-level penalty.  Prevents radar-
+    // sparse windows (e.g. backflips at dt_ori=0.008, ~10 Hz radar) from drifting
+    // position freely while the orientation solver refines the gyro spline.
+    // Suggested sweep: {0.1, 1, 10, 100}; start at 10 for backflips.
+    // 0.0 (default): disabled; no effect on racing bags.
+    double lambda_pos_init_prior{0.0};
+
     // ω-gated radar: skip radar frames when |ω_body| exceeds this threshold (rad/s).
     // During rapid maneuvers (backflips, ~10 rad/s peak), even a small orientation
     // spline error creates a large Doppler residual via the lever-arm term (ω × r).
