@@ -57,10 +57,9 @@ trajectory derivatives.  Optimization is performed by a fixed-lag
 smoother with Schur complement marginalization, running at a 0.3\,s
 stride over a 3\,s sliding window.  A sensor-only initialization
 pipeline (gyro integration for orientation, radar dead-reckoning for
-position) requires no external \emph{pose} reference; an external
-\emph{heading} reference (here: MoCap yaw; a magnetometer or visual
-compass in deployment) is still required throughout, as yaw is
-unobservable from Doppler alone.  At the \emph{live leading edge}
+position) requires no external \emph{pose} reference.
+Yaw is unobservable from Doppler alone and requires a magnetometer
+(standard on most platforms); here MoCap yaw serves that role.  At the \emph{live leading edge}
 (the estimate a deployed system would emit), position/orientation
 RMSE is \SI{0.34}{\metre}/\SI{2.1}{\degree} on gentle racing and
 \SI{0.83}{\metre}/\SI{3.6}{\degree} on aggressive racing, reducing
@@ -344,9 +343,8 @@ contaminating dynamic flight.
 \textbf{Heading prior.}
 Yaw is unobservable from Doppler alone (all yaw-equivalent
 trajectories predict identical radial velocities under pure
-rotation about gravity).  We supply a heading reference from
-MoCap; in deployment this would be a magnetometer or a visual
-compass.  The residual $r_\psi = \psi_\text{est} - \psi_\text{ref}$
+rotation about gravity).  We supply a heading reference from a magnetometer (standard on
+most platforms; here simulated by MoCap yaw).  The residual $r_\psi = \psi_\text{est} - \psi_\text{ref}$
 is added at $\sim$100\,Hz, $\lambda_\psi = 0.6$.
 
 \subsection{Regularization}
@@ -770,13 +768,16 @@ locking pitch to nominal is slightly better for slow racing (0.157 vs.\
 \section{Limitations and Negative Results}
 \label{sec:limits}
 
-\subsection{Heading Observability}
+\subsection{Heading Sensor Requirement}
 \label{sec:yaw}
-Yaw is a gauge freedom for Doppler: any yaw-equivalent trajectory
-predicts identical radial velocities.  Without the heading prior,
-yaw drifts freely and the position direction error accumulates.
-In this work the heading reference comes from MoCap; a magnetometer
-or a visual compass would replace it in a deployed system.
+Yaw is a gauge freedom for Doppler: rotating the entire trajectory
+about the world gravity axis leaves all radial velocity measurements
+unchanged, so absolute heading cannot be recovered from radar and IMU
+alone.  A magnetometer resolves this and is standard on virtually all
+flight platforms; here MoCap yaw serves that role.  Without it, yaw
+drifts freely and position direction error accumulates.  This is
+therefore a sensor-architecture note rather than an open research
+problem.
 
 \subsection{Extreme Dynamics: Backflips}
 \label{sec:backflips}
@@ -973,15 +974,13 @@ For extreme maneuvers (backflips), only the batch solver is viable:
 3.32\,m/9.4\degree\ live for the best fixed-lag configuration
 --- a structural limit, not a tuning gap.
 
-The main open limitations are: (1) heading observability requires an
-external reference (magnetometer or visual compass); (2) backflips
-require batch optimization --- fixed-lag smoothing cannot replicate
-18\,s of global accelerometer integration or joint angular-acceleration
-regularization over the full maneuver horizon;
-and (3) the marginalization prior scale has no universal optimum across
-mission types.  Future work will address these with a fused
-magnetometer/visual heading source, adaptive knot spacing, and
-per-modality prior scaling.
+The main open limitations are: (1) backflips require batch
+optimization --- fixed-lag smoothing cannot replicate 18\,s of global
+accelerometer integration or joint angular-acceleration regularization
+over the full maneuver horizon; and (2) the marginalization prior scale
+has no universal optimum across mission types.  Future work will
+address these with adaptive knot spacing and per-modality prior
+scaling.
 
 %==================================================================
 \bibliographystyle{IEEEtran}
