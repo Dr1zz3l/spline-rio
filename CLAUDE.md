@@ -344,15 +344,54 @@ Fix: `lock_extrinsics: 1` per-bag, regardless of density.
 
 **Additional issue at dt_ori=0.0008s**: 22630 knots × 3 = 67890 DOF vs ~54000 gyro constraints
 (ratio 1.26 DOF/constraint) makes the system *technically* underconstrained, compounding the
-above. This is a secondary reason and also explains sliding window instability:
+above. This explains sliding window instability:
 - **Sliding window**: a 3s window has ~3750 ori knots (11250 DOF) vs ~3000 gyro samples
-  (9000 constraints) → underconstrained per window, Ceres exits after 2 iterations every
-  window (rank-deficient Jacobian), gyro bias runs away.
-  Fix: batch-only for backflips.
+  (9000 constraints) → underconstrained per window, rank=18/30 boundary DoF, Ceres exits
+  after 2 LM iterations every window (rank-deficient Jacobian).
 - Batch works because lambda_ori_accel=0.1 stiffens the underdetermined modes across 18s.
-  A 3s window lacks enough chain length; no amount of prior tuning can replicate global coupling.
+  A 3s window lacks enough chain length.
 
-**marg_prior_scale sweep for backflips SW at dt_ori=0.0008** (all equally broken):
+**SW Phase 1 fixes (bias anchor bug + per-bag hardening)**
+
+Root cause of original SW divergence (settled 2.37m/57.5°, gyr bias blowup to -1.19 rad/s):
+`sliding_window_solver.cpp` built the per-window bias prior from `traj_.biases` (current
+warm-start), not from the stationary calibration estimate. The marg prior is correctly
+re-centered (curvature-only); the bias prior must NOT be — it is an absolute sensor anchor.
+This caused the bias to ratchet freely across windows and absorb orientation null-space error.
+
+Fixes applied (per-bag gated via `bags.yaml`):
+- **E1 (bug fix, all bags)**: `init_biases_` captured in `SlidingWindowSolver::initialize()`;
+  `BiasPriorFunctor` now anchors to `init_biases_[j]` instead of `traj_.biases[j]`.
+- **E1+ `lock_gyro_bias`** (backflips per-bag): post-solve clamp resets gyro components to
+  `init_biases_[3..5]` before `compute_prior()`, so the Schur prior encodes the correct
+  boundary bias even when rank-deficient windows move it within a solve.
+- **E2 `lambda_heading: 10.0`** (backflips per-bag): stronger MoCap pseudo-magnetometer
+  heading prior provides absolute yaw anchor through the flip maneuver.
+- **E3 `marg_prior_scale: 0.0`** (backflips per-bag): disables the marg prior entirely;
+  rank-deficient S (375 ori knots vs ~300 gyro in stride zone) produces a garbage prior.
+  Window-to-window continuity comes from overlap and the heading/bias anchors instead.
+
+Results after Phase 1 (SW, backflips_best_velocity):
+
+| | Before (broken) | After Phase 1 | Batch ceiling |
+|---|---|---|---|
+| Settled pos | 2.37 m | **1.89 m** | 1.82 m |
+| Settled ori | 57.5° | **42.0°** | 8.31° |
+| Live pos | 2.58 m | **2.06 m** | — |
+| Live ori | 33.4° | **24.9°** | — |
+| Gyr bias z | -1.19 rad/s 💥 | -0.001 rad/s ✓ | ~0 |
+
+Non-regression: slow_racing live 0.374m/2.08° (was 0.393m/2.21°, slight improvement).
+
+Remaining gap to batch: per-window underconstraint (rank=18/30, iter=2) causes two waves
+of million-scale cost at windows 9–18 and 42–50 (the two backflip maneuvers). The heading
+prior creates an ill-conditioned Hessian during the flip that SPARSE_NORMAL_CHOLESKY cannot
+resolve in 2 steps. Phase 2 targets this.
+
+**marg_prior_scale sweep for backflips SW (pre-Phase-1, historical)**
+
+These numbers were measured without the bias anchor fix — the gyro was free to ratchet.
+With Phase 1 fixes applied, scale=0.0 gives the results above.
 
 | marg_prior_scale | Pos RMSE | Ori RMSE | Gyr bias z |
 |---|---|---|---|
@@ -362,8 +401,8 @@ above. This is a secondary reason and also explains sliding window instability:
 | 2e-3 | 2.37m | 57.5° | −0.16 rad/s |
 | window=5s (2e-4) | 2.57m | 59.1° | +0.30 rad/s |
 
-Position is locked at ~2.37m across 3 orders of magnitude. The failure is rank-deficiency,
-not prior miscaling. Neither wider windows nor preintegration can fix this.
+Position was locked at ~2.37m across 3 orders of magnitude due to the bias runaway masking
+all other effects. The bias anchor fix is a prerequisite for any further SW backflips work.
 
 **Note: dt_ori=0.0008 is NOT a spline bandwidth limit.** A cubic B-spline at dt_ori=0.008
 has 62.5 Hz Nyquist — well above the ~10–20 Hz bandwidth needed for a 0.5s backflip. The
@@ -497,11 +536,59 @@ Two conflicting requirements make preint fundamentally unable to help:
 At 100 Hz (dt_ori=0.01s): model bandwidth insufficient — same bad results as dt_ori=0.008
 At 1250 Hz (dt_ori=0.0008s): dt_preint=0.0008 < IMU period=0.001 → degenerate factors
 
-**Backflips sliding window** remains documented as batch-only (see section above).
+**Backflips sliding window**: Phase 1 (bias anchor fix) moved settled from 2.37m/57.5° to
+1.89m/42.0° and eliminated gyro bias runaway. Phase 2 (ω-gated radar + dt_ori=0.008) is
+next — see "Phase 2 / Phase 2.5" section below.
 
 **If enabling preint in the future**, start with `lambda_preint_v=0, lambda_preint_p=0` (r_R only).
 r_v residuals are ~0.1 m/s at init (P1-P3 velocity ≠ IMU-integrated velocity) and corrupt
 orientation through ∂r_v/∂R_i if enabled before the optimizer has converged.
+
+### Phase 2: backflips SW via dt_ori=0.008 (planned)
+
+**Goal**: reach batch quality (1.82m/8.31°) in SW by switching backflips to `dt_ori=0.008`,
+which gives 8:1 overconstrained per-window (healthy rank). The dt_ori sweep showed ori is
+~8° at both 0.008 and 0.0008; only **position** degrades at 0.008 (3.37m vs 1.81m).
+
+Root cause of pos degradation at dt_ori=0.008: brief peak orientation error during the flip
+corrupts the Doppler velocity projection → integrated position drift. When `|ω_body|` is
+large (the flip peak, ~10 rad/s), even a small orientation error in the spline creates a
+large Doppler residual that misguides the position solver.
+
+**Planned fix — ω-gated Huber on radar**: skip or heavily down-weight radar points when
+`|ω_body| > threshold` (~5 rad/s, to be swept). During the flip peak the lever-arm
+correction `ω × r` is large and sensitive to orientation error; suppressing radar at that
+instant lets accel/gyro carry position through the flip without the corrupting radar signal.
+Implementation: add `omega_gate_threshold` to `SolverConfig`; in `RadarDopplerFunctor`
+compute `|omega_body|` and apply a HuberLoss scale-down or skip the residual.
+
+Target: batch pos < 2m at `dt_ori=0.008` → SW windows become 8:1 overconstrained → full-rank
+Schur complement → healthy marginalization → SW reaches batch quality.
+
+### Phase 2.5: MoCap-aided stationary bias detection (planned)
+
+**Current state** (`detect_stationary_bias()` in `validate_nonlinear_solver.py`):
+- Scans full bag IMU with a rolling variance window (accel_std < 0.15, gyro_std < 0.05).
+- Finds the longest IMU-quiet period — usually the pre-flight stationary phase.
+- Computes gyro bias = mean, accel bias = mean − gravity_direction × 9.81.
+- **Limitations**: pure IMU-variance approach; no MoCap cross-validation; no drift check.
+  Could select the wrong window if the drone vibrates pre-flight (prop spin-up, surface
+  vibration) or if the sensor is thermally settling (bias has a trend within the window).
+
+**Planned improvements**:
+1. **MoCap-gated window selection**: intersect IMU-quiet periods with MoCap-velocity-quiet
+   periods (`|v_mocap| < 0.05 m/s`, `|ω_mocap| < 0.1 rad/s`). MoCap ground truth is
+   authoritative; a window that passes both IMU variance AND MoCap stillness is unambiguous.
+2. **Within-window drift detection**: fit a linear trend to the gyro signal within the
+   stationary window. If slope > threshold (e.g. > 0.001 rad/s²), the sensor is still
+   settling and the mean bias is unreliable — warn and use the last third of the window or
+   flag the bag for manual inspection.
+3. Expose a `stationary_quality` score in the output (window duration, MoCap confirmation
+   flag, drift rate) so downstream code can decide whether to trust the detected bias.
+
+Note: for the current bags this likely works correctly (stationary period is 0–3.5s for all
+best_velocity bags, well before flight start at 23.6s, and the gyro bias is near-zero).
+This is a robustness improvement for future bags with noisier pre-flight conditions.
 
 ## ROS Topics
 

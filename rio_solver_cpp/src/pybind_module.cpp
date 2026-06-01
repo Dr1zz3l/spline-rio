@@ -111,6 +111,7 @@ PYBIND11_MODULE(rio_solver, m) {
         .def_readwrite("lambda_boundary_ori", &SolverConfig::lambda_boundary_ori)
         .def_readwrite("lambda_boundary_ori_yaw", &SolverConfig::lambda_boundary_ori_yaw)
         .def_readwrite("lock_extrinsics", &SolverConfig::lock_extrinsics)
+        .def_readwrite("lock_gyro_bias", &SolverConfig::lock_gyro_bias)
         .def_readwrite("optimize_pitch_only", &SolverConfig::optimize_pitch_only)
         .def_readwrite("lambda_extrinsic_prior", &SolverConfig::lambda_extrinsic_prior)
         .def_readwrite("max_iterations", &SolverConfig::max_iterations)

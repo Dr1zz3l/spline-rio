@@ -72,6 +72,13 @@ private:
     // Marginalization prior (carried across window advances)
     MarginalizationPrior prior_;
 
+    // Initial biases from stationary detection (captured in initialize()).
+    // Used as the absolute anchor for the per-window bias prior.
+    // The marg prior is correctly re-centered every window (curvature-only).
+    // The bias prior must NOT be re-centered — it is an absolute measurement
+    // anchor tied to the stationary calibration estimate.
+    std::array<double, 6> init_biases_{};
+
     // Add the marginalization prior to a Ceres problem.
     // Connects to traj_ indices [prior_.pos_start, +n_bound_pos) etc.
     void add_prior_to_problem(ceres::Problem& problem);

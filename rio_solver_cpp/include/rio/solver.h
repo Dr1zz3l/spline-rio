@@ -96,6 +96,14 @@ struct SolverConfig {
     bool optimize_pitch_only{true};
     double lambda_extrinsic_prior{10.0};
 
+    // Gyro bias locking (sliding window only).
+    // When true, the gyro components of the bias block are clamped back to the
+    // initial stationary estimate after each window solve, before compute_prior()
+    // bakes the corrected state into the Schur complement prior.
+    // Prevents runaway gyro bias in rank-deficient windows (e.g. backflips at
+    // dt_ori=0.0008 where orientation DoF exceed gyro constraints per window).
+    bool lock_gyro_bias{false};
+
     // Optimizer
     int max_iterations{40};
 

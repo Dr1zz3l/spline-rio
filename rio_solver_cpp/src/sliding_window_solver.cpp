@@ -70,6 +70,7 @@ void SlidingWindowSolver::initialize(
     traj_.pos_cps   = pos_cps;
     traj_.ori_knots = ori_knots;
     traj_.biases    = biases;
+    init_biases_    = biases;   // absolute anchor: never updated after initialization
     traj_.extrinsic_euler_deg = {ext_.roll_deg, ext_.pitch_deg, ext_.yaw_deg};
     traj_.pitch_delta = 0.0;
     prior_.valid    = false;
@@ -401,10 +402,14 @@ SolverResult SlidingWindowSolver::solve_window(
     }
 
     // ---- Bias prior --------------------------------------------------------
+    // Anchored to init_biases_ (stationary calibration estimate), NOT to the
+    // current warm-start.  The marg prior is correctly re-centered each window
+    // (it is curvature-only); the bias prior is an absolute sensor measurement
+    // and must not drift with the warm-start.
     if (cfg_.lambda_bias_prior_accel > 0.0 || cfg_.lambda_bias_prior_gyro > 0.0) {
         double w = std::sqrt(cfg_.lambda_bias_prior_accel * cfg_.lambda_bias_prior_gyro);
         Eigen::Matrix<double, 6, 1> b0;
-        for (int j = 0; j < 6; ++j) b0[j] = traj_.biases[j];
+        for (int j = 0; j < 6; ++j) b0[j] = init_biases_[j];
         auto* f = new BiasPriorFunctor(b0);
         auto* cost = make_auto_cost_sw(f, 6, {6});
         problem.AddResidualBlock(cost,
@@ -522,6 +527,19 @@ SolverResult SlidingWindowSolver::solve_window(
 
     ceres::Solver::Summary summary;
     ceres::Solve(options, &problem, &summary);
+
+    // ---- lock_gyro_bias: post-solve gyro clamp ----------------------------
+    // Rank-deficient orientation windows (e.g. backflips at dt_ori=0.0008:
+    // 1.25 DoF/gyro-constraint per window) can still move the gyro bias
+    // despite the absolute prior, because the null-space of the underdetermined
+    // orientation system allows simultaneous adjustments to Ω knots and b_g.
+    // Clamping here resets gyro bias before compute_prior() bakes it into the
+    // Schur complement boundary state, so the inter-window prior correctly
+    // encodes the calibrated gyro estimate.
+    if (cfg_.lock_gyro_bias) {
+        for (int j = 3; j < 6; ++j)
+            traj_.biases[j] = init_biases_[j];
+    }
 
     SolverResult result;   // declared early so covariance block can fill it
 

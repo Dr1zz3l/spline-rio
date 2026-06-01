@@ -22,6 +22,9 @@ solver_overrides:
     dt_ori: 0.0008       # 10x denser: needed to represent rapid angular acceleration of backflip
     dt_pos: 0.010        # coarser position: compensates for increased solve time from dense ori knots
     lock_extrinsics: 1   # extrinsic pitch drifts on backflips (orientation model error acts as surrogate)
+    lock_gyro_bias: 1    # E1: post-solve gyro clamp; rank-deficient windows let bias run away to >1 rad/s
+    lambda_heading: 10.0 # E2: stronger pseudo-magnetometer; absolute yaw anchor through the flip
+    marg_prior_scale: 0.0  # E3: disable marg prior; S is rank-deficient (375 ori knots vs ~300 gyro in stride zone)
 
 radar_config:
   default:
