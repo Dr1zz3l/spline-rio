@@ -1594,29 +1594,15 @@ def main():
     if USE_MOCAP_HEADING and LAMBDA_HEADING > 0 and mocap_slerp is not None:
         print(f"\n{'Heading Priors (MoCap pseudo-magnetometer)':-^80}")
         heading_dt = 0.01   # 100 Hz, matches raw MoCap rate (/mocap/angrybird2/pose @ 100 Hz)
-        # Gate: skip samples where pitch is close to ±90° (gimbal lock).
-        # atan2(R[1,0], R[0,0]) extracts ZYX yaw = atan2(sin(ψ)cos(θ), cos(ψ)cos(θ)).
-        # At |pitch| → 90° both entries → 0; the formula becomes noise-dominated and
-        # crosses a discontinuity past 90° (atan2(0,-ε) = ±180°).  For manoeuvres that
-        # sweep through ±90° pitch (backflips), this injects spurious yaw constraints at
-        # the flip apex.  Gate at 70° leaves a comfortable margin.
-        HEADING_PITCH_GATE_DEG = 70.0
-        n_gated = 0
         t_spline_start_rel = pos_bspline.t_start
         t_spline_end_rel   = pos_bspline.t_end
         for t_rel in np.arange(t_spline_start_rel, t_spline_end_rel, heading_dt):
             t_abs = t_rel + t_ref
             t_clamped = np.clip(t_abs, _mc_times[0], _mc_times[-1])
             R_gt = mocap_slerp(t_clamped).as_matrix()
-            # R[2,0] = -sin(pitch) in ZYX convention
-            pitch_deg = abs(np.degrees(np.arcsin(np.clip(-R_gt[2, 0], -1.0, 1.0))))
-            if pitch_deg > HEADING_PITCH_GATE_DEG:
-                n_gated += 1
-                continue
             heading_priors.append((t_abs, R_gt))
         print(f"  Built {len(heading_priors)} heading priors at {1/heading_dt:.0f} Hz  "
-              f"lambda_heading={LAMBDA_HEADING}"
-              + (f"  ({n_gated} gated: |pitch| > {HEADING_PITCH_GATE_DEG}°)" if n_gated else ""))
+              f"lambda_heading={LAMBDA_HEADING}")
 
     # ==================== Create initial state ====================
     initial_state = TrajectoryState(
