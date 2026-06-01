@@ -3,6 +3,8 @@
 #include <rio/factors/radar_doppler.h>
 #include <rio/factors/imu_accel.h>
 #include <rio/factors/imu_gyro.h>
+#include <rio/factors/analytic/gyro_analytic.h>
+#include <rio/factors/analytic/accel_analytic.h>
 #include <rio/factors/gravity_direction.h>
 #include <rio/factors/heading_prior.h>
 #include <rio/factors/bias_prior.h>
@@ -49,6 +51,17 @@ static ceres::CostFunction* make_auto_cost_sw(Functor* f, int num_residuals,
     cost->SetNumResiduals(num_residuals);
     for (int s : param_sizes) cost->AddParameterBlock(s);
     return cost;
+}
+
+// Analytical cost functions for high-frequency IMU factors (mirrors solver.cpp).
+static inline ceres::CostFunction* make_gyro_cost(
+    const Eigen::Vector3d& z_gyro, double u_ori, double inv_dt_ori) {
+    return new analytic::GyroAnalyticFactor(z_gyro, u_ori, inv_dt_ori);
+}
+static inline ceres::CostFunction* make_accel_cost(
+    const Eigen::Vector3d& z_acc, double u_ori, double inv_dt_ori,
+    double u_pos, double inv_dt_pos) {
+    return new analytic::AccelAnalyticFactor(z_acc, u_ori, inv_dt_ori, u_pos, inv_dt_pos);
 }
 
 // ============================================================================
@@ -281,12 +294,7 @@ SolverResult SlidingWindowSolver::solve_window(
             // Accel factor
             if (has_pos) {
                 Eigen::Vector3d z_acc(imu.ax, imu.ay, imu.az);
-                auto* f = new AccelFunctor(z_acc, u_ori, inv_dt_ori, u_pos, inv_dt_pos);
-                std::vector<int> sizes;
-                for (int k = 0; k < N_ORI; ++k) sizes.push_back(4);
-                for (int k = 0; k < N_POS; ++k) sizes.push_back(3);
-                sizes.push_back(6);
-                auto* cost = make_auto_cost_sw(f, 3, sizes);
+                auto* cost = make_accel_cost(z_acc, u_ori, inv_dt_ori, u_pos, inv_dt_pos);
                 std::vector<double*> params;
                 for (int k = 0; k < N_ORI; ++k) params.push_back(traj_.ori_knot_data(ori0 + k));
                 for (int k = 0; k < N_POS; ++k) params.push_back(traj_.pos_cp_data(pos0 + k));
@@ -327,11 +335,7 @@ SolverResult SlidingWindowSolver::solve_window(
             // Gyro
             {
                 Eigen::Vector3d z_gyro(imu.gx, imu.gy, imu.gz);
-                auto* f = new GyroFunctor(z_gyro, u_ori, inv_dt_ori);
-                std::vector<int> sizes;
-                for (int k = 0; k < N_ORI; ++k) sizes.push_back(4);
-                sizes.push_back(6);
-                auto* cost = make_auto_cost_sw(f, 3, sizes);
+                auto* cost = make_gyro_cost(z_gyro, u_ori, inv_dt_ori);
                 std::vector<double*> params;
                 for (int k = 0; k < N_ORI; ++k) params.push_back(traj_.ori_knot_data(ori0 + k));
                 params.push_back(traj_.bias_data());
@@ -342,12 +346,7 @@ SolverResult SlidingWindowSolver::solve_window(
             // Accel
             if (has_pos) {
                 Eigen::Vector3d z_acc(imu.ax, imu.ay, imu.az);
-                auto* f = new AccelFunctor(z_acc, u_ori, inv_dt_ori, u_pos, inv_dt_pos);
-                std::vector<int> sizes;
-                for (int k = 0; k < N_ORI; ++k) sizes.push_back(4);
-                for (int k = 0; k < N_POS; ++k) sizes.push_back(3);
-                sizes.push_back(6);
-                auto* cost = make_auto_cost_sw(f, 3, sizes);
+                auto* cost = make_accel_cost(z_acc, u_ori, inv_dt_ori, u_pos, inv_dt_pos);
                 std::vector<double*> params;
                 for (int k = 0; k < N_ORI; ++k) params.push_back(traj_.ori_knot_data(ori0 + k));
                 for (int k = 0; k < N_POS; ++k) params.push_back(traj_.pos_cp_data(pos0 + k));

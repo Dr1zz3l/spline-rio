@@ -3,6 +3,8 @@
 #include <rio/factors/radar_doppler.h>
 #include <rio/factors/imu_accel.h>
 #include <rio/factors/imu_gyro.h>
+#include <rio/factors/analytic/gyro_analytic.h>
+#include <rio/factors/analytic/accel_analytic.h>
 #include <rio/factors/gravity_direction.h>
 #include <rio/factors/heading_prior.h>
 #include <rio/factors/bias_prior.h>
@@ -54,6 +56,17 @@ ceres::CostFunction* make_auto_cost(Functor* f,
     for (int s : param_sizes)
         cost->AddParameterBlock(s);
     return cost;
+}
+
+// Analytical cost functions for high-frequency IMU factors.
+inline ceres::CostFunction* make_gyro_cost(
+    const Eigen::Vector3d& z_gyro, double u_ori, double inv_dt_ori) {
+    return new analytic::GyroAnalyticFactor(z_gyro, u_ori, inv_dt_ori);
+}
+inline ceres::CostFunction* make_accel_cost(
+    const Eigen::Vector3d& z_acc, double u_ori, double inv_dt_ori,
+    double u_pos, double inv_dt_pos) {
+    return new analytic::AccelAnalyticFactor(z_acc, u_ori, inv_dt_ori, u_pos, inv_dt_pos);
 }
 
 // ============================================================================
@@ -254,14 +267,7 @@ SolverResult solve(
             // Accel factor (needs position too)
             if (has_pos) {
                 Eigen::Vector3d z_acc(imu.ax, imu.ay, imu.az);
-                auto* f = new AccelFunctor(z_acc, u_ori, inv_dt_ori, u_pos, inv_dt_pos);
-
-                std::vector<int> sizes;
-                for (int i = 0; i < N_ORI; ++i) sizes.push_back(4);
-                for (int i = 0; i < N_POS; ++i) sizes.push_back(3);
-                sizes.push_back(6);
-
-                auto* cost = make_auto_cost(f, 3, sizes);
+                auto* cost = make_accel_cost(z_acc, u_ori, inv_dt_ori, u_pos, inv_dt_pos);
 
                 std::vector<double*> params;
                 for (int i = 0; i < N_ORI; ++i)
@@ -312,13 +318,7 @@ SolverResult solve(
             // Gyro factor (orientation only)
             {
                 Eigen::Vector3d z_gyro(imu.gx, imu.gy, imu.gz);
-                auto* f = new GyroFunctor(z_gyro, u_ori, inv_dt_ori);
-
-                std::vector<int> sizes;
-                for (int i = 0; i < N_ORI; ++i) sizes.push_back(4);
-                sizes.push_back(6);
-
-                auto* cost = make_auto_cost(f, 3, sizes);
+                auto* cost = make_gyro_cost(z_gyro, u_ori, inv_dt_ori);
 
                 std::vector<double*> params;
                 for (int i = 0; i < N_ORI; ++i)
@@ -333,14 +333,7 @@ SolverResult solve(
             // Accel factor (needs position too)
             if (has_pos) {
                 Eigen::Vector3d z_acc(imu.ax, imu.ay, imu.az);
-                auto* f = new AccelFunctor(z_acc, u_ori, inv_dt_ori, u_pos, inv_dt_pos);
-
-                std::vector<int> sizes;
-                for (int i = 0; i < N_ORI; ++i) sizes.push_back(4);
-                for (int i = 0; i < N_POS; ++i) sizes.push_back(3);
-                sizes.push_back(6);
-
-                auto* cost = make_auto_cost(f, 3, sizes);
+                auto* cost = make_accel_cost(z_acc, u_ori, inv_dt_ori, u_pos, inv_dt_pos);
 
                 std::vector<double*> params;
                 for (int i = 0; i < N_ORI; ++i)
