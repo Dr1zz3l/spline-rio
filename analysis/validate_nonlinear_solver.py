@@ -1986,6 +1986,10 @@ def solve_trajectory_nonlinear(
 
 def detect_stationary_bias(
     imu_data_full,
+    mocap_times=None,
+    mocap_velocities=None,
+    mocap_orientations=None,
+    mocap_vel_threshold: float = 0.05,
     window_sec: float = 1.0,
     min_stationary_sec: float = 2.0,
     accel_std_threshold: float = 0.15,
@@ -1993,23 +1997,43 @@ def detect_stationary_bias(
     verbose: bool = True,
 ) -> dict:
     """
-    Variance-based stationary detection for IMU bias initialization.
+    Stationary-window IMU bias detection.
 
-    Scans the FULL bag IMU data with a rolling window. When the standard
-    deviation of both accelerometer and gyroscope stays below tight thresholds
-    for at least `min_stationary_sec`, that window is flagged as stationary.
-    The gyro and accel means from that window give the bias estimate.
+    Scans the FULL bag IMU data with a rolling variance window to find the
+    longest period where both accel std and gyro std stay below tight thresholds.
+    Uses that window to estimate gyro bias (mean gyro) and accel bias.
 
-    For accelerometer, the bias is computed as:
-        b_a = mean(z_accel) - [0, 0, +9.81]  (gravity in NED→FLU body frame
-        when the drone is level and z-up)
+    Accel bias computation (two paths):
 
-    Returns dict with keys:
-        'gyr_bias': (3,) mean gyro during stationary period
-        'acc_bias': (3,) accel bias (mean - gravity)
-        'stationary_start': float timestamp
-        'stationary_end': float timestamp
-        'n_samples': int
+    With MoCap (preferred):
+        b_a = mean(z_accel) - R_bw^T * [0, 0, 9.81]
+        Uses the mean body-to-world rotation from MoCap during the window.
+        Correct for any drone orientation (level or tilted) and recovers the
+        full 3-D bias vector.
+
+    Without MoCap (IMU-only fallback):
+        b_a = mean(z_accel) - (mean(z_accel) / |mean(z_accel)|) * 9.81
+        This removes the scale-error component of the gravity measurement.
+        Recovers only the bias aligned with the gravity direction; transverse
+        components (horizontal axes when level) are unobservable without
+        orientation knowledge.
+
+    Optional MoCap velocity cross-check (when mocap_velocities provided):
+        Confirms the IMU-quiet window is a genuine stationary period, not just
+        low-vibration prop idle.
+
+    Parameters
+    ----------
+    mocap_times : (N,) array of absolute timestamps — must cover the pre-flight
+        stationary period (i.e. full-bag MoCap, not trimmed to flight window).
+    mocap_velocities : (N,3) body velocity — used as stationary cross-check gate.
+    mocap_orientations : (N,3,3) R_body_to_world rotation matrices — used for
+        full-3D accel bias when provided.
+    mocap_vel_threshold : m/s — MoCap velocity gate for cross-validation.
+
+    Returns dict with keys: gyr_bias, acc_bias, stationary_start,
+    stationary_end, n_samples, bias_mode ('mocap' or 'imu_only').
+    Returns None if no qualifying stationary window is found.
     """
     if len(imu_data_full) < 10:
         if verbose:
@@ -2020,7 +2044,6 @@ def detect_stationary_bias(
     accels = np.array([d.linear_acceleration for d in imu_data_full])
     gyros = np.array([d.angular_velocity for d in imu_data_full])
 
-    # Estimate sample rate
     dt_median = np.median(np.diff(times))
     fs = 1.0 / dt_median
     win_samples = max(10, int(window_sec * fs))
@@ -2028,31 +2051,25 @@ def detect_stationary_bias(
     if verbose:
         print(f"  Stationary detection: {len(times)} samples, fs={fs:.0f} Hz, window={win_samples} samples ({window_sec}s)")
 
-    # Rolling standard deviation (per-axis, take max across axes)
     n = len(times)
     best_start = None
     best_end = None
     best_length = 0
-
-    # Sliding window: compute std for each window position
     current_start = None
+
     for i in range(0, n - win_samples, win_samples // 2):  # 50% overlap steps
         j = i + win_samples
-        accel_window = accels[i:j]
-        gyro_window = gyros[i:j]
-
-        accel_std = np.std(accel_window, axis=0)
-        gyro_std = np.std(gyro_window, axis=0)
+        accel_std = np.std(accels[i:j], axis=0)
+        gyro_std  = np.std(gyros[i:j],  axis=0)
 
         is_stationary = (np.max(accel_std) < accel_std_threshold and
-                         np.max(gyro_std) < gyro_std_threshold)
+                         np.max(gyro_std)  < gyro_std_threshold)
 
         if is_stationary:
             if current_start is None:
                 current_start = i
         else:
             if current_start is not None:
-                # End of stationary block
                 block_duration = times[i] - times[current_start]
                 if block_duration > best_length:
                     best_length = block_duration
@@ -2060,7 +2077,6 @@ def detect_stationary_bias(
                     best_end = i
                 current_start = None
 
-    # Handle case where stationary extends to end of data
     if current_start is not None:
         block_duration = times[n - 1] - times[current_start]
         if block_duration > best_length:
@@ -2070,36 +2086,86 @@ def detect_stationary_bias(
 
     if best_start is None or best_length < min_stationary_sec:
         if verbose:
-            print(f"  [WARN] No stationary period >= {min_stationary_sec}s found (best: {best_length:.1f}s)")
+            print(f"  [WARN] No stationary period >= {min_stationary_sec}s found"
+                  f" (best: {best_length:.1f}s); falling back to zero biases")
         return None
 
-    # Extract bias from the validated stationary window
-    stat_accels = accels[best_start:best_end]
-    stat_gyros = gyros[best_start:best_end]
+    t_win_start = times[best_start]
+    t_win_end   = times[best_end]
 
-    gyr_bias = np.mean(stat_gyros, axis=0)
-    # Accel bias: subtract expected gravity vector (assuming drone is level, z-up)
-    # In a level IMU frame, gravity reads as [0, 0, +9.81] (z-up convention FLU)
-    # We detect the actual gravity direction from the mean accel during stationary
+    # MoCap velocity cross-check: confirm the IMU-quiet window is genuinely static
+    if mocap_times is not None and mocap_velocities is not None:
+        mc_mask = (mocap_times >= t_win_start) & (mocap_times <= t_win_end)
+        if mc_mask.any():
+            mc_speed = np.linalg.norm(mocap_velocities[mc_mask], axis=1)
+            mean_speed = mc_speed.mean()
+            if mean_speed > mocap_vel_threshold:
+                if verbose:
+                    print(f"  [WARN] IMU-quiet window [{t_win_start - times[0]:.1f},"
+                          f" {t_win_end - times[0]:.1f}]s rejected: MoCap mean speed"
+                          f" {mean_speed:.3f} m/s > {mocap_vel_threshold} m/s threshold")
+                return None
+            elif verbose:
+                print(f"  MoCap velocity cross-check: mean speed {mean_speed:.3f} m/s < "
+                      f"{mocap_vel_threshold} m/s  [OK]")
+
+    stat_accels = accels[best_start:best_end]
+    stat_gyros  = gyros[best_start:best_end]
+
+    gyr_bias         = np.mean(stat_gyros, axis=0)
     gravity_measured = np.mean(stat_accels, axis=0)
-    gravity_norm = np.linalg.norm(gravity_measured)
-    acc_bias = gravity_measured - (gravity_measured / gravity_norm) * 9.81
+    gravity_norm     = np.linalg.norm(gravity_measured)
+
+    # --- Accel bias ---
+    bias_mode = 'imu_only'
+    R_bw_mean = None
+
+    if mocap_times is not None and mocap_orientations is not None:
+        mc_mask = (mocap_times >= t_win_start) & (mocap_times <= t_win_end)
+        if mc_mask.any():
+            # Mean rotation: average the R matrices, re-orthogonalise via SVD.
+            # Valid for the small orientation variation of a stationary window.
+            R_stack = mocap_orientations[mc_mask]          # (M, 3, 3)
+            R_mean  = R_stack.mean(axis=0)
+            U, _, Vt = np.linalg.svd(R_mean)
+            R_bw_mean = U @ Vt                             # nearest SO(3)
+            # b_a = z_acc_mean - R_bw^T * [0,0,9.81]
+            # (model: z_acc = R_bw^T * (a_world - g_world) + b_a,
+            #         g_world = [0,0,-9.81], at rest a_world=0
+            #         => z_acc = R_bw^T * [0,0,9.81] + b_a)
+            acc_bias  = gravity_measured - R_bw_mean.T @ np.array([0.0, 0.0, 9.81])
+            bias_mode = 'mocap'
+
+    if bias_mode == 'imu_only':
+        # Without orientation: remove only the scale-error component aligned with
+        # measured gravity.  Transverse bias (horizontal when level) is unobservable
+        # and left as zero — the optimizer absorbs it during the first few iterations.
+        acc_bias = gravity_measured - (gravity_measured / gravity_norm) * 9.81
 
     if verbose:
-        print(f"  Stationary period: {times[best_start] - times[0]:.1f}s to {times[best_end] - times[0]:.1f}s ({best_length:.1f}s, {best_end - best_start} samples)")
-        print(f"  Accel mean (stationary): [{gravity_measured[0]:.4f}, {gravity_measured[1]:.4f}, {gravity_measured[2]:.4f}] m/s² (|a|={gravity_norm:.4f})")
-        print(f"  Accel std  (stationary): [{np.std(stat_accels[:,0]):.4f}, {np.std(stat_accels[:,1]):.4f}, {np.std(stat_accels[:,2]):.4f}] m/s²")
+        t0 = times[0]
+        print(f"  Stationary period: {t_win_start - t0:.1f}s to {t_win_end - t0:.1f}s"
+              f" ({best_length:.1f}s, {best_end - best_start} samples)")
+        print(f"  Accel mean (stationary): [{gravity_measured[0]:.4f}, {gravity_measured[1]:.4f},"
+              f" {gravity_measured[2]:.4f}] m/s² (|a|={gravity_norm:.4f})")
+        print(f"  Accel std  (stationary): [{np.std(stat_accels[:,0]):.4f},"
+              f" {np.std(stat_accels[:,1]):.4f}, {np.std(stat_accels[:,2]):.4f}] m/s²")
         print(f"  Gyro  mean (stationary): [{gyr_bias[0]:.5f}, {gyr_bias[1]:.5f}, {gyr_bias[2]:.5f}] rad/s")
-        print(f"         = [{np.degrees(gyr_bias[0]):.3f}, {np.degrees(gyr_bias[1]):.3f}, {np.degrees(gyr_bias[2]):.3f}] deg/s")
-        print(f"  Gyro  std  (stationary): [{np.std(stat_gyros[:,0]):.5f}, {np.std(stat_gyros[:,1]):.5f}, {np.std(stat_gyros[:,2]):.5f}] rad/s")
-        print(f"  Accel bias (mean - g):   [{acc_bias[0]:.4f}, {acc_bias[1]:.4f}, {acc_bias[2]:.4f}] m/s²")
+        print(f"         = [{np.degrees(gyr_bias[0]):.3f}, {np.degrees(gyr_bias[1]):.3f},"
+              f" {np.degrees(gyr_bias[2]):.3f}] deg/s")
+        print(f"  Gyro  std  (stationary): [{np.std(stat_gyros[:,0]):.5f},"
+              f" {np.std(stat_gyros[:,1]):.5f}, {np.std(stat_gyros[:,2]):.5f}] rad/s")
+        print(f"  Accel bias ({bias_mode}): [{acc_bias[0]:.4f}, {acc_bias[1]:.4f}, {acc_bias[2]:.4f}] m/s²")
+        if bias_mode == 'imu_only':
+            print(f"  [NOTE] No MoCap orientation in window; transverse bias unobservable.")
 
     return {
-        'gyr_bias': gyr_bias,
-        'acc_bias': acc_bias,
-        'stationary_start': times[best_start],
-        'stationary_end': times[best_end],
-        'n_samples': best_end - best_start,
+        'gyr_bias':         gyr_bias,
+        'acc_bias':         acc_bias,
+        'stationary_start': t_win_start,
+        'stationary_end':   t_win_end,
+        'n_samples':        best_end - best_start,
+        'bias_mode':        bias_mode,
     }
 
 
@@ -2476,12 +2542,27 @@ def main():
     print(f"  Initialized from {len(mocap_times_rel)} MoCap samples ({1.0/(mocap_times_rel[1]-mocap_times_rel[0]):.0f} Hz)")
     
     # ==================== Bias Initialization ====================
-    # Use variance-based stationary detection on the FULL bag IMU data
-    # to extract gyro/accel bias from the ground period (before takeoff).
+    # Use variance-based stationary detection on the FULL bag IMU data.
+    # Pass full-bag MoCap (bag_data.agiros_state) not the flight-window-trimmed
+    # agiros_states, so the pre-flight stationary period is visible.
     g_world = np.array([0, 0, -9.81])
     print(f"\n{'Stationary Bias Detection':-^80}")
     if USE_STATIONARY_BIAS:
-        stationary_result = detect_stationary_bias(bag_data.imu_data, verbose=True)
+        if bag_data.agiros_state:
+            _mc_full = bag_data.agiros_state
+            _mc_times_full = np.array([s.timestamp for s in _mc_full])
+            _mc_vels_full  = np.array([s.velocity   for s in _mc_full])
+            _mc_rots_full  = np.array([quat_to_rotation_matrix(s.orientation)
+                                       for s in _mc_full])
+        else:
+            _mc_times_full = _mc_vels_full = _mc_rots_full = None
+        stationary_result = detect_stationary_bias(
+            bag_data.imu_data,
+            mocap_times=_mc_times_full,
+            mocap_velocities=_mc_vels_full,
+            mocap_orientations=_mc_rots_full,
+            verbose=True,
+        )
     else:
         stationary_result = None
         print("  Stationary detection DISABLED (USE_STATIONARY_BIAS=False)")

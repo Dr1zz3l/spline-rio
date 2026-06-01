@@ -1281,16 +1281,32 @@ def main():
     # Time reference = first IMU sample after time offset (MoCap-free)
     t_ref = imu_data[0].timestamp
 
-    # ==================== P3: Stationary Bias (already MoCap-free) ====================
-    print(f"\n{'Stationary Bias Detection (sensor-only)':-^80}")
-    # Lower min_stationary_sec to 1.0s — the configured timing windows cover flight only,
-    # so the 1s pre-flight stationary period would be rejected with the default 2s threshold.
-    stationary_result = detect_stationary_bias(bag_data.imu_data, min_stationary_sec=1.0, verbose=True)
+    # ==================== P3: Stationary Bias ====================
+    print(f"\n{'Stationary Bias Detection':-^80}")
+    # Use full-bag MoCap (bag_data.agiros_state, not trimmed agiros_states) so the
+    # pre-flight stationary period is covered even when the flight window starts later.
+    # Lower min_stationary_sec to 1.0s — timing windows cover flight only.
+    if bag_data.agiros_state:
+        _mc_full = bag_data.agiros_state
+        _mc_times_full = np.array([s.timestamp for s in _mc_full])
+        _mc_vels_full  = np.array([s.velocity   for s in _mc_full])
+        _mc_rots_full  = np.array([quat_to_rotation_matrix(s.orientation) for s in _mc_full])
+    else:
+        _mc_times_full = _mc_vels_full = _mc_rots_full = None
+
+    stationary_result = detect_stationary_bias(
+        bag_data.imu_data,
+        mocap_times=_mc_times_full,
+        mocap_velocities=_mc_vels_full,
+        mocap_orientations=_mc_rots_full,
+        min_stationary_sec=1.0,
+        verbose=True,
+    )
 
     if stationary_result is not None:
         acc_bias = stationary_result['acc_bias']
         gyr_bias = stationary_result['gyr_bias']
-        # Re-extract gravity (mean accel) from the stationary window
+        # Re-extract gravity (mean accel) from the stationary window for P1 attitude init
         t_stat_s = stationary_result['stationary_start']
         t_stat_e = stationary_result['stationary_end']
         stat_imu = [d for d in bag_data.imu_data
@@ -1298,7 +1314,7 @@ def main():
         gravity_body_stationary = (np.mean([d.linear_acceleration for d in stat_imu], axis=0)
                                    if stat_imu else np.array([0.0, 0.0, 9.81]))
     else:
-        print("  [WARN] Stationary detection failed; using zero biases and level initial attitude")
+        print("  [WARN] No stationary window found; using zero biases and level initial attitude")
         acc_bias = np.zeros(3)
         gyr_bias = np.zeros(3)
         gravity_body_stationary = np.array([0.0, 0.0, 9.81])

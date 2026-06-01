@@ -652,30 +652,36 @@ The structural limit (3s windows vs 18s batch chain for accel integration; spars
 further improvement unlikely without fundamentally changing the sensor setup.
 `bags.yaml` `solver_overrides.backflips_best_velocity` retains `dt_ori=0.0008` for batch compatibility.
 
-### Phase 2.5: MoCap-aided stationary bias detection (planned)
+### Phase 2.5: MoCap-aided stationary bias detection (implemented)
 
-**Current state** (`detect_stationary_bias()` in `validate_nonlinear_solver.py`):
-- Scans full bag IMU with a rolling variance window (accel_std < 0.15, gyro_std < 0.05).
-- Finds the longest IMU-quiet period — usually the pre-flight stationary phase.
-- Computes gyro bias = mean, accel bias = mean − gravity_direction × 9.81.
-- **Limitations**: pure IMU-variance approach; no MoCap cross-validation; no drift check.
-  Could select the wrong window if the drone vibrates pre-flight (prop spin-up, surface
-  vibration) or if the sensor is thermally settling (bias has a trend within the window).
+**`detect_stationary_bias()` in `validate_nonlinear_solver.py`**, called from both
+`validate_live_solver.py` and `validate_nonlinear_solver.py`.
 
-**Planned improvements**:
-1. **MoCap-gated window selection**: intersect IMU-quiet periods with MoCap-velocity-quiet
-   periods (`|v_mocap| < 0.05 m/s`, `|ω_mocap| < 0.1 rad/s`). MoCap ground truth is
-   authoritative; a window that passes both IMU variance AND MoCap stillness is unambiguous.
-2. **Within-window drift detection**: fit a linear trend to the gyro signal within the
-   stationary window. If slope > threshold (e.g. > 0.001 rad/s²), the sensor is still
-   settling and the mean bias is unreliable — warn and use the last third of the window or
-   flag the bag for manual inspection.
-3. Expose a `stationary_quality` score in the output (window duration, MoCap confirmation
-   flag, drift rate) so downstream code can decide whether to trust the detected bias.
+Both callers pass the **full-bag** `bag_data.agiros_state` (not the flight-window-trimmed
+subset), so the pre-flight stationary period is always visible even when the flight window
+starts at t=23.6s.
 
-Note: for the current bags this likely works correctly (stationary period is 0–3.5s for all
-best_velocity bags, well before flight start at 23.6s, and the gyro bias is near-zero).
-This is a robustness improvement for future bags with noisier pre-flight conditions.
+**MoCap path** (when MoCap data covers the IMU-quiet window):
+- Velocity cross-check: rejects the window if mean `|v_mocap| > 0.05 m/s` (confirms not
+  vibrating prop idle or surface jitter)
+- Full 3-D accel bias: `b_a = mean(z_acc) − R_bw^T · [0, 0, 9.81]` using mean MoCap
+  rotation during the window. Correct for any drone orientation (level or tilted). Mean of
+  rotation matrices re-orthogonalised via SVD.
+- Gyro bias: `mean(z_gyro)` as before.
+
+**IMU-only fallback** (no MoCap, or MoCap doesn't overlap the window):
+- Accel bias: removes only the scale-error component aligned with measured gravity:
+  `b_a = mean(z_acc) − (mean(z_acc) / |mean(z_acc)|) · 9.81`
+  Transverse bias (horizontal axes when level) is unobservable without orientation and
+  left at zero — the optimizer absorbs it within the first few iterations.
+- Logs `[NOTE] No MoCap orientation in window; transverse bias unobservable.`
+
+**No-static-window fallback**: returns `None` → callers log `[WARN]` and use zero biases +
+level gravity `[0,0,9.81]`. Valid for this system (gyro bias near-zero); would need
+attention for a drifty IMU.
+
+Slow-racing batch result slightly improved: 0.169m/1.02° (was 0.174m/1.08°).
+Other bags unchanged within noise.
 
 ## ROS Topics
 
