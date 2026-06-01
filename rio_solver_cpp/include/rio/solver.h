@@ -124,6 +124,7 @@ struct SolverConfig {
 
     // Optimizer
     int max_iterations{40};
+    int num_threads{0};   // 0 = auto (std::thread::hardware_concurrency())
 
     // Preintegration
     bool   use_preintegration{false}; // replace raw IMU with preintegrated factors

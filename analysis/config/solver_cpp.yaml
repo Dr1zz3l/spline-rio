@@ -27,6 +27,7 @@ lambda_gyro: 4.0
 lambda_snap_pos: 0.00002
 lambda_bias_prior_accel: 10000.0
 lambda_bias_prior_gyro: 10000.0
+num_threads: 0   # 0 = auto (all logical cores via hardware_concurrency)
 
 # Sliding window (used when --sliding-window is active)
 # Phase 4b results (--mocap-yaw, Schur marginalization, marg_prior_scale=2e-4):

@@ -20,6 +20,7 @@
 #include <iostream>
 #include <unordered_set>
 #include <sstream>
+#include <thread>
 
 namespace rio {
 
@@ -562,7 +563,11 @@ SolverResult SlidingWindowSolver::solve_window(
     options.minimizer_type                  = ceres::TRUST_REGION;
     options.trust_region_strategy_type      = ceres::LEVENBERG_MARQUARDT;
     options.max_num_iterations              = cfg_.max_iterations;
-    options.num_threads                     = 4;
+    {
+        int n = cfg_.num_threads;
+        if (n <= 0) n = static_cast<int>(std::thread::hardware_concurrency());
+        options.num_threads = std::max(1, n);
+    }
     options.minimizer_progress_to_stdout    = false;
 
     ceres::Solver::Summary summary;
