@@ -15,7 +15,23 @@ set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g -DEIGEN_INITIALIZE_MATRICES_BY_NAN")
 # --- Dependencies ---
 
 find_package(Eigen3 3.4 REQUIRED)
+
+# [Session 2] Prefer the locally-patched vendored Ceres (2.1.0 + BANDED_SCHUR)
+# over the system libceres-dev (2.2.0, no BANDED_SCHUR hook).
+# The local install lives at ceres_vendored_install/ (built from
+# lie-spline-experiments/thirdparty/ceres-solver).
+set(CERES_VENDORED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ceres_vendored_install")
+if(EXISTS "${CERES_VENDORED_DIR}/lib/cmake/Ceres/CeresConfig.cmake")
+  set(Ceres_DIR "${CERES_VENDORED_DIR}/lib/cmake/Ceres")
+  message(STATUS "Using vendored (patched) Ceres from ${CERES_VENDORED_DIR}")
+else()
+  message(WARNING "Vendored Ceres not found at ${CERES_VENDORED_DIR}; "
+                  "falling back to system Ceres (BANDED_SCHUR unavailable). "
+                  "Run: cd lie-spline-experiments/thirdparty/ceres-solver && "
+                  "mkdir build_rio && cd build_rio && cmake .. <flags> && make install")
+endif()
 find_package(Ceres REQUIRED)
+
 find_package(pybind11 REQUIRED)
 find_package(fmt REQUIRED)
 

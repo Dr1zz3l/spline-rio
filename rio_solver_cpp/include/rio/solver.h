@@ -168,6 +168,11 @@ struct SolverConfig {
     // Default: false (no overhead in production).
     bool dump_system{false};
 
+    // [Session 2] Use BandedSchurSolver (dense Eigen LDLT skeleton) instead of
+    // SPARSE_NORMAL_CHOLESKY.  Slower but verifies the custom solver hook.
+    // Default: false (use SuiteSparse/EigenSparse as before).
+    bool use_banded_schur{false};
+
     // Eigenvalue clipping for the Schur complement S before forming sqrt_info.
     // S is extremely ill-conditioned (cond≈5.5e10): gyro-dominated orientation DOF
     // have eigenvalues ~5.5e14 while position DOF are ~1e4, ratio 5.5e10.

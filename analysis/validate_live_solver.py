@@ -115,10 +115,18 @@ def _build_preint_factors_cpp(rio_solver, imu_data, b_a0, b_g0, t_start, t_end, 
 # Module-level accumulator: _solve_cpp() and the SW bridge append the raw C++
 # SolverResult objects here so callers can retrieve them after main() returns.
 _last_cpp_results: list = []
+_max_cpp_results: int = 0   # 0 = unlimited; set by run_sw_windows for early-stop
+
+
+class _EarlyStop(Exception):
+    pass
+
 
 def _register_cpp_result(result):
     """Called from _solve_cpp / _solve_cpp_sliding_window to cache raw results."""
     _last_cpp_results.append(result)
+    if _max_cpp_results > 0 and len(_last_cpp_results) >= _max_cpp_results:
+        raise _EarlyStop()
 
 
 def _solve_cpp(initial_state, solver_radar_frames, imu_data,
@@ -194,6 +202,7 @@ def _solve_cpp(initial_state, solver_radar_frames, imu_data,
     cfg.lambda_preint_p     = solver_cfg.get('lambda_preint_p', 0.0)
     cfg.preint_hz           = solver_cfg.get('preint_hz', 100.0)
     cfg.dump_system         = bool(solver_cfg.get('dump_system', False))
+    cfg.use_banded_schur    = bool(solver_cfg.get('use_banded_schur', False))
 
     # --- Extrinsics ---
     euler_deg = extrinsics_cfg.get('rotation_euler_deg', [180.0, 25.5, 0.0])
@@ -383,6 +392,7 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
     cfg.lambda_preint_p         = solver_cfg.get('lambda_preint_p', 0.0)
     cfg.preint_hz               = solver_cfg.get('preint_hz', 100.0)
     cfg.dump_system             = bool(solver_cfg.get('dump_system', False))
+    cfg.use_banded_schur        = bool(solver_cfg.get('use_banded_schur', False))
 
     # Create stateful solver and initialize with full P1-P3 trajectory
     solver = rio_solver.SlidingWindowSolver(cfg, ext)
@@ -2540,14 +2550,20 @@ def run_once(argv: list):
 def run_sw_windows(argv: list, max_windows: int = 3) -> list:
     """Run main() in SW mode and return a list of per-window SolverResults.
 
-    Same as run_once but collects all window results (one per solve_window call).
+    Stops after max_windows windows via _EarlyStop, so it does not run the
+    full sequence — safe to use in gate scripts that need only a few windows.
     """
+    global _max_cpp_results
     import sys as _sys
     _last_cpp_results.clear()
+    _max_cpp_results = max_windows
     old_argv = _sys.argv[:]
     _sys.argv = ['validate_live_solver.py'] + list(argv)
     try:
         main()
+    except _EarlyStop:
+        pass  # expected: we hit max_windows
     finally:
         _sys.argv = old_argv
+        _max_cpp_results = 0
     return list(_last_cpp_results[:max_windows])

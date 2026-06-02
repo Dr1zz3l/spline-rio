@@ -657,8 +657,12 @@ SolverResult solve(
 
     // ---- Solve --------------------------------------------------------------
     ceres::Solver::Options options;
-    options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
-    options.sparse_linear_algebra_library_type = ceres::SUITE_SPARSE;
+    if (cfg.use_banded_schur) {
+        options.linear_solver_type = ceres::BANDED_SCHUR;
+    } else {
+        options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
+        options.sparse_linear_algebra_library_type = ceres::SUITE_SPARSE;
+    }
     options.minimizer_type = ceres::TRUST_REGION;
     options.trust_region_strategy_type = ceres::LEVENBERG_MARQUARDT;
     options.max_num_iterations = cfg.max_iterations;

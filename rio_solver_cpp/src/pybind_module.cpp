@@ -171,7 +171,8 @@ PYBIND11_MODULE(rio_solver, m) {
         .def_readwrite("lambda_preint_v", &SolverConfig::lambda_preint_v)
         .def_readwrite("lambda_preint_p", &SolverConfig::lambda_preint_p)
         .def_readwrite("preint_hz",       &SolverConfig::preint_hz)
-        .def_readwrite("dump_system",     &SolverConfig::dump_system);
+        .def_readwrite("dump_system",     &SolverConfig::dump_system)
+        .def_readwrite("use_banded_schur", &SolverConfig::use_banded_schur);
 
     // ---- ExtrinsicConfig ----------------------------------------------------
     py::class_<ExtrinsicConfig>(m, "ExtrinsicConfig")

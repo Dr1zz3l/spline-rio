@@ -56,3 +56,6 @@ report/*.blg
 report/*.fls
 report/*.fdb_latexmk
 report/*.synctex.gz
+rio_solver_cpp/ceres_vendored_install/
+rio_solver_cpp/build_release/
+lie-spline-experiments/thirdparty/ceres-solver/build_rio/
