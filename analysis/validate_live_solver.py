@@ -109,6 +109,18 @@ def _build_preint_factors_cpp(rio_solver, imu_data, b_a0, b_g0, t_start, t_end, 
     return factors
 
 
+# ============================================================================
+# Programmatic hooks for dump_linear_system.py (Session 1.2)
+# ============================================================================
+# Module-level accumulator: _solve_cpp() and the SW bridge append the raw C++
+# SolverResult objects here so callers can retrieve them after main() returns.
+_last_cpp_results: list = []
+
+def _register_cpp_result(result):
+    """Called from _solve_cpp / _solve_cpp_sliding_window to cache raw results."""
+    _last_cpp_results.append(result)
+
+
 def _solve_cpp(initial_state, solver_radar_frames, imu_data,
                extrinsics_cfg, solver_cfg,
                heading_priors=None):
@@ -181,6 +193,7 @@ def _solve_cpp(initial_state, solver_radar_frames, imu_data,
     cfg.lambda_preint_v     = solver_cfg.get('lambda_preint_v', 0.0)
     cfg.lambda_preint_p     = solver_cfg.get('lambda_preint_p', 0.0)
     cfg.preint_hz           = solver_cfg.get('preint_hz', 100.0)
+    cfg.dump_system         = bool(solver_cfg.get('dump_system', False))
 
     # --- Extrinsics ---
     euler_deg = extrinsics_cfg.get('rotation_euler_deg', [180.0, 25.5, 0.0])
@@ -272,6 +285,9 @@ def _solve_cpp(initial_state, solver_radar_frames, imu_data,
     result_biases = result.biases
     new_acc_bias = np.array(result_biases[:3])
     new_gyr_bias = np.array(result_biases[3:])
+
+    # Cache the raw result for programmatic callers (dump_linear_system.py).
+    _register_cpp_result(result)
 
     return TrajectoryState(
         pos_bspline=new_pos_bspline,
@@ -366,6 +382,7 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
     cfg.lambda_preint_v         = solver_cfg.get('lambda_preint_v', 0.0)
     cfg.lambda_preint_p         = solver_cfg.get('lambda_preint_p', 0.0)
     cfg.preint_hz               = solver_cfg.get('preint_hz', 100.0)
+    cfg.dump_system             = bool(solver_cfg.get('dump_system', False))
 
     # Create stateful solver and initialize with full P1-P3 trajectory
     solver = rio_solver.SlidingWindowSolver(cfg, ext)
@@ -441,6 +458,8 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
             window_radar, window_imu, window_preint, window_heading,
             t_w_start, t_w_end, window_stride)
         dt_w = time.time() - t0
+        # Cache the raw result for programmatic callers (dump_linear_system.py).
+        _register_cpp_result(result)
 
         cost_str = f"{result.cost_history[-1]:.3f}" if result.cost_history else "n/a"
         if result.marg_prior_valid:
@@ -2499,3 +2518,36 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+def run_once(argv: list):
+    """Run main() with the given argv and return the single raw SolverResult.
+
+    Injects argv into sys.argv, resets the result cache, calls main(), and
+    returns the last stored SolverResult.  Designed for --cpp batch solves.
+    """
+    import sys as _sys
+    _last_cpp_results.clear()
+    old_argv = _sys.argv[:]
+    _sys.argv = ['validate_live_solver.py'] + list(argv)
+    try:
+        main()
+    finally:
+        _sys.argv = old_argv
+    if not _last_cpp_results:
+        raise RuntimeError('No C++ result captured. Is --cpp in argv?')
+    return _last_cpp_results[-1]
+
+def run_sw_windows(argv: list, max_windows: int = 3) -> list:
+    """Run main() in SW mode and return a list of per-window SolverResults.
+
+    Same as run_once but collects all window results (one per solve_window call).
+    """
+    import sys as _sys
+    _last_cpp_results.clear()
+    old_argv = _sys.argv[:]
+    _sys.argv = ['validate_live_solver.py'] + list(argv)
+    try:
+        main()
+    finally:
+        _sys.argv = old_argv
+    return list(_last_cpp_results[:max_windows])

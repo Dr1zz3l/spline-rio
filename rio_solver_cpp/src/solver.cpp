@@ -25,6 +25,84 @@
 namespace rio {
 
 // ============================================================================
+// dump_linear_system — evaluate J, r, grad from an assembled ceres::Problem
+// and store them in a SolverResult::SystemDump.
+//
+// eval_blocks: ordered list of parameter block pointers; Ceres uses this
+//   order to assign tangent-space columns in J.  Must NOT contain constant
+//   (SetParameterBlockConstant) blocks — Ceres skips those silently but the
+//   resulting column count will mismatch the block_map.
+// ============================================================================
+static void dump_linear_system(
+    ceres::Problem& problem,
+    const std::vector<double*>& eval_blocks,       // ordered: ori → pos → bias → pitch
+    const std::vector<BlockMapEntry>& block_map,   // pre-built from eval_blocks
+    SolverResult::SystemDump& out)
+{
+    out.valid = false;
+
+    ceres::Problem::EvaluateOptions opts;
+    opts.apply_loss_function = true;   // bake Huber √ρ′ into J so H = JᵀJ is exact
+    opts.parameter_blocks    = eval_blocks;
+    // Leave residual_blocks empty → evaluate all residuals
+
+    double cost;
+    std::vector<double> residuals, gradient;
+    ceres::CRSMatrix J_crs;
+
+    if (!problem.Evaluate(opts, &cost, &residuals, &gradient, &J_crs))
+        return;
+
+    out.jac_values  = std::move(J_crs.values);
+    out.jac_cols    = std::move(J_crs.cols);
+    out.jac_row_ptr = std::move(J_crs.rows);
+    out.jac_num_rows = J_crs.num_rows;
+    out.jac_num_cols = J_crs.num_cols;
+    out.residuals   = std::move(residuals);
+    out.gradient    = std::move(gradient);
+    out.block_map   = block_map;
+    out.valid       = true;
+}
+
+// ============================================================================
+// build_dump_blocks — build the ordered eval_blocks and block_map for a
+// batch solve (full trajectory, not windowed).
+// ============================================================================
+static void build_dump_blocks(
+    Trajectory& traj,
+    bool optimize_ext,
+    std::vector<double*>& eval_blocks,
+    std::vector<BlockMapEntry>& block_map)
+{
+    eval_blocks.clear();
+    block_map.clear();
+    int col = 0;
+
+    // Orientation knots first (tangent = 3 via SO3 manifold)
+    for (int i = 0; i < traj.n_ori_knots(); ++i) {
+        eval_blocks.push_back(traj.ori_knot_data(i));
+        block_map.push_back({"ori_knot", i, col, 3});
+        col += 3;
+    }
+    // Position control points
+    for (int i = 0; i < traj.n_pos_cps(); ++i) {
+        eval_blocks.push_back(traj.pos_cp_data(i));
+        block_map.push_back({"pos_cp", i, col, 3});
+        col += 3;
+    }
+    // Bias (6 DoF, Euclidean)
+    eval_blocks.push_back(traj.bias_data());
+    block_map.push_back({"bias", 0, col, 6});
+    col += 6;
+    // Extrinsic pitch (1 DoF, only when unlocked)
+    if (optimize_ext) {
+        eval_blocks.push_back(traj.pitch_delta_data());
+        block_map.push_back({"pitch_delta", 0, col, 1});
+        col += 1;
+    }
+}
+
+// ============================================================================
 // ExtrinsicConfig::R_radar_to_body
 // ============================================================================
 Sophus::SO3d ExtrinsicConfig::R_radar_to_body() const {
@@ -567,6 +645,16 @@ SolverResult solve(
         }
     }
 
+    // ---- Optional: dump warm-start linear system (pre-solve) ----------------
+    // Declare result early so dump_pre/dump_post can be populated here.
+    SolverResult result;
+    std::vector<double*>      dump_blocks;
+    std::vector<BlockMapEntry> dump_bmap;
+    if (cfg.dump_system) {
+        build_dump_blocks(traj, optimize_ext, dump_blocks, dump_bmap);
+        dump_linear_system(problem, dump_blocks, dump_bmap, result.dump_pre);
+    }
+
     // ---- Solve --------------------------------------------------------------
     ceres::Solver::Options options;
     options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
@@ -584,11 +672,15 @@ SolverResult solve(
     ceres::Solver::Summary summary;
     ceres::Solve(options, &problem, &summary);
 
+    // ---- Optional: dump converged linear system (post-solve) ----------------
+    if (cfg.dump_system) {
+        dump_linear_system(problem, dump_blocks, dump_bmap, result.dump_post);
+    }
+
     // ---- Package result -----------------------------------------------------
     auto t_end = std::chrono::high_resolution_clock::now();
     double elapsed = std::chrono::duration<double>(t_end - t_start).count();
 
-    SolverResult result;
     result.pos_cps    = traj.pos_cps;
     result.ori_knots  = traj.ori_knots;
     result.biases     = traj.biases;

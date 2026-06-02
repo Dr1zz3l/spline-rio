@@ -88,6 +88,48 @@ static py::array_t<double> ori_knots_to_np(
 PYBIND11_MODULE(rio_solver, m) {
     m.doc() = "Rio C++ Ceres solver — Python bridge";
 
+    // ---- BlockMapEntry ------------------------------------------------------
+    py::class_<BlockMapEntry>(m, "BlockMapEntry")
+        .def_readonly("type_id",     &BlockMapEntry::type_id)
+        .def_readonly("index",       &BlockMapEntry::index)
+        .def_readonly("col_offset",  &BlockMapEntry::col_offset)
+        .def_readonly("tangent_size",&BlockMapEntry::tangent_size);
+
+    // ---- SystemDump ---------------------------------------------------------
+    // Linearized system snapshot (J, r, grad) at either the warm-start or the
+    // converged point.  Populated when SolverConfig.dump_system = True.
+    // Reconstruct H = JᵀJ in Python via:
+    //   import scipy.sparse as sp
+    //   J = sp.csr_matrix((dump.jac_values, dump.jac_cols, dump.jac_row_ptr),
+    //                     shape=(dump.jac_num_rows, dump.jac_num_cols))
+    //   H = J.T @ J     # (n_cols × n_cols) normal-equation matrix
+    //   g = J.T @ dump.residuals   # gradient (use -g for RHS of Hδx = -g)
+    py::class_<SolverResult::SystemDump>(m, "SystemDump")
+        .def_readonly("valid",        &SolverResult::SystemDump::valid)
+        .def_readonly("jac_num_rows", &SolverResult::SystemDump::jac_num_rows)
+        .def_readonly("jac_num_cols", &SolverResult::SystemDump::jac_num_cols)
+        .def_property_readonly("jac_values",
+            [](const SolverResult::SystemDump& d) {
+                return py::array_t<double>(d.jac_values.size(), d.jac_values.data());
+            })
+        .def_property_readonly("jac_cols",
+            [](const SolverResult::SystemDump& d) {
+                return py::array_t<int>(d.jac_cols.size(), d.jac_cols.data());
+            })
+        .def_property_readonly("jac_row_ptr",
+            [](const SolverResult::SystemDump& d) {
+                return py::array_t<int>(d.jac_row_ptr.size(), d.jac_row_ptr.data());
+            })
+        .def_property_readonly("residuals",
+            [](const SolverResult::SystemDump& d) {
+                return py::array_t<double>(d.residuals.size(), d.residuals.data());
+            })
+        .def_property_readonly("gradient",
+            [](const SolverResult::SystemDump& d) {
+                return py::array_t<double>(d.gradient.size(), d.gradient.data());
+            })
+        .def_readonly("block_map", &SolverResult::SystemDump::block_map);
+
     // ---- SolverConfig -------------------------------------------------------
     py::class_<SolverConfig>(m, "SolverConfig")
         .def(py::init<>())
@@ -128,7 +170,8 @@ PYBIND11_MODULE(rio_solver, m) {
         .def_readwrite("lambda_preint",   &SolverConfig::lambda_preint)
         .def_readwrite("lambda_preint_v", &SolverConfig::lambda_preint_v)
         .def_readwrite("lambda_preint_p", &SolverConfig::lambda_preint_p)
-        .def_readwrite("preint_hz", &SolverConfig::preint_hz);
+        .def_readwrite("preint_hz",       &SolverConfig::preint_hz)
+        .def_readwrite("dump_system",     &SolverConfig::dump_system);
 
     // ---- ExtrinsicConfig ----------------------------------------------------
     py::class_<ExtrinsicConfig>(m, "ExtrinsicConfig")
@@ -228,7 +271,10 @@ PYBIND11_MODULE(rio_solver, m) {
             [](const SolverResult& r) -> py::object {
                 if (!r.boundary_cov_valid) return py::none();
                 return py::cast(r.window_covariance);
-            });
+            })
+        // ---- dump_system snapshots ------------------------------------------
+        .def_readonly("dump_pre",  &SolverResult::dump_pre)
+        .def_readonly("dump_post", &SolverResult::dump_post);
 
     // ---- Main solve() interface (numpy-friendly) ----------------------------
     m.def("solve",

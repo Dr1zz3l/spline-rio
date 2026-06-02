@@ -25,6 +25,81 @@
 namespace rio {
 
 // ============================================================================
+// dump_linear_system (SW) — same contract as the batch version in solver.cpp
+// ============================================================================
+static void dump_linear_system(
+    ceres::Problem& problem,
+    const std::vector<double*>& eval_blocks,
+    const std::vector<BlockMapEntry>& block_map,
+    SolverResult::SystemDump& out)
+{
+    out.valid = false;
+    ceres::Problem::EvaluateOptions opts;
+    opts.apply_loss_function = true;
+    opts.parameter_blocks    = eval_blocks;
+
+    double cost;
+    std::vector<double> residuals, gradient;
+    ceres::CRSMatrix J_crs;
+    if (!problem.Evaluate(opts, &cost, &residuals, &gradient, &J_crs))
+        return;
+
+    out.jac_values   = std::move(J_crs.values);
+    out.jac_cols     = std::move(J_crs.cols);
+    out.jac_row_ptr  = std::move(J_crs.rows);
+    out.jac_num_rows = J_crs.num_rows;
+    out.jac_num_cols = J_crs.num_cols;
+    out.residuals    = std::move(residuals);
+    out.gradient     = std::move(gradient);
+    out.block_map    = block_map;
+    out.valid        = true;
+}
+
+// ============================================================================
+// build_dump_blocks (SW) — builds eval_blocks and block_map for one window.
+// Unlike the batch version, variable indices are relative to the window
+// (oi0, pi0 are the first active knots/CPs in this window).
+// Constant blocks (leading knots from the prior window) are excluded.
+// ============================================================================
+static void build_dump_blocks_window(
+    Trajectory& traj,
+    int oi0, int oi1,           // ori knot global index range [oi0, oi1]
+    int pi0, int pi1,           // pos CP  global index range [pi0, pi1]
+    bool optimize_ext,
+    const std::unordered_set<double*>& constant_blocks, // blocks set constant by problem
+    std::vector<double*>& eval_blocks,
+    std::vector<BlockMapEntry>& block_map)
+{
+    eval_blocks.clear();
+    block_map.clear();
+    int col = 0;
+    int local_ori_idx = 0;
+    for (int i = oi0; i <= oi1; ++i) {
+        double* ptr = traj.ori_knot_data(i);
+        if (constant_blocks.count(ptr)) { ++local_ori_idx; continue; }
+        eval_blocks.push_back(ptr);
+        block_map.push_back({"ori_knot", i, col, 3});
+        col += 3;
+        ++local_ori_idx;
+    }
+    for (int i = pi0; i <= pi1; ++i) {
+        double* ptr = traj.pos_cp_data(i);
+        if (constant_blocks.count(ptr)) continue;
+        eval_blocks.push_back(ptr);
+        block_map.push_back({"pos_cp", i, col, 3});
+        col += 3;
+    }
+    eval_blocks.push_back(traj.bias_data());
+    block_map.push_back({"bias", 0, col, 6});
+    col += 6;
+    if (optimize_ext) {
+        eval_blocks.push_back(traj.pitch_delta_data());
+        block_map.push_back({"pitch_delta", 0, col, 1});
+        col += 1;
+    }
+}
+
+// ============================================================================
 // Helpers (copied from solver.cpp to avoid header exposure)
 // ============================================================================
 
@@ -168,6 +243,13 @@ SolverResult SlidingWindowSolver::solve_window(
         // First window: fix the leading CPs/knots constant (nothing to marginalize)
         for (int i = pi0; i < pi0_raw; ++i) problem.SetParameterBlockConstant(traj_.pos_cp_data(i));
         for (int i = oi0; i < oi0_raw; ++i) problem.SetParameterBlockConstant(traj_.ori_knot_data(i));
+    }
+    // Track which blocks are constant for the dump (used to exclude them from
+    // eval_blocks so the Jacobian column count matches block_map).
+    std::unordered_set<double*> constant_blocks;
+    if (!prior_.valid) {
+        for (int i = pi0; i < pi0_raw; ++i) constant_blocks.insert(traj_.pos_cp_data(i));
+        for (int i = oi0; i < oi0_raw; ++i) constant_blocks.insert(traj_.ori_knot_data(i));
     }
 
     // ---- Radar Doppler factors ----------------------------------------------
@@ -556,6 +638,14 @@ SolverResult SlidingWindowSolver::solve_window(
         }
     }
 
+    // ---- Optional: dump warm-start linear system (pre-solve) ----------------
+    std::vector<double*>      dump_blocks;
+    std::vector<BlockMapEntry> dump_bmap;
+    if (cfg_.dump_system) {
+        build_dump_blocks_window(traj_, oi0, oi1, pi0, pi1, optimize_ext,
+                                 constant_blocks, dump_blocks, dump_bmap);
+    }
+
     // ---- Solve -------------------------------------------------------------
     ceres::Solver::Options options;
     options.linear_solver_type              = ceres::SPARSE_NORMAL_CHOLESKY;
@@ -570,8 +660,16 @@ SolverResult SlidingWindowSolver::solve_window(
     }
     options.minimizer_progress_to_stdout    = false;
 
+    // Declare result early so dump fields can be populated before and after solve.
+    SolverResult result;
+    if (cfg_.dump_system)
+        dump_linear_system(problem, dump_blocks, dump_bmap, result.dump_pre);
+
     ceres::Solver::Summary summary;
     ceres::Solve(options, &problem, &summary);
+
+    if (cfg_.dump_system)
+        dump_linear_system(problem, dump_blocks, dump_bmap, result.dump_post);
 
     // ---- lock_gyro_bias: post-solve gyro clamp ----------------------------
     // Rank-deficient orientation windows (e.g. backflips at dt_ori=0.0008:
@@ -585,8 +683,6 @@ SolverResult SlidingWindowSolver::solve_window(
         for (int j = 3; j < 6; ++j)
             traj_.biases[j] = init_biases_[j];
     }
-
-    SolverResult result;   // declared early so covariance block can fill it
 
     // ---- Evaluate prior residual norm at solution ---------------------------
     // ||r||² = local_x^T * S * local_x: squared Mahalanobis distance between

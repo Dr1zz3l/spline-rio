@@ -160,6 +160,14 @@ struct SolverConfig {
     // Note: requires care with delta choice — see marg_prior_residual_norm diagnostic.
     double marg_prior_cauchy_delta{0.0};
 
+    // ---- Linear system dump (for banded-solver prototyping) ------------------
+    // When true, evaluates the full problem Jacobian at the warm-start (before
+    // the LM solve) and stores it in SolverResult.  Also evaluates a second
+    // snapshot after the solve (converged point).
+    // Slows down the solve by one extra problem.Evaluate() call per window.
+    // Default: false (no overhead in production).
+    bool dump_system{false};
+
     // Eigenvalue clipping for the Schur complement S before forming sqrt_info.
     // S is extremely ill-conditioned (cond≈5.5e10): gyro-dominated orientation DOF
     // have eigenvalues ~5.5e14 while position DOF are ~1e4, ratio 5.5e10.
@@ -188,6 +196,21 @@ struct ExtrinsicConfig {
     double tx{0.08}, ty{0.02}, tz{-0.01};  // translation_body_m
 
     Sophus::SO3d R_radar_to_body() const;
+};
+
+// ============================================================================
+// Block map entry — describes one parameter block's position in the
+// linearized Jacobian tangent-space columns (used by dump_system).
+// ============================================================================
+struct BlockMapEntry {
+    // Variable type: "ori_knot" | "pos_cp" | "bias" | "pitch_delta"
+    std::string type_id;
+    // Index within that type (0-based; 0 for bias / pitch_delta which are singletons)
+    int index{0};
+    // First column in the tangent-space Jacobian for this block
+    int col_offset{0};
+    // Tangent-space dimension (3 for ori/pos via SO3 manifold, 6 for bias, 1 for pitch)
+    int tangent_size{0};
 };
 
 // ============================================================================
@@ -248,6 +271,38 @@ struct SolverResult {
     double          window_cov_trace{0.0};      // tr(H_bb^{-1}): window-only
     Eigen::MatrixXd boundary_covariance;        // S^{-1},  d_b × d_b
     Eigen::MatrixXd window_covariance;          // H_bb^{-1}, d_b × d_b
+
+    // ---- Linear system dump (populated when SolverConfig::dump_system = true) --
+    // Two snapshots: warm-start (pre-solve) and converged (post-solve).
+    // Each snapshot stores the tangent-space Jacobian J in CRS format, the
+    // residual vector r, the negative gradient g = -JᵀWr, and the block map
+    // describing which tangent columns belong to which parameter block.
+    //
+    // To reconstruct the normal-equation system in Python:
+    //   J = scipy.sparse.csr_matrix((values, cols, row_ptr), shape=(nrows, ncols))
+    //   H = J.T @ J          # normal equations (apply_loss_function=True → Huber baked in)
+    //   g = J.T @ r          # gradient (NB: Ceres minimizes 0.5*||r||², gradient = JᵀWr)
+    //
+    // Variable ordering in tangent columns:
+    //   ori knots (3 DoF each, SO3 manifold) → pos CPs (3 DoF each) →
+    //   bias (6 DoF) → pitch_delta (1 DoF, only when lock_extrinsics=false)
+    // This ordering is enforced via eval_opts.parameter_blocks in the dump call.
+
+    // Pre-solve (warm-start) snapshot
+    struct SystemDump {
+        std::vector<double> jac_values;        // CRS non-zero values
+        std::vector<int>    jac_cols;          // CRS column indices
+        std::vector<int>    jac_row_ptr;       // CRS row pointers (size = nrows+1)
+        int                 jac_num_rows{0};
+        int                 jac_num_cols{0};   // tangent-space column count
+        std::vector<double> residuals;         // r  (nrows)
+        std::vector<double> gradient;          // -Jᵀr  (ncols)
+        std::vector<BlockMapEntry> block_map;  // one entry per parameter block
+        bool valid{false};
+    };
+
+    SystemDump dump_pre;   // evaluated at warm-start, before ceres::Solve()
+    SystemDump dump_post;  // evaluated at converged point, after  ceres::Solve()
 };
 
 // ============================================================================
