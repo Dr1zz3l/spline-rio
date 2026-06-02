@@ -2018,8 +2018,12 @@ def main():
                 return f"  {label:<28} {s:>10}  {live:{fmt}}{unit:>0}  {d:>+8.4f}"
             return f"  {label:<28} {s:>10}"
 
+        _path_len = float(np.sum(np.linalg.norm(np.diff(mocap_pos_eval, axis=0), axis=1)))
+        _drift_settled = 100.0 * pos_rmse / _path_len
+        _drift_live    = 100.0 * live_pos_rmse_plot / _path_len if (_has_live and live_pos_rmse_plot) else None
         print(_row("Position RMSE (m)", pos_rmse,
                    live_pos_rmse_plot if _has_live else None))
+        print(_row("Position drift (%)", _drift_settled, _drift_live, fmt=".2f", unit="%"))
         print(_row("Velocity RMSE (m/s)", vel_rmse,
                    live_vel_rmse_plot if _has_live else None))
         print(f"  {'Angular vel RMSE (rad/s)':<28} {ang_vel_rmse:>10.4f}")

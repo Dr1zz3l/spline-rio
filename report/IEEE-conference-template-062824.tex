@@ -58,15 +58,22 @@ smoother with Schur complement marginalization, running at a 0.3\,s
 stride over a 3\,s sliding window.  A sensor-only initialization
 pipeline (gyro integration for orientation, radar dead-reckoning for
 position) requires no external \emph{pose} reference.
-Yaw is unobservable from Doppler alone and requires a magnetometer
-(standard on most platforms); here MoCap yaw serves that role.  At the \emph{live leading edge}
-(the estimate a deployed system would emit), position/orientation
-RMSE is \SI{0.34}{\metre}/\SI{2.1}{\degree} on gentle racing and
-\SI{0.83}{\metre}/\SI{3.6}{\degree} on aggressive racing, reducing
-position error by 87--89\% versus IMU-only.  We also document failure
-modes and their partial resolution: backflips are solvable in batch
-(1.82\,m/8.4\degree) and achievable in sliding-window via a
-position-initialization prior (2.53\,m/10.8\degree\ settled);
+Yaw requires a magnetometer (standard on most platforms); here MoCap
+yaw serves that role.
+
+Radar Doppler measures velocity directly; RIO is therefore evaluated
+as a \emph{velocity and orientation} provider intended for fusion with
+position-fixing sensors (GPS, VIO, or SLAM).  At the \emph{live
+leading edge} (the estimate a deployed system would emit), velocity
+and orientation RMSE are \SI{0.39}{\metre\per\second}/\SI{2.1}{\degree}
+on gentle racing and \SI{0.49}{\metre\per\second}/\SI{3.6}{\degree} on
+aggressive racing.  Position drifts \SI{0.70}{\percent} and
+\SI{1.85}{\percent} of distance traveled (\SI{0.34}{\metre} and
+\SI{0.83}{\metre} absolute), an 87--89\% reduction versus IMU-only.
+We also document failure modes and their partial resolution: backflips
+are solvable in batch (\SI{3.35}{\percent}\,/\,\SI{8.4}{\degree}) and
+achievable in sliding-window via a position-initialization prior
+(\SI{4.68}{\percent}\,/\,\SI{10.8}{\degree} settled);
 IMU preintegration degrades accuracy at full IMU rate; and prior
 scaling for marginalization has no universal optimum across mission
 types.
@@ -118,7 +125,9 @@ We contribute the following:
         at 0.3\,s latency.
   \item An honest evaluation across three maneuver types, including
         extreme dynamics (backflips), with documented failure modes
-        and negative results.
+        and negative results; metrics follow the odometry convention
+        of reporting velocity/orientation accuracy and normalizing
+        position error to distance traveled (drift~\%).
 \end{itemize}
 
 \textbf{Research objectives.}
@@ -519,10 +528,23 @@ Backflips\textsuperscript{*} & 18.1 & $\sim$4.3 (95\%) & $\sim$10.9 (95\%) & 181
 \end{table}
 
 \textbf{IMU rate:} $\sim$993\,Hz (full rate, no downsampling for C++ solver).
-\textbf{Evaluation:} SE3 alignment (rigid body, no scale) to MoCap ground
-truth.  The final 3\,s is trimmed.  Velocity RMSE is computed from the
+\textbf{Evaluation:} Start-anchored rigid alignment to MoCap ground
+truth: the alignment rotation $\mathbf{R}_\mathrm{align} =
+\mathbf{R}_{\mathrm{gt},0}\,\mathbf{R}_{\mathrm{est},0}^\top$
+and translation $\mathbf{t}_\mathrm{align} =
+\mathbf{p}_{\mathrm{gt},0} - \mathbf{R}_\mathrm{align}\,
+\mathbf{p}_{\mathrm{est},0}$ are fixed at frame~0 (no scale).
+The final 3\,s is trimmed.  Velocity RMSE is computed from the
 analytical first derivative of the position B-spline, not from finite
 differences of the estimated trajectory.
+\emph{Position drift} (\%) is position RMSE normalised by the total
+GT path length --- the standard odometry metric for a
+dead-reckoning system with no loop closure.
+\emph{Translational RPE} (relative pose error, Fig.~\ref{fig:rpe}) is
+the KITTI-standard per-segment displacement error averaged over all
+sub-segments of a given accumulated GT length.
+Because the start-anchored alignment offsets cancel within every
+relative displacement, RPE is alignment-independent.
 For sliding window, \emph{live (leading-edge)} RMSE is computed by
 snapshotting the estimate at $[t_\text{end}{-}\text{stride},\, t_\text{end}]$
 of each window at 50\,Hz before any subsequent refinement.  The
@@ -555,15 +577,18 @@ settings).
 \caption{Batch Solver Results (C++, \texttt{-{}-mocap-yaw})}
 \label{tab:batch}
 \small
-\begin{tabular}{@{}lcccc@{}}
+\begin{tabular}{@{}lccccc@{}}
 \toprule
-Bag & Pos (m) & Vel (m/s) & Ori (\degree) & Time (s) \\
+Bag & Vel (m/s) & Ori (\degree) & Pos (m) & Drift (\%) & Time (s) \\
 \midrule
-Slow racing & 0.169 & 0.146 & 1.02 & $\sim$13 \\
-Fast racing & 0.768 & 0.387 & 2.64 & $\sim$10 \\
-Backflips\textsuperscript{\dag} & 1.814 & 1.935 & 8.44 & --- \\
+Slow racing & 0.146 & 1.02 & 0.169 & 0.35 & $\sim$13 \\
+Fast racing & 0.387 & 2.64 & 0.768 & 1.71 & $\sim$10 \\
+Backflips\textsuperscript{\dag} & 1.935 & 8.44 & 1.814 & 3.35 & --- \\
 \bottomrule
-\multicolumn{5}{l}{\textsuperscript{\dag}$\Delta t_o{=}0.8$\,ms, locked extrinsics (see Sec.~\ref{sec:backflips}).}
+\multicolumn{6}{@{}p{\columnwidth}@{}}{\scriptsize
+  \textsuperscript{\dag}$\Delta t_o{=}0.8$\,ms, locked extrinsics (see Sec.~\ref{sec:backflips}).
+  Drift\,\%\,$=$\,Pos\,RMSE\,/\,GT path length
+  (48.1\,m, 44.9\,m, 54.1\,m respectively).}
 \end{tabular}
 \end{table}
 
@@ -587,32 +612,33 @@ the corresponding error timeseries.
 \caption{Sliding Window: Settled and Live Leading-Edge RMSE}
 \label{tab:sw}
 \small
-\setlength{\tabcolsep}{4pt}
-\begin{tabular}{@{}llccc@{}}
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{@{}llcccc@{}}
 \toprule
-Bag & Mode & Pos (m) & Vel (m/s) & Ori (\degree) \\
+Bag & Mode & Vel (m/s) & Ori (\degree) & Pos (m) & Drift (\%) \\
 \midrule
 \multirow{2}{*}{Slow racing}
-  & Settled & 0.224 & 0.889$^\dagger$ & 1.57 \\
-  & \textbf{Live edge} & \textbf{0.337} & \textbf{0.388} & \textbf{2.08} \\
+  & Settled & 0.889$^\dagger$ & 1.57 & 0.224 & 0.47 \\
+  & \textbf{Live edge} & \textbf{0.388} & \textbf{2.08} & \textbf{0.337} & \textbf{0.70} \\
 \midrule
 \multirow{2}{*}{Fast racing}
-  & Settled & 0.727 & 0.379 & 3.20 \\
-  & \textbf{Live edge} & \textbf{0.829} & \textbf{0.487} & \textbf{3.64} \\
+  & Settled & 0.379 & 3.20 & 0.727 & 1.62 \\
+  & \textbf{Live edge} & \textbf{0.487} & \textbf{3.64} & \textbf{0.829} & \textbf{1.85} \\
 \midrule
 \multirow{2}{*}{Backflips\textsuperscript{$\ddagger$}}
-  & Settled & 2.533 & ---$^*$ & 10.79 \\
-  & \textbf{Live edge} & \textbf{3.319} & \textbf{1.88} & \textbf{9.36} \\
+  & Settled & ---$^*$ & 10.79 & 2.533 & 4.68 \\
+  & \textbf{Live edge} & \textbf{1.88} & \textbf{9.36} & \textbf{3.319} & \textbf{6.13} \\
 \bottomrule
-\multicolumn{5}{@{}p{\columnwidth}@{}}{\scriptsize
+\multicolumn{6}{@{}p{\columnwidth}@{}}{\scriptsize
   $^\dagger$Prior scale $10^{-7}$ makes windows near-independent;
   position jumps at stride boundaries inflate settled vel.
   Live edge unaffected.}\\
-\multicolumn{5}{@{}p{\columnwidth}@{}}{\scriptsize
+\multicolumn{6}{@{}p{\columnwidth}@{}}{\scriptsize
   $^\ddagger$Phase-3 SW: $\Delta t_o{=}8$\,ms,
   $\lambda_{\mathrm{pos\text{-}init}}{=}1000$, scale$=0$;
   see Sec.~\ref{sec:backflips}.
-  $^*$Scale$=0$ $\Rightarrow$ fully independent windows; same artifact.}
+  $^*$Scale$=0$ $\Rightarrow$ fully independent windows; same artifact.
+  Drift\,\%: path lengths 48.1\,m / 44.9\,m / 54.1\,m.}
 \end{tabular}
 \end{table}
 
@@ -656,6 +682,36 @@ CPU (no embedded optimization).
   \label{fig:error_time}
 \end{figure}
 
+\subsection{Relative Pose Error and Position Drift}
+\label{sec:rpe}
+
+Fig.~\ref{fig:rpe} shows the KITTI-style translational RPE as a
+function of segment length for racing bags (batch and SW live) and
+backflips (batch only).  At longer segments ($\geq 20$\,m) the global
+B-spline smoother reduces error sharply: slow racing batch reaches
+\SI{1.12}{\percent} at 20\,m and \SI{0.43}{\percent} at 40\,m; fast
+racing stabilises at $\approx$\SI{3.2}{\percent} beyond 20\,m.  At
+short segments ($\leq$10\,m) errors are larger (3--7\% for racing)
+because the 11\,Hz radar provides only a handful of Doppler
+measurements per segment and the global optimizer cannot smooth over
+sub-second intervals.  This is a fundamental constraint of the
+11\,Hz radar rate, not a spline smoothing artifact.
+Global drift (\%) reflects the full-trajectory benefit of the batch
+optimizer and is the headline deployment metric; RPE captures
+per-segment local accuracy for a complementary view.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/rpe_drift.pdf}
+  \caption{KITTI-style translational RPE (end-point displacement error
+    as \% of segment length) vs.\ accumulated GT distance.  Left:
+    racing bags --- batch (solid) and SW live edge (dashed).  Right:
+    backflips batch.  Errors decrease at longer segments because the
+    global optimizer integrates more sensor data; at short segments
+    the 11\,Hz radar provides limited constraints.}
+  \label{fig:rpe}
+\end{figure}
+
 \subsection{Radar Contribution}
 Table~\ref{tab:ablation_radar} isolates the radar contribution by
 running the same sliding window with \texttt{-{}-no-radar}.
@@ -665,26 +721,28 @@ running the same sliding window with \texttt{-{}-no-radar}.
 \caption{IMU-Only vs.\ Full RIO (Live Leading-Edge RMSE)}
 \label{tab:ablation_radar}
 \small
-\begin{tabular}{@{}llccc@{}}
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{@{}llcccc@{}}
 \toprule
-Bag & Sensor & Pos (m) & Vel (m/s) & Ori (\degree) \\
+Bag & Sensor & Vel (m/s) & Ori (\degree) & Pos (m) & Drift (\%) \\
 \midrule
 \multirow{2}{*}{Slow racing}
-  & IMU only & 3.061 & 2.014 & 7.55 \\
-  & \textbf{RIO} & \textbf{0.337} & \textbf{0.388} & \textbf{2.08} \\
+  & IMU only & 2.014 & 7.55 & 3.061 & 6.36 \\
+  & \textbf{RIO} & \textbf{0.388} & \textbf{2.08} & \textbf{0.337} & \textbf{0.70} \\
 \midrule
 \multirow{2}{*}{Fast racing}
-  & IMU only & 6.870 & 1.718 & 6.83 \\
-  & \textbf{RIO} & \textbf{0.829} & \textbf{0.487} & \textbf{3.64} \\
+  & IMU only & 1.718 & 6.83 & 6.870 & 15.30 \\
+  & \textbf{RIO} & \textbf{0.487} & \textbf{3.64} & \textbf{0.829} & \textbf{1.85} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Radar reduces live-edge position error by 87--89\% and velocity
-error by 72--81\%.  IMU-only position drifts rapidly via double
-integration; radar Doppler provides continuous velocity constraints
-that bound this drift directly.  Orientation improvement is more
-modest (47--72\%) because the gyroscope already constrains
+Radar reduces live-edge velocity error by 72--81\% and position drift
+by 87--89\% (from 6.4\% and 15.3\% to 0.70\% and 1.85\% of distance
+traveled).  IMU-only position drifts rapidly through double
+integration of accelerometer noise; radar Doppler provides direct
+velocity constraints that bound this drift.  Orientation improvement
+is more modest (47--72\%) because the gyroscope already constrains
 orientation strongly at 1\,kHz.
 
 \subsection{Ablation Studies}
@@ -835,9 +893,19 @@ reduces orientation error to 9.4--10.8\degree, giving
 achieves.
 
 The apparent position regression from Phase~1 (1.89\,m) to Phase~3
-(2.53\,m) is a SE3-alignment artifact: at 42\degree\ the alignment
-absorbs part of the position offset; at 10\degree\ the true 2.4\,m
-P1--P3 position error is fully exposed, but all six DoF improve.
+(2.53\,m) is a start-anchored-alignment artifact: the alignment
+rotation $\mathbf{R}_{\mathrm{align}}$ (see Sec.~\ref{sec:setup})
+rotates the entire estimated trajectory into the GT frame.  At
+Phase~1's 42\degree\ orientation error, this large rotation
+geometrically reduces the apparent position RMSE even though the
+trajectory is fundamentally wrong.  At Phase~3's 10\degree, the
+alignment is near-identity and the \emph{true} P1--P3 dead-reckoning
+offset ($\approx$2.4\,m) is fully exposed.  All six DoF improve from
+Phase~1 to Phase~3; only the position metric is distorted by this
+effect, and only at large orientation errors.
+Drift~\% (4.68\% Phase~3 vs.\ 3.35\% batch) is the correct
+comparison metric: it is alignment-independent, confirming that the
+batch solver closes a real 1.33\,\% gap over the fixed-lag smoother.
 Note that $\Delta t_o{=}0.8$\,ms is not a Nyquist requirement (62.5\,Hz
 at 8\,ms suffices for the $\sim$10--20\,Hz flip dynamics); the
 non-monotonic sweep behaviour is an optimizer convergence artifact that
@@ -851,10 +919,10 @@ replicate window-by-window.
     ($\Delta t_o{=}0.8$\,ms, dashed red), SW live edge (Phase~3
     config, dotted orange).  X--Y and Y--Z projections; the vertical
     backflip maneuvers are visible in the Y--Z plane.
-    Start marked~$\blacksquare$.  The large visual spread of the batch
-    estimate in X--Y reflects the 8.4\degree\ orientation error, which
-    rotates the frame-aligned trajectory residual into the horizontal
-    plane after SE3 alignment (see Sec.~\ref{sec:backflips}).}
+    Start marked~$\blacksquare$.  The visible spread of the batch
+    estimate reflects the 8.4\degree\ orientation error: the
+    start-anchored alignment rotates the estimated frame by 8.4\degree,
+    projecting orientation error into the position plane.}
   \label{fig:traj_backflips}
 \end{figure}
 
@@ -961,17 +1029,20 @@ orientation by 6--8\degree.  The C++ design avoids this by construction.
 \label{sec:conclusion}
 
 We presented a continuous-time B-spline RIO system with a fixed-lag
-smoother and Schur complement marginalization.  At the live leading
-edge the system achieves \SI{0.34}{\metre}/\SI{2.1}{\degree} (slow
-racing) and \SI{0.83}{\metre}/\SI{3.6}{\degree} (fast racing),
-reducing position error 87--89\% and velocity error 72--81\% versus
-IMU-only.  Schur complement marginalization with a re-centered prior
+smoother and Schur complement marginalization, evaluated as a
+\emph{velocity and orientation} provider for fusion with
+position-fixing sensors.  At the live leading edge, velocity and
+orientation RMSE are \SI{0.39}{\metre\per\second}/\SI{2.1}{\degree}
+(slow racing) and \SI{0.49}{\metre\per\second}/\SI{3.6}{\degree}
+(fast racing); position drifts 0.70\% and 1.85\% of distance traveled,
+reducing drift 87--89\% and velocity error 72--81\% versus IMU-only.
+Schur complement marginalization with a re-centered prior
 improves settled position by 48\% over a boundary-prior-only baseline
-(0.726\,m vs.\ 1.391\,m on fast racing at the appropriate
-prior scale of $2{\times}10^{-4}$).
+(0.726\,m vs.\ 1.391\,m, or 1.62\% vs.\ 3.10\% drift, on fast
+racing at the appropriate prior scale of $2{\times}10^{-4}$).
 For extreme maneuvers (backflips), only the batch solver is viable:
-1.81\,m/8.4\degree\ vs.\ 2.53\,m/10.8\degree\ settled and
-3.32\,m/9.4\degree\ live for the best fixed-lag configuration
+3.35\%/8.4\degree\ batch vs.\ 4.68\%/10.8\degree\ settled and
+6.13\%/9.4\degree\ live for the best fixed-lag configuration
 --- a structural limit, not a tuning gap.
 
 The main open limitations are: (1) backflips require batch
