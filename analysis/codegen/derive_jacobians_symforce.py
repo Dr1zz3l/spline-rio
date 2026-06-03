@@ -25,7 +25,7 @@ import symforce
 symforce.set_epsilon_to_symbol()
 
 import symforce.symbolic as sf
-from symforce.codegen import Codegen, PythonConfig
+from symforce.codegen import Codegen, PythonConfig, CppConfig
 import os
 import re
 import glob
@@ -296,8 +296,61 @@ def preintegrated_position_residual(
 
 
 # ============================================================
+# Radar sensor-model for C++ codegen (u_body pre-computed)
+# ============================================================
+
+def radar_sensor_jac(
+    v_world: sf.V3,
+    R_bw: sf.Rot3,
+    omega: sf.V3,
+    u_body: sf.V3,
+    t: sf.V3,
+    v_meas: sf.Scalar,
+    epsilon: sf.Scalar,
+) -> sf.V1:
+    """
+    Radar Doppler residual for C++ analytic-Jacobian generation.
+
+    u_body is the pre-rotated bearing (R_radar_to_body * u_sensor), treated as
+    a constant parameter so R_body_sensor does not appear in the generated code.
+    Jacobians are generated w.r.t. v_world (index 0), R_bw (index 1), omega (index 2).
+    """
+    v_body = R_bw.inverse() * v_world
+    v_ant  = v_body + omega.cross(t)
+    v_pred = -u_body.dot(v_ant)
+    return sf.V1(v_meas - v_pred)
+
+
+# ============================================================
 # Code generation
 # ============================================================
+
+def generate_cpp_radar_jacobians():
+    """Generate SymForce C++ header for radar sensor-model Jacobians."""
+    output_dir = "/tmp/sf_cpp_radar"
+    if os.path.exists(output_dir):
+        shutil.rmtree(output_dir)
+
+    print("  Generating C++ radar sensor Jacobians (CppConfig)...")
+    codegen = Codegen.function(radar_sensor_jac, config=CppConfig())
+    codegen_jac = codegen.with_jacobians(which_args=["v_world", "R_bw", "omega"])
+    data = codegen_jac.generate_function(output_dir=output_dir)
+
+    # Find generated header (SymForce puts it under cpp/symforce/sym/)
+    hfiles = [str(f) for f in sorted(data.generated_files) if str(f).endswith('.h')]
+    if not hfiles:
+        hfiles = [str(f) for f in Path(output_dir).rglob("*.h")]
+    if not hfiles:
+        raise RuntimeError(f"No .h files generated in {output_dir}")
+
+    print(f"  Generated: {hfiles[0]}")
+
+    dest = (Path(__file__).parent.parent.parent
+            / "rio_solver_cpp" / "include" / "rio" / "factors" / "analytic"
+            / "radar_sensor_jac_gen.h")
+    shutil.copy(hfiles[0], dest)
+    print(f"  Copied to: {dest}")
+
 
 def generate_and_read(func, name, which_args):
     """Generate code with Jacobians and read the output file."""
@@ -867,6 +920,10 @@ class Rot3:
     assert abs(result_hdg_90[0][0] - (-np.pi/2)) < 1e-4, \
         f"Heading residual (Rz90 vs I) should be -pi/2: {result_hdg_90[0][0]}"
     print(f"   heading (Rz(90) vs I): residual={np.degrees(result_hdg_90[0][0]):.1f} deg ✓")
+
+    # Generate C++ radar sensor-model Jacobians
+    print("\n[C++] Radar sensor Jacobians (for RadarAnalyticFactor):")
+    generate_cpp_radar_jacobians()
 
     print("\n✅ Code generation complete!")
     print("=" * 60)

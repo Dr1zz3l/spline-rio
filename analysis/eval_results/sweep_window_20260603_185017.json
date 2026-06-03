@@ -1,0 +1,198 @@
+{
+  "mode": "window",
+  "timestamp": "20260603_185017",
+  "bags": [
+    "slow_racing_best_velocity",
+    "fast_racing_best_velocity"
+  ],
+  "iter_vals": null,
+  "window_vals": [
+    1.0,
+    1.5,
+    2.0,
+    2.5,
+    3.0
+  ],
+  "rows": [
+    {
+      "param": "window_duration",
+      "value": 1.0,
+      "bags": {
+        "slow_racing_best_velocity": {
+          "returncode": 0,
+          "metrics": {
+            "ori_rmse_roll_deg": 1.196,
+            "ori_rmse_pitch_deg": 3.216,
+            "ori_rmse_yaw_deg": 112.315,
+            "imu_samples_used": 25632,
+            "radar_frames": 258,
+            "median_dt_s": 0.88,
+            "p90_dt_s": 1.83,
+            "median_iter": 29,
+            "n_windows": 83,
+            "wall_time_s": 136.6
+          }
+        },
+        "fast_racing_best_velocity": {
+          "returncode": 0,
+          "metrics": {
+            "ori_rmse_roll_deg": 8.647,
+            "ori_rmse_pitch_deg": 2.425,
+            "ori_rmse_yaw_deg": 8.869,
+            "imu_samples_used": 17875,
+            "radar_frames": 179,
+            "median_dt_s": 0.52,
+            "p90_dt_s": 0.86,
+            "median_iter": 28,
+            "n_windows": 57,
+            "wall_time_s": 61.4
+          }
+        }
+      }
+    },
+    {
+      "param": "window_duration",
+      "value": 1.5,
+      "bags": {
+        "slow_racing_best_velocity": {
+          "returncode": 0,
+          "metrics": {
+            "ori_rmse_roll_deg": 1.096,
+            "ori_rmse_pitch_deg": 0.964,
+            "ori_rmse_yaw_deg": 1.745,
+            "imu_samples_used": 25632,
+            "radar_frames": 258,
+            "median_dt_s": 1.21,
+            "p90_dt_s": 1.89,
+            "median_iter": 28,
+            "n_windows": 81,
+            "wall_time_s": 154.1
+          }
+        },
+        "fast_racing_best_velocity": {
+          "returncode": 0,
+          "metrics": {
+            "ori_rmse_roll_deg": 9.684,
+            "ori_rmse_pitch_deg": 1.369,
+            "ori_rmse_yaw_deg": 9.684,
+            "imu_samples_used": 17875,
+            "radar_frames": 179,
+            "median_dt_s": 0.73,
+            "p90_dt_s": 1.11,
+            "median_iter": 29,
+            "n_windows": 55,
+            "wall_time_s": 73.3
+          }
+        }
+      }
+    },
+    {
+      "param": "window_duration",
+      "value": 2.0,
+      "bags": {
+        "slow_racing_best_velocity": {
+          "returncode": 0,
+          "metrics": {
+            "ori_rmse_roll_deg": 1.019,
+            "ori_rmse_pitch_deg": 0.857,
+            "ori_rmse_yaw_deg": 1.338,
+            "imu_samples_used": 25632,
+            "radar_frames": 258,
+            "median_dt_s": 1.41,
+            "p90_dt_s": 2.4,
+            "median_iter": 28,
+            "n_windows": 80,
+            "wall_time_s": 176.0
+          }
+        },
+        "fast_racing_best_velocity": {
+          "returncode": 0,
+          "metrics": {
+            "ori_rmse_roll_deg": 15.274,
+            "ori_rmse_pitch_deg": 1.604,
+            "ori_rmse_yaw_deg": 15.172,
+            "imu_samples_used": 17875,
+            "radar_frames": 179,
+            "median_dt_s": 1.01,
+            "p90_dt_s": 1.61,
+            "median_iter": 29,
+            "n_windows": 53,
+            "wall_time_s": 86.7
+          }
+        }
+      }
+    },
+    {
+      "param": "window_duration",
+      "value": 2.5,
+      "bags": {
+        "slow_racing_best_velocity": {
+          "returncode": 0,
+          "metrics": {
+            "ori_rmse_roll_deg": 0.993,
+            "ori_rmse_pitch_deg": 0.671,
+            "ori_rmse_yaw_deg": 1.059,
+            "imu_samples_used": 25632,
+            "radar_frames": 258,
+            "median_dt_s": 1.9,
+            "p90_dt_s": 2.93,
+            "median_iter": 28,
+            "n_windows": 78,
+            "wall_time_s": 204.5
+          }
+        },
+        "fast_racing_best_velocity": {
+          "returncode": 0,
+          "metrics": {
+            "ori_rmse_roll_deg": 10.034,
+            "ori_rmse_pitch_deg": 1.56,
+            "ori_rmse_yaw_deg": 9.96,
+            "imu_samples_used": 17875,
+            "radar_frames": 179,
+            "median_dt_s": 1.23,
+            "p90_dt_s": 1.75,
+            "median_iter": 30,
+            "n_windows": 52,
+            "wall_time_s": 97.1
+          }
+        }
+      }
+    },
+    {
+      "param": "window_duration",
+      "value": 3.0,
+      "bags": {
+        "slow_racing_best_velocity": {
+          "returncode": 0,
+          "metrics": {
+            "ori_rmse_roll_deg": 1.037,
+            "ori_rmse_pitch_deg": 0.586,
+            "ori_rmse_yaw_deg": 0.927,
+            "imu_samples_used": 25632,
+            "radar_frames": 258,
+            "median_dt_s": 2.04,
+            "p90_dt_s": 3.24,
+            "median_iter": 28,
+            "n_windows": 76,
+            "wall_time_s": 224.5
+          }
+        },
+        "fast_racing_best_velocity": {
+          "returncode": 0,
+          "metrics": {
+            "ori_rmse_roll_deg": 3.983,
+            "ori_rmse_pitch_deg": 1.442,
+            "ori_rmse_yaw_deg": 3.556,
+            "imu_samples_used": 17875,
+            "radar_frames": 179,
+            "median_dt_s": 1.48,
+            "p90_dt_s": 1.76,
+            "median_iter": 30,
+            "n_windows": 50,
+            "wall_time_s": 102.2
+          }
+        }
+      }
+    }
+  ]
+}

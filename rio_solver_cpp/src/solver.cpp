@@ -5,6 +5,7 @@
 #include <rio/factors/imu_gyro.h>
 #include <rio/factors/analytic/gyro_analytic.h>
 #include <rio/factors/analytic/accel_analytic.h>
+#include <rio/factors/analytic/radar_analytic.h>
 #include <rio/factors/gravity_direction.h>
 #include <rio/factors/heading_prior.h>
 #include <rio/factors/bias_prior.h>
@@ -147,6 +148,20 @@ inline ceres::CostFunction* make_accel_cost(
     double u_pos, double inv_dt_pos) {
     return new analytic::AccelAnalyticFactor(z_acc, u_ori, inv_dt_ori, u_pos, inv_dt_pos);
 }
+inline ceres::CostFunction* make_radar_cost(
+    const Eigen::Vector3d& u_sensor, double v_meas,
+    double u_ori, double inv_dt_ori, double u_pos, double inv_dt_pos,
+    const Sophus::SO3d& R_rb, const Eigen::Vector3d& t_bs) {
+    return new analytic::RadarAnalyticFactor(
+        u_sensor, v_meas, u_ori, inv_dt_ori, u_pos, inv_dt_pos, R_rb, t_bs);
+}
+inline ceres::CostFunction* make_radar_with_pitch_cost(
+    const Eigen::Vector3d& u_sensor, double v_meas,
+    double u_ori, double inv_dt_ori, double u_pos, double inv_dt_pos,
+    const Sophus::SO3d& R_rb, const Eigen::Vector3d& t_bs) {
+    return new analytic::RadarAnalyticWithPitchFactor(
+        u_sensor, v_meas, u_ori, inv_dt_ori, u_pos, inv_dt_pos, R_rb, t_bs);
+}
 
 // ============================================================================
 // solve()
@@ -257,30 +272,18 @@ SolverResult solve(
 
             ceres::CostFunction* cost;
             if (optimize_ext) {
-                // RadarDopplerWithPitchFunctor: extra pitch_delta param block
                 param_blocks.push_back(traj.pitch_delta_data());
-                std::vector<int> sizes;
-                for (int i = 0; i < N_ORI; ++i) sizes.push_back(4);
-                for (int i = 0; i < N_POS; ++i) sizes.push_back(3);
-                sizes.push_back(6);
-                sizes.push_back(1);
-                auto* f = new RadarDopplerWithPitchFunctor(
+                cost = make_radar_with_pitch_cost(
                     u_sensor, pt.v,
                     u_ori, inv_dt_ori,
                     u_pos, inv_dt_pos,
                     R_radar_to_body, t_body_sensor);
-                cost = make_auto_cost(f, 1, sizes);
             } else {
-                std::vector<int> sizes;
-                for (int i = 0; i < N_ORI; ++i) sizes.push_back(4);
-                for (int i = 0; i < N_POS; ++i) sizes.push_back(3);
-                sizes.push_back(6);
-                auto* f = new RadarDopplerFunctor(
+                cost = make_radar_cost(
                     u_sensor, pt.v,
                     u_ori, inv_dt_ori,
                     u_pos, inv_dt_pos,
                     R_radar_to_body, t_body_sensor);
-                cost = make_auto_cost(f, 1, sizes);
             }
 
             problem.AddResidualBlock(cost, huber_loss, param_blocks);
