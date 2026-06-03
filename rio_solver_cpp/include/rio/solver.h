@@ -231,6 +231,7 @@ struct SolverResult {
     // Diagnostics
     std::vector<double> cost_history;   // one entry per accepted iteration
     double solve_time_s{0.0};
+    int    num_iterations{0};           // successful LM steps (summary.num_successful_steps)
     std::string solver_summary;
 
     // Ceres timing breakdown (seconds)

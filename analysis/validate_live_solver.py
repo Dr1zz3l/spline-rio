@@ -472,6 +472,12 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
         _register_cpp_result(result)
 
         cost_str = f"{result.cost_history[-1]:.3f}" if result.cost_history else "n/a"
+        t_jac_w  = result.time_jacobian_eval_s
+        t_res_w  = result.time_residual_eval_s
+        t_lin_w  = result.time_linear_solver_s
+        t_misc_w = max(0.0, dt_w - t_jac_w - t_res_w - t_lin_w)
+        timing_str = (f"  jac={t_jac_w:.2f}s  res={t_res_w:.2f}s"
+                      f"  lin={t_lin_w:.2f}s  other={t_misc_w:.2f}s")
         if result.marg_prior_valid:
             r2 = result.marg_prior_residual_norm
             r2_str = f"{r2:.1f}" if r2 >= 0 else "n/a"
@@ -492,8 +498,8 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
             bcov_str = "  bcov=n/a"
         print(f"  [sw {n_windows+1:3d}] t={t_w_start:.2f}–{t_w_end:.2f}s"
               f"  {len(window_radar):3d}fr  {int(imu_mask.sum()):4d}imu"
-              f"  cost={cost_str}  iter={len(result.cost_history)}  dt={dt_w:.2f}s"
-              + prior_str + bcov_str)
+              f"  cost={cost_str}  iter={result.num_iterations}  dt={dt_w:.2f}s"
+              + timing_str + prior_str + bcov_str)
 
         # Snapshot leading-edge estimate in stride zone [t_w_end - stride, t_w_end]
         t_snap_start = t_w_end - window_stride

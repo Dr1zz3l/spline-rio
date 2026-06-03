@@ -726,7 +726,8 @@ SolverResult SlidingWindowSolver::solve_window(
     result.biases     = traj_.biases;
     double final_pitch = ext_.pitch_deg + traj_.pitch_delta * (180.0 / M_PI);
     result.extrinsic_euler_deg = {ext_.roll_deg, final_pitch, ext_.yaw_deg};
-    result.solve_time_s = elapsed;
+    result.solve_time_s  = elapsed;
+    result.num_iterations = summary.num_successful_steps;
     result.cost_history.push_back(summary.initial_cost);
     result.cost_history.push_back(summary.final_cost);
     result.time_residual_eval_s = summary.residual_evaluation_time_in_seconds;

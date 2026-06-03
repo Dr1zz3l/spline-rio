@@ -282,6 +282,42 @@ The radar has limited elevation diversity (2 TX antennas), causing a systematic 
 | `lambda_bias_prior_accel` | **10000** | Full-rate IMU provides enough constraints; prevents trash-can |
 | `lambda_bias_prior_gyro` | **10000** | Same |
 
+## Sliding Window Timing Benchmark (2026-06-03)
+
+Measured with per-window Ceres timing breakdown (`result.time_jacobian_eval_s` etc., exposed via
+`num_iterations` field added to `SolverResult`). Both racing bags, `--mocap-yaw --cpp --sliding-window`.
+
+| Component | slow_racing | fast_racing | Share |
+|---|---|---|---|
+| Jacobian eval (`jac`) | ~0.7s | ~0.5s | ~35% |
+| Linear solve (`lin`) | ~0.7s | ~0.6s | ~35% |
+| Residual eval (`res`) | ~0.07s | ~0.06s | ~3% |
+| Other (`compute_prior`) | ~0.7s | ~0.6s | ~27% |
+| **Total wall time** | **~2.1s** | **~1.7s** | — |
+
+**Key finding: iter ≈ 28–30 per window, both bags, cold and warm start alike.**
+
+`function_tolerance` (not `max_iterations=40`) is the stopping criterion. The ill-conditioned
+Hessian (cond ≈ 5.5×10¹⁰) causes slow LM convergence — ~28 small steps before the cost
+improvement drops below threshold. The marg_prior_scale (1e-7 vs 2e-4) does not affect this.
+
+**"Other" ≈ 0.65s** = `compute_prior()` evaluating the full problem Jacobian at the solution
+to extract H_bb for the Schur complement. This is a manual `problem.Evaluate()` call outside
+the LM loop and is NOT counted in Ceres internal timers.
+
+**Already optimal:** analytic IMU factors (GyroAnalyticFactor, AccelAnalyticFactor) already
+active; `-O3 -march=native` SIMD; multi-threaded Jacobian eval (`num_threads=0`).
+
+**Real-time gap:** stride = 0.3s; current ~1.7–2.1s → 5–7× too slow.
+Viable speedup paths (each with rough estimate):
+- Reduce LM iterations via tighter tolerance or better warm start: up to 3× if iter→8
+- `compute_prior()` less frequently (every N windows): ~1.3× 
+- Reduce `window_duration` to 2.0s (33% fewer variables per solve): ~1.3×
+- iSAM2/GTSAM incremental factorization: true O(k²) per measurement, sensor-rate updates,
+  same MAP accuracy — but requires full architecture replacement (~3–6 weeks), out of scope.
+
+See `documentation/RESEARCH_NOTES.md §9` for the full analysis.
+
 ## Known Gaps / TODO
 
 ### Orientation regularization: angular acceleration (∫||dω/dt||²) replaces angular velocity

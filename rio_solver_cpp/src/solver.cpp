@@ -693,7 +693,8 @@ SolverResult solve(
     // Return optimized pitch (nominal + delta converted to degrees)
     double final_pitch = extrinsic.pitch_deg + traj.pitch_delta * (180.0 / M_PI);
     result.extrinsic_euler_deg = {extrinsic.roll_deg, final_pitch, extrinsic.yaw_deg};
-    result.solve_time_s = elapsed;
+    result.solve_time_s  = elapsed;
+    result.num_iterations = summary.num_successful_steps;
 
     // Cost history from iteration callbacks (simplification: just final cost)
     result.cost_history.push_back(summary.initial_cost);

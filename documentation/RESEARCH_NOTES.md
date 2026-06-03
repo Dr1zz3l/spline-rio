@@ -279,3 +279,56 @@ new measurements arrive.  Each incremental update is O(k²) where k is the numbe
 affected variables, not O(n).  This is a fundamentally different architecture —
 not a drop-in Ceres LinearSolver — and would require replacing the Ceres minimiser
 with a custom incremental optimiser.  Out of scope for this project.
+
+---
+
+## 9. Sliding Window Timing Analysis (2026-06-03)
+
+Per-window Ceres timing measured by adding `num_iterations = summary.num_successful_steps`
+and exposing `time_{jacobian,residual,linear_solver}_eval_s` to the Python print loop.
+Run: `--mocap-yaw --cpp --sliding-window --no-plot` on both racing bags.
+
+### Results
+
+| Component | slow_racing | fast_racing |
+|---|---|---|
+| Jacobian eval | ~0.7s | ~0.5s |
+| Linear solve | ~0.7s | ~0.6s |
+| Residual eval | ~0.07s | ~0.06s |
+| Other (compute_prior) | ~0.7s | ~0.6s |
+| **Total** | **~2.1s** | **~1.7s** |
+| **LM iterations** | **~28–30** | **~28–30** |
+
+Real-time target: ≤ 0.3s (stride). Current: 5–7× too slow.
+
+### Root causes
+
+**1. LM iteration count (28–30) is the dominant issue.**
+Iter count is constant across cold-start (window 1) and warm-start (window 30), and across
+both marg_prior_scale values (1e-7 and 2e-4). The stopping criterion is `function_tolerance`,
+not `max_iterations=40`. The ill-conditioned Hessian (cond ≈ 5.5×10¹⁰) forces LM to take
+many small steps before the per-step cost improvement drops below threshold. With gyro-dominant
+information (λ×∂ω/∂Ω ≈ 62,500) and sparse radar position information (~10,000), the optimizer
+converges quickly in orientation but slowly in position — requiring ~28 iterations overall.
+
+**2. compute_prior() accounts for the "other" ≈ 0.65s (27% of wall time).**
+After each Ceres solve, `compute_prior()` calls `problem.Evaluate()` manually to extract the
+full Jacobian at the solution and compute the boundary block H_bb for the Schur complement.
+This is one additional full Jacobian evaluation — equivalent to one more LM iteration — but
+is NOT counted in Ceres's internal timing fields. It appears as wall-clock overhead in "other".
+
+**3. Already-captured wins: analytic IMU factors.**
+`GyroAnalyticFactor` and `AccelAnalyticFactor` are active in both solvers. Without them the
+Jacobian eval time would be ~3× higher (Jet arithmetic on 6000 high-frequency IMU samples).
+
+### What remains available
+
+- **Fewer LM iterations**: `--set max_iterations=N` for N ∈ {8, 12} — quick experiment.
+  If accuracy holds at 8 iterations: ~3× speedup on Ceres part.
+- **compute_prior() less frequently**: compute every 3–5 windows → ~1.3× on total.
+- **Window size reduction** (2.0s vs 3.0s): ~1.33× on all per-iteration costs.
+- **iSAM2/GTSAM**: O(k²) incremental updates at sensor rate, same MAP accuracy.
+  Requires expressing B-spline factors in GTSAM's custom factor API (~3–6 weeks). See §8.
+
+Combining iter→8 + window=2s + compute_prior fix: estimated ~0.5s per window.
+True real-time (0.3s) likely requires iSAM2 or a fundamentally different sensor schedule.
