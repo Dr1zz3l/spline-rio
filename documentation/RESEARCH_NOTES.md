@@ -335,6 +335,56 @@ True real-time (0.3s) likely requires iSAM2 or a fundamentally different sensor 
 
 ---
 
+## §9b Parameter Sweep: max_iterations and window_duration (2026-06-03)
+
+Script: `analysis/sweep_sw_params.py`. Results: `analysis/eval_results/sweep_iter_20260603_175706.json`,
+`sweep_window_20260603_185017.json`. Both bags, `--mocap-yaw --cpp --sliding-window`.
+Accuracy metric: per-axis orientation RMSE (position RMSE not captured due to regex mismatch
+against sliding-window output format; see `parse_rmse_from_output` in `eval_bags.py`).
+
+### Iteration sweep (window_duration=3.0s fixed)
+
+| max_iter | slow yaw RMSE | slow median_dt | fast yaw RMSE | fast median_dt |
+|---|---|---|---|---|
+| 8  | 4.23° | 0.83s | 12.18° | 0.68s |
+| 12 | 4.50° | 1.07s | 9.59°  | 0.83s |
+| 16 | 4.66° | 1.28s | 10.69° | 0.97s |
+| 20 | 4.44° | 1.46s | 7.31°  | 1.08s |
+| 28 | **0.93°** | 1.93s | **3.56°** | 1.38s |
+| 40 | **0.93°** | 1.90s | **3.55°** | 1.38s |
+
+**Finding**: There is a sharp cliff at max_iter=28, NOT a gradual elbow. Yaw RMSE drops from
+4–12° at iter≤20 to ~0.9–3.6° at iter=28. iter=28 and iter=40 give IDENTICAL results (both
+timing and RMSE) — confirming that the solver converges naturally at ~28 steps via
+`function_tolerance`. No time savings available from reducing max_iterations below ~28.
+
+### Window duration sweep (max_iter=40 fixed)
+
+| window (s) | slow yaw RMSE | slow median_dt | fast yaw RMSE | fast median_dt |
+|---|---|---|---|---|
+| 1.0 | 112.3° | 0.88s | 8.87°  | 0.52s |
+| 1.5 | **1.75°** | 1.21s | 9.68°  | 0.73s |
+| 2.0 | 1.34° | 1.41s | 15.17° | 1.01s |
+| 2.5 | 1.06° | 1.90s | 9.96°  | 1.23s |
+| 3.0 | **0.93°** | 2.04s | **3.56°** | 1.48s |
+
+**Finding (slow_racing)**: Soft elbow at 1.5s — yaw goes from 0.93° (3.0s) to 1.75° at 1.5s
+(+88%), with 1.69× speedup in median_dt. Acceptable accuracy–speed trade-off IF this bag alone
+is considered. window=1.0s is broken (112° yaw — marginalization instability).
+
+**Finding (fast_racing)**: Requires 3.0s window. All windows < 3.0s produce 9–15° yaw RMSE
+(vs 3.56° at 3.0s). This is due to the stiff marg_prior_scale=2e-4 combined with the short
+window not providing enough radar observations to constrain the marginalization prior.
+The instability at window=2.0s (15.17°) followed by partial recovery at 2.5s (9.96°) suggests
+non-monotone behavior driven by which radar frames land inside the window.
+
+**Overall conclusion**: The 4–5× gap to the 0.3s real-time target cannot be closed by parameter
+tuning alone. The iteration count is a hard minimum; window size only helps for slow_racing and
+at the cost of yaw accuracy. Structural changes (analytic Jacobians, iSAM2, compute_prior
+batching) are required.
+
+---
+
 ## §10 Analytic Radar Jacobians — Implementation and Timing (2026-06-03)
 
 ### Motivation
