@@ -193,3 +193,89 @@ during backflips (ω ≈ 10 rad/s, centripetal accel ≈ 25 m/s²) the spline's
 second-derivative acceleration estimate is poor, pulling orientation away from
 the MoCap-initialized SLERP.  These experiments motivated the switch to Ceres
 C++ with full-rate IMU, tight bias priors, and min-α regularization.
+
+---
+
+## 8. BandedSchurSolver — O(n) Attempt and Abandonment (Sessions 1–3, 2026-06)
+
+### Motivation
+
+The Ceres SPARSE_NORMAL_CHOLESKY / SuiteSparse solver factorizes the full n×n
+normal equations H = J^T J + D²I each LM iteration (n ≈ 2890 for a 3 s sliding
+window).  CHOLMOD's fill-reducing Cholesky is fast but scales super-linearly.
+For realtime (≤ 0.3 s per window), a solver exploiting problem structure was needed.
+
+The structural observation: H_kk (knot subblock, 2883 DOF) is sparse with **bandwidth
+bw ≈ 15** because quintic B-spline basis functions are locally supported — each knot
+only couples to its 5 nearest neighbours (3 DOF each).  Banded Cholesky on H_kk is
+O(n_k × bw²) ≈ O(n_k × 225), vs CHOLMOD's O(n_k × fill²) where fill >> bw.  The
+remaining global parameters (biases + pitch_delta, n_c = 7) are dense but tiny.
+The arrowhead Schur complement eliminates H_kk first, leaving a 7×7 dense system.
+
+Projected speedup over SuiteSparse: 10–100× depending on AMD fill factor.
+
+### Session 1–2: Banded LL^T — Numerical Failure
+
+Implemented AMD-reordered banded LL^T with Jacobi diagonal preconditioning.
+
+**Fatal finding**: cond(H_kk) ≈ 5.5×10^10.  No-pivot banded LL^T (which the banded
+structure requires — any off-band pivot swap destroys the O(n) property) accumulates
+catastrophic rounding errors through kd ≈ 64 Schur complement steps.  Off-diagonal
+entries drive intermediate pivots negative regardless of Jacobi scaling.
+
+Pivoting would fix the numerics but breaks the band structure, collapsing complexity
+back to O(n²) or worse.  The fundamental contradiction: the problem is too
+ill-conditioned for no-pivot Cholesky, but pivoting negates the O(n) benefit.
+
+### Session 3: Eigen::SimplicialLDLT — Same Class as Baseline, Gate Fails
+
+Replaced banded LL^T with Eigen::SimplicialLDLT on H_kk (AMD-ordered supernodal
+LDL^T) + dense 7×7 Schur complement.  This is algebraically correct but offers no
+speedup: SimplicialLDLT is the same algorithmic class as CHOLMOD.  The Schur
+elimination of 7 columns does not reduce the n_k × n_k factorization cost, and the
+fill pattern of the 2883×2883 subproblem is essentially the same as the full 2890×2890.
+Net effect: two factorizations (2883 + 7) + block extraction overhead vs one CHOLMOD
+(2890).  Likely slower than baseline.
+
+**Gate outcome**: FAIL (never passed).
+- Windows 0–1: cost_rel ≈ 5×10^{-4} (threshold 1×10^{-4}).
+- Window 2+: catastrophic divergence (cost ~8×10^5 vs baseline ~1.5×10^3).
+
+**Root cause of gate failure — floating-point J^T J indefiniteness**:
+J^T J is mathematically PSD, but the floating-point computed version has small
+negative eigenvalues (~7×10^{-2} in LDLT pivots) when the true minimum eigenvalue
+is near zero (~3×10^{-11} estimated from step amplification).  With LM damping
+D² ≈ (8.75×10^{-7})² = 7.7×10^{-13} at late convergence, D² << |neg. eigenvalue|,
+so the factorization is numerically indefinite.
+
+SuiteSparse (CHOLMOD) handles this because it detects near-zero pivots and applies
+internal regularisation (`dbound`), effectively clamping them to a small positive
+value.  Eigen::SimplicialLDLT has no such mechanism — it returns a factorization
+with negative D entries, and the resulting step is uphill (verified: g^T Δx = −3.08 < 0).
+
+Attempted fixes: (a) return LINEAR_SOLVER_FAILURE on negative D, forcing LM to
+increase mu — burns through trust-region budget by window 2; (b) clamp negative D
+entries to D_max × 1×10^{-8} — produces model_cost_change predictions of 10^{21}
+at window 2, catastrophic divergence.  Neither fix produces stable behaviour across
+windows because the clamped solve approximates a different (nearby) matrix, breaking
+the quadratic model accuracy assumption.
+
+**Key technical artefacts found along the way (preserved for reference)**:
+- `SimplicialCholeskyBase::_solve_impl` aliasing bug: `dest = m_Pinv * dest` with
+  Eigen's `AliasFreeProduct` tag suppresses the implicit eval, causing in-place
+  permutation corruption.  Workaround: explicit index loops for P and P^T steps.
+  See header comment in `banded_schur_solver.cc`.
+- Permutation convention for Eigen SimplicialLDLT: P.indices()(i) = j means
+  (P·v)(i) = v(j).  Factorisation is P^T A P = L D L^T.  Correct solve:
+  P^T scatter: tmp[P_idx[i]] = b[i]; L^{-1}; D^{-1}; L^{-T}; P gather: res[i] = tmp[P_idx[i]].
+  The opposite order (P gather first, then P^T scatter) is wrong and produces uphill steps.
+
+### What a Real O(n) Path Requires
+
+A truly O(n) sliding-window solver needs **incremental sparse factorisation** — the
+iSAM2 / Bayes tree approach (Kaess et al. 2012).  The idea: maintain a symbolic
+Cholesky factorisation of the factor graph and update only the affected cliques when
+new measurements arrive.  Each incremental update is O(k²) where k is the number of
+affected variables, not O(n).  This is a fundamentally different architecture —
+not a drop-in Ceres LinearSolver — and would require replacing the Ceres minimiser
+with a custom incremental optimiser.  Out of scope for this project.
