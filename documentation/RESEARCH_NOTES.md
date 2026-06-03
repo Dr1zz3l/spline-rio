@@ -332,3 +332,57 @@ Jacobian eval time would be ~3× higher (Jet arithmetic on 6000 high-frequency I
 
 Combining iter→8 + window=2s + compute_prior fix: estimated ~0.5s per window.
 True real-time (0.3s) likely requires iSAM2 or a fundamentally different sensor schedule.
+
+---
+
+## §10 Analytic Radar Jacobians — Implementation and Timing (2026-06-03)
+
+### Motivation
+
+After §9 established that Jacobian eval is ~35% of window solve time, replacing the remaining
+`DynamicAutoDiffCostFunction` (Jet arithmetic over ~41 parameters) for radar with analytic
+Jacobians was the natural next step. IMU factors were already analytic (§9).
+
+### Approach
+
+SymForce's `CppConfig` generates the sensor-model Jacobians (∂r/∂v_world, ∂r/∂R_bw, ∂r/∂ω)
+as a dependency-free Eigen template (`RadarSensorJacWithJacobians012`, 146 CSE-optimized ops).
+Spline Jacobians come from the existing `spline_jacobians.h` (`rotation_with_jacobian_manual`,
+`body_velocity_with_jacobian_manual`). The convention chain is:
+
+1. SymForce emits RIGHT-perturbation Jacobian for `Rot3`: `∂r/∂ε_R` where `R_new = R·Exp(ε_R)`
+2. Convert to LEFT: `J_left = J_right · R^T`
+3. Chain to basalt LEFT-perturbation spline Jacobians: `J_knot_i = J_left · J_R.d_val_d_knot[i]`
+4. Convert to Ceres ambient: `jacobians[i] = J_knot_i · tangent_to_ambient(params[i])`
+5. ω Jacobian needs no convention conversion (plain vector output): `J_knot_i = J_ω · J_omega.d_val_d_knot[i]`
+
+Two factor classes: `RadarAnalyticFactor` (fixed extrinsics, pre-computes `u_body = R_rb·u_sensor`)
+and `RadarAnalyticWithPitchFactor` (pitch_delta parameter, recomputes `u_body` per LM step;
+pitch Jacobian: `∂r/∂pd = v_ant · (R_rb · dRy/dpd · u_sensor)`).
+
+### Results (2026-06-03, `--mocap-yaw --cpp --sliding-window`)
+
+Accuracy (batch): slow_racing 0.177m/1.02°, fast_racing 0.763m/2.64° — both within 5% of
+AutoDiff baseline (confirmed correct Jacobians).
+
+Timing comparison (analytic vs AutoDiff radar):
+
+| Metric | slow_racing (before→after) | fast_racing (before→after) |
+|---|---|---|
+| Jacobian eval (avg) | ~0.7s → ~0.81s | ~0.5s → ~0.39s |
+| Linear solve (avg) | ~0.7s → ~0.92s | ~0.6s → ~0.70s |
+| Other/compute_prior | ~0.7s → ~0.79s | ~0.6s → ~0.62s |
+| **Total** | **~2.1s → ~2.6s** | **~1.7s → ~1.77s** |
+
+fast_racing shows ~30% Jacobian speedup (0.39s vs 0.5s); total unchanged since jac is only ~29%
+of total. slow_racing may reflect higher radar point density per window or system load variation.
+
+### Key finding
+
+With analytic factors for ALL sensor residuals (IMU + radar), the Jacobian component is no
+longer the dominant bottleneck. The real bottleneck is `compute_prior` (called once per window
+OUTSIDE the LM loop, equivalent to +1 full Jacobian evaluation, classified as "other" ≈ 0.62s)
+plus the linear solve itself (~0.70s). Both are unaffected by analytic Jacobians.
+
+**Remaining 5-7× real-time gap requires structural changes**: reduce `compute_prior` frequency
+(recompute every N>1 windows), or iSAM2 for O(k²) incremental updates.

@@ -124,7 +124,9 @@ Subdirectory scripts (`diagnostics/`, `viz/`): add both `analysis/` and `analysi
 | `CMakeLists.txt` | Build: `cd build_release && cmake .. && cmake --build . -j$(nproc)` |
 | `include/rio/solver.h` | Public API: `SolverConfig`, `SolverResult`, `solve()`, `SlidingWindowSolver` |
 | `include/rio/factors/` | Cost functors: radar Doppler, accel/gyro (analytic + AutoDiff), regularization |
-| `include/rio/factors/analytic/` | `GyroAnalyticFactor`, `AccelAnalyticFactor` — bypass Jet arithmetic |
+| `include/rio/factors/analytic/` | `GyroAnalyticFactor`, `AccelAnalyticFactor`, `RadarAnalyticFactor` — bypass Jet arithmetic |
+| `include/sym/rot3.h` | Minimal `sym::Rot3` shim for SymForce-generated C++ headers |
+| `include/rio/factors/analytic/radar_sensor_jac_gen.h` | SymForce-generated radar sensor-model Jacobians (re-run `derive_jacobians_symforce.py` to regenerate) |
 | `src/solver.cpp` | Batch problem construction + Ceres LM solve |
 | `src/sliding_window_solver.cpp` | SW problem construction, Schur complement marginalization |
 | `src/pybind_module.cpp` | Python↔C++ bridge |
@@ -233,6 +235,8 @@ Pre-lever-arm batch (historical): slow 0.146m/0.96°, fast 0.925m/2.35°, backfl
 Both racing bags, `--mocap-yaw --cpp --sliding-window`. Per-window breakdown from Ceres
 internal timers + `num_iterations = summary.num_successful_steps`.
 
+### Before analytic radar Jacobians (AutoDiff DynamicAutoDiff for radar)
+
 | Component | slow_racing | fast_racing | Share |
 |---|---|---|---|
 | Jacobian eval | ~0.7s | ~0.5s | ~35% |
@@ -240,14 +244,28 @@ internal timers + `num_iterations = summary.num_successful_steps`.
 | Residual eval | ~0.07s | ~0.06s | ~3% |
 | Other (compute_prior) | ~0.7s | ~0.6s | ~27% |
 | **Total** | **~2.1s** | **~1.7s** | — |
-| **LM iterations** | **~28–30** | **~28–30** | — |
+
+### After analytic radar Jacobians (RadarAnalyticFactor, 2026-06-03)
+
+| Component | slow_racing | fast_racing |
+|---|---|---|
+| Jacobian eval (avg) | ~0.81s | ~0.39s |
+| Linear solve (avg) | ~0.92s | ~0.70s |
+| Other (compute_prior, avg) | ~0.79s | ~0.62s |
+| **Total (avg)** | **~2.6s** | **~1.77s** |
+| **LM iterations** | **~28** | **~30** |
+
+fast_racing Jacobian time improved ~30% (0.39s vs 0.5s); linear solve and compute_prior unchanged.
+Total time similar due to Jacobian eval being only ~29% of total. The `slow_racing` result may
+reflect higher radar point density (more observations per window) or system load variance.
 
 **Key findings**: iter ≈ 28–30 every window regardless of warm/cold start or marg_prior_scale.
 `function_tolerance` is the stopping criterion; cond(H) ≈ 5.5×10¹⁰ causes slow LM convergence.
 "Other" ≈ 0.65s is `compute_prior()` calling `problem.Evaluate()` outside the LM loop.
-Analytic IMU factors (GyroAnalyticFactor, AccelAnalyticFactor) already active; -O3 -march=native.
+All factors now analytic: GyroAnalyticFactor, AccelAnalyticFactor, RadarAnalyticFactor; -O3 -march=native.
 Real-time gap: stride 0.3s vs ~1.7–2.1s solve → 5–7× too slow.
-See `documentation/RESEARCH_NOTES.md §9` for the full analysis and speedup path assessment.
+Remaining speedup levers: reduce compute_prior (accounts for ~35%), and linear solve.
+See `documentation/RESEARCH_NOTES.md §9–10` for the full analysis and speedup path assessment.
 
 ## ROS Topics
 
