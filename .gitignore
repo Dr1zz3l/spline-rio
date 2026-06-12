@@ -65,3 +65,9 @@ lie-spline-experiments/
 # Local session artifacts
 .claude/
 analysis/*.so.bak
+# external baseline workspace (cloned/pinned by baselines/setup.sh; built in docker)
+baselines/rio/
+baselines/catkin_simple/
+baselines/catkin_ws/
+baselines/datasets/
+baselines/results/

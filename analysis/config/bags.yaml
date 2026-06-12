@@ -10,6 +10,14 @@ bags:
   fast_racing_best_velocity_no_clustering:  rosbags/Wed_11032026_1503/fast_racing_2026-03-11-15-19-58.bag
   fast_racing_best_velocity:                rosbags/Wed_11032026_1503/fastracing_oldconfig_2026-03-11-17-20-18.bag
   slow_racing_best_velocity:                rosbags/Wed_11032026_1503/slowracing_oldconfig_2026-03-11-17-18-43.bag
+  # External-validation bags (Doer ICINS 2021, converted by
+  # baselines/adapters/convert_icins_to_ours.py; see baselines/README.md).
+  # Extrinsics via --set-ext (printed by the converter); offsets are zero
+  # (hardware-stamped) -> extrinsics_overrides below.
+  icins_flight_1: baselines/datasets/our_format/icins_flight_1.bag
+  icins_flight_2: baselines/datasets/our_format/icins_flight_2.bag
+  icins_flight_3: baselines/datasets/our_format/icins_flight_3.bag
+  icins_flight_4: baselines/datasets/our_format/icins_flight_4.bag
 
 # Per-bag solver parameter overrides. Applied after solver_cpp.yaml, before --set.
 # Use for bags that need different spline configs (e.g. backflips need dense ori knots).
@@ -22,6 +30,10 @@ extrinsics_overrides:
   backflips:
     radar_imu_offset_sec: 0.0733
     imu_mocap_offset_sec: 0.0200
+  icins_flight_1: {radar_imu_offset_sec: 0.0, imu_mocap_offset_sec: 0.0}
+  icins_flight_2: {radar_imu_offset_sec: 0.0, imu_mocap_offset_sec: 0.0}
+  icins_flight_3: {radar_imu_offset_sec: 0.0, imu_mocap_offset_sec: 0.0}
+  icins_flight_4: {radar_imu_offset_sec: 0.0, imu_mocap_offset_sec: 0.0}
   # backflips_best_velocity: TESTED radar_imu_offset_sec=0.1067 (this bag's
   # cross-corr best fit, vs global 0.135) — REVERTED: position degraded
   # 2.06→2.79 m, ori ~par (9.56→9.35 live). Cross-corr offset estimates
@@ -89,3 +101,9 @@ timing:
   fast_racing_best_velocity_no_clustering:  [16.9, 10.0]
   fast_racing_best_velocity:                [18.1, 18.0]
   slow_racing_best_velocity:                [18.1, 25.8]# 25.8]
+  # ICINS 2021 (bag time = pseudo-GT clock; sensors start 26-62 s in,
+  # windows = sensor/GT overlap minus margins; see baselines/README.md)
+  icins_flight_1:                           [66.0, 186.0]
+  icins_flight_2:                           [30.0, 87.0]
+  icins_flight_3:                           [39.0, 183.0]
+  icins_flight_4:                           [43.0, 121.0]

@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<!-- ekf_rio on the ICINS 2021 datasets with THEIR stock config + calib,
+     plus a recorder so we can evaluate under our causal metrics.
+     filter package selectable: pkg:=ekf_rio (unaided) or pkg:=ekf_yrio (yaw-aided). -->
+<launch>
+    <param name="use_sim_time" value="False" type="bool"/>
+
+    <arg name="pkg" default="ekf_rio"/>
+    <arg name="dataset_dir" default="/workspace/baselines/datasets/icins2021/radar_inertial_datasets_icins_2021/flight_datasets"/>
+    <arg name="rosbag"/>
+    <arg name="out_bag"/>
+    <arg name="calibration" default="$(arg dataset_dir)/calib"/>
+    <arg name="config" default="$(eval find(arg('pkg')) + '/config/' + arg('pkg') + '_default.yaml')"/>
+
+    <arg name="bag_start" default="0"/>
+    <arg name="bag_duration" default="-1.0"/>
+    <arg name="sleep_ms" default="5"/>
+    <arg name="filter_node_name" default="rio"/>
+
+    <node name="$(arg filter_node_name)" pkg="$(arg pkg)" type="rosbag_node" output="screen" launch-prefix="bash -c 'sleep 4; $0 $@' ">
+        <rosparam file="$(arg config)" command="load" ns=""/>
+        <rosparam file="$(arg calibration).yaml" command="load" ns=""/>
+        <param name="rosbag_path" value="$(arg dataset_dir)/$(arg rosbag)" type="string"/>
+        <param name="bag_start" value="$(arg bag_start)" type="double"/>
+        <param name="bag_duration" value="$(arg bag_duration)" type="double"/>
+        <param name="sleep_ms" value="$(arg sleep_ms)" type="double"/>
+        <param name="publisher_rate" value="100" type="double"/>
+        <param name="republish_ground_truth" value="false" type="bool"/>
+        <param name="altimeter_update" value="true" type="bool"/>
+        <!-- same gyro z bias init as their official icins evaluation launch -->
+        <param name="b_0_w_z_deg" value="-0.1" type="double"/>
+    </node>
+
+    <node name="recorder" pkg="rosbag" type="record"
+          args="record -O $(arg out_bag) /$(arg filter_node_name)/pose /$(arg filter_node_name)/twist"/>
+</launch>
