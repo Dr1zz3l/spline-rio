@@ -427,6 +427,12 @@ SolverResult solve(
             // Gyro factor (orientation only)
             {
                 Eigen::Vector3d z_gyro(imu.gx, imu.gy, imu.gz);
+                // ω-adaptive weight (see lambda_gyro_omega_sigma in solver.h)
+                double w_g = 1.0;
+                if (cfg.lambda_gyro_omega_sigma > 0.0) {
+                    const double q = z_gyro.norm() / cfg.lambda_gyro_omega_sigma;
+                    w_g = 1.0 + std::pow(q, cfg.lambda_gyro_omega_pow);
+                }
                 auto* cost = make_gyro_cost(z_gyro, u_ori, inv_dt_ori);
 
                 std::vector<double*> params;
@@ -434,7 +440,7 @@ SolverResult solve(
                     params.push_back(traj.ori_knot_data(ori0 + i));
                 params.push_back(traj.bias_data());
 
-                auto* scaled = new ceres::ScaledLoss(nullptr, cfg.lambda_gyro,
+                auto* scaled = new ceres::ScaledLoss(nullptr, cfg.lambda_gyro * w_g,
                                                       ceres::TAKE_OWNERSHIP);
                 problem.AddResidualBlock(cost, scaled, params);
             }

@@ -51,33 +51,40 @@ cd analysis/
 # --imu-hz N overrides IMU rate (default: 1000 for --cpp, 200 for Python)
 
 # Live RIO solver — C++ sliding window (Phase 4b: Schur complement marginalization)
-../.venv/bin/python3 validate_live_solver.py slow_racing_best_velocity --mocap-yaw --cpp --sliding-window
-../.venv/bin/python3 validate_live_solver.py fast_racing_best_velocity --mocap-yaw --cpp --sliding-window
 # Default: window=3.0s, stride=0.3s
 # 2026-06-12 consistency fixes (see documentation/ROADMAP.md Part 1 results):
 #   marg_markov_blanket=1 + warm_start_align=1 are new C++ defaults (--set ...=0 for legacy).
-#   With them, marg_prior_scale=1.0 works universally — the old per-bag tuning
-#   (slow=1e-7, fast=2e-4, harmful 1e-5–1e-6 regime) was compensating for a
-#   conditioning/double-counting bug in compute_prior(). Recommended fast config:
-#   --set marg_prior_scale=1.0 --set dt_pos=0.04 --set dt_ori=0.016 \
-#   --set radar_intensity_weight=1.0   (~0.4s/window; iw: per-point SNR weighting,
-#   live ori 3.31→2.88° — ROADMAP Part 5; α=2 better headline but roll/yaw trade)
+#
+# UNIVERSAL WEIGHTING CONFIG (2026-06-12, ROADMAP Part 5 "universal config"):
+# one weighting set for ALL bags — ω-adaptive gyro λ_eff = 4·(1+(|z_gyro|/4)⁴),
+# radar/accel ω-soft-gates, per-point SNR weighting:
+UNIV="--set marg_prior_scale=1.0 --set lambda_gyro_omega_sigma=4.0 --set lambda_gyro_omega_pow=4.0 \
+  --set omega_soft_sigma=2.0 --set accel_soft_sigma=4.0 --set radar_intensity_weight=1.0"
+# Per-bag EXTRAS (grids = platform/dynamics params; the rest see ROADMAP):
+../.venv/bin/python3 validate_live_solver.py fast_racing_best_velocity --mocap-yaw --cpp --sliding-window \
+  $UNIV --set dt_pos=0.04 --set dt_ori=0.016
+# → 0.493m/2.39° settled, 0.566m/2.94° live, ~0.35s/window (best fast ever, pos −23%)
+../.venv/bin/python3 validate_live_solver.py slow_racing_best_velocity --mocap-yaw --cpp --sliding-window \
+  $UNIV --set max_iterations=12 --set lambda_heading=10.0     # live: 0.286/1.55, 0.302/2.17, 0.70s
+#   (mapping variant: drop iter cap + λh → settled 0.281m/1.22°, yaw 0.71°, 1.6s/window)
+# DO NOT add lambda_pos_init_prior (tether) on racing: poisons fast position (1.5m!)
+# and slow full-iter yaw — it is a backflips-only rescue (radar sparsity in flips).
 # Per-window diagnostics printed: cost0, jac/res/lin/other timing, iter count, prior cond/rank, tr(S⁻¹)/tr(H⁻¹)
 
-# Backflips sliding window (2026-06-12 retune: stiff gyro + light tether + pitch 27.5 + radar ω₀=2 + accel ω₀=4):
+# Backflips sliding window (2026-06-12, universal weighting + backflips extras):
 ../.venv/bin/python3 validate_live_solver.py backflips_best_velocity --mocap-yaw --cpp --sliding-window \
-  --set dt_ori=0.008 --set lock_gyro_bias=0 --set marg_prior_scale=1.0 \
-  --set lambda_pos_init_prior=0.5 --set omega_soft_sigma=2.0 --set accel_soft_sigma=4.0 \
-  --set lambda_gyro=400 --set radar_zbias_fixed=-1.0 --set-ext 'rotation_euler_deg=[180.0,27.5,0.0]'
-# → settled 1.80m/5.29°, live 1.77m/6.37°, ~0.55s/window  (was 1.99/9.22, 2.14/8.67 before
-#   the 2026-06-12 ROADMAP Part-5 retune; Phase 3 was 2.56m settled / 3.33m live)
+  $UNIV --set dt_ori=0.008 --set lock_gyro_bias=0 --set lambda_pos_init_prior=0.5 \
+  --set radar_zbias_fixed=-1.0 --set-ext 'rotation_euler_deg=[180.0,27.5,0.0]'
+# → settled 1.78m/4.99°, live 1.75m/6.33°, ~0.6s/window  (session start: 1.99/9.22,
+#   2.14/8.67; Phase 3: 2.56m settled / 3.33m live).  λh=10 comes via bags.yaml.
+# The ω-adaptive gyro in UNIV (λ_eff = 4·(1+(|z_gyro|/4)⁴): ~4 below 3 rad/s, ~160-500
+# in flips) replaces the earlier flat lambda_gyro=400 (that era: 1.80/5.29 | 1.77/6.37);
+# ω₀=3 variant gives the best backflips settled ori (4.75°) at a fast-racing ori cost.
 # accel_soft_sigma: ω-dependent ACCEL down-weighting (mirror of the radar soft gate) —
-# accel distorts orientation mid-flip; ori −0.6° at position par (ROADMAP Part 5 Tier-1 #6).
-# Key knobs (ROADMAP Part 5): lambda_gyro=400 backflips-only (ori 9.2→7.15° alone, zero pos
-# cost — soft gate absorbs the radar trade-off; DO NOT raise λ_gyro on racing: costs position);
-# tether λ=0.5 (old λ=10 was pre-stiff-gyro; λ=0 still blows up position); locked pitch 27.5°
-# (25.5° was wrong — racing self-calibrates to 27-28°); ω₀=2; λ_ori_accel REMOVED (bit-identical
-# at λg=400). Live-pos-priority variant: lambda_pos_init_prior=0.25 → live 1.58m / 7.20°.
+# accel distorts orientation mid-flip (ROADMAP Part 5 Tier-1 #6).
+# Backflips-only extras: tether λ=0.5 (radar sparsity in flips; POISON on racing — fast
+# pos 0.5→1.5m, slow mapping yaw 0.7→2.5°); locked pitch 27.5° (25.5° was wrong);
+# λ_ori_accel REMOVED (bit-identical under stiff gyro).
 # omega_soft_sigma: ω-dependent radar down-weighting w=1/(1+(|ω|/ω₀)²) — beats the hard
 # ω-gate on orientation without discarding data (ROADMAP Part 3c)
 # radar_zbias_fixed: per-point elevation bias v_corr = v − b·u_z (ROADMAP Part 4b).
@@ -249,16 +256,20 @@ Per-bag config auto-selected via `bags.yaml` solver_overrides:
 
 **2026-06-12 update** (consistency fixes, `documentation/ROADMAP.md` Part 1 results — scale=1.0 universal):
 
-| Bag | Config | Settled pos/ori | Live pos/ori | dt/window |
-|-----|--------|-----------------|--------------|-----------|
-| slow_racing | iter12 λh10 (live) | 0.287m / 1.63° | **0.303m / 1.92°** | **0.86s** |
-| slow_racing | align=0 λh10 (mapping) | **0.314m / 1.12°** (yaw 0.56°) | 0.442m / 1.98° | 2.06s |
-| fast_racing | scale=1.0 full iter | **0.596m** / 3.35° | **0.697m** / 4.00° | 1.37s |
-| fast_racing | scale=1.0 dt_pos=.04 dt_ori=.016 **iw=1.0** | **0.639m / 2.55°** | **0.728m / 2.88°** | **0.36-0.41s** |
-| backflips | λg400 + tether.5 + p27.5 + gates 2/4 + z-bias | **1.80m** / **5.29°** | **1.77m** / **6.37°** | 0.55s |
+**UNIVERSAL weighting config results (2026-06-12 evening — see commands above):**
 
-dt_pos AND dt_ori were over-dense for fast (dt_ori=0.016 adopted 2026-06-12: −8% pos,
-−0.25° live ori; slow keeps dt_ori=0.008 — 16ms costs ori there).
+| Bag | Per-bag extras | Settled pos/ori | Live pos/ori | dt/window |
+|-----|--------|-----------------|--------------|-----------|
+| fast_racing | grids .04/.016 | **0.493m / 2.39°** | **0.566m / 2.94°** | **0.35s** |
+| slow_racing (live) | iter12 + λh10 | 0.286m / **1.55°** | 0.302m / 2.17° | 0.70s |
+| slow_racing (mapping) | none (full iter) | **0.281m / 1.22°** (yaw 0.71°) | 0.336m / 2.34° | 1.64s |
+| backflips | tether.5 + z-bias + p27.5 + lgb0 | **1.78m / 4.99°** | **1.75m / 6.33°** | ~0.6s |
+
+Pre-universal specialized bests (for reference): fast 0.639/2.55 | 0.728/2.88;
+slow live 0.287/1.63 | 0.303/1.92; backflips 1.80/5.29 | 1.77/6.37.
+Only slow LIVE ori is slightly behind its specialized config (+0.25°); everything
+else matches or beats it. dt_pos AND dt_ori were over-dense for fast; slow keeps
+dt_ori=0.008 (16ms costs ori there).
 Window must stay 3.0s for fast (2.0s → roll/yaw ~11° even with consistent prior — confirmed
 observability limit, not a prior artifact). Iteration caps must be ≥ natural count for the
 chosen dt_pos (slow@20ms needs ~16; capping at 12 explodes position).

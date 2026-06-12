@@ -160,6 +160,8 @@ PYBIND11_MODULE(rio_solver, m) {
         .def_readwrite("accel_soft_sigma",     &SolverConfig::accel_soft_sigma)
         .def_readwrite("radar_pos_split",      &SolverConfig::radar_pos_split)
         .def_readwrite("radar_intensity_weight", &SolverConfig::radar_intensity_weight)
+        .def_readwrite("lambda_gyro_omega_sigma", &SolverConfig::lambda_gyro_omega_sigma)
+        .def_readwrite("lambda_gyro_omega_pow",   &SolverConfig::lambda_gyro_omega_pow)
         .def_readwrite("radar_zbias_fixed",    &SolverConfig::radar_zbias_fixed)
         .def_readwrite("optimize_pitch_only", &SolverConfig::optimize_pitch_only)
         .def_readwrite("lambda_extrinsic_prior", &SolverConfig::lambda_extrinsic_prior)

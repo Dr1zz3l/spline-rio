@@ -605,12 +605,19 @@ SolverResult SlidingWindowSolver::solve_window(
             // Gyro
             {
                 Eigen::Vector3d z_gyro(imu.gx, imu.gy, imu.gz);
+                // ω-adaptive weight: trust the gyro more during fast rotation
+                // (measured rate — direct and causal; see lambda_gyro_omega_sigma).
+                double w_g = 1.0;
+                if (cfg_.lambda_gyro_omega_sigma > 0.0) {
+                    const double q = z_gyro.norm() / cfg_.lambda_gyro_omega_sigma;
+                    w_g = 1.0 + std::pow(q, cfg_.lambda_gyro_omega_pow);
+                }
                 auto* cost = make_gyro_cost(z_gyro, u_ori, inv_dt_ori);
                 std::vector<double*> params;
                 for (int k = 0; k < N_ORI; ++k) params.push_back(traj_.ori_knot_data(ori0 + k));
                 params.push_back(traj_.bias_data());
                 problem.AddResidualBlock(cost,
-                    new ceres::ScaledLoss(nullptr, cfg_.lambda_gyro, ceres::TAKE_OWNERSHIP), params);
+                    new ceres::ScaledLoss(nullptr, cfg_.lambda_gyro * w_g, ceres::TAKE_OWNERSHIP), params);
             }
 
             // Accel

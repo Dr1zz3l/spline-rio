@@ -873,6 +873,47 @@ caught it; default-off paths re-proved parity for free).
 3. Slow: neutral-positive (harmless to enable; not added to the documented
    config to keep it minimal).
 
+### Universal weighting config (2026-06-12 evening) — U0→U1→U2 iteration
+
+Goal: one weighting config for all bags. New mechanism: **ω-adaptive gyro
+weight** `lambda_gyro_omega_sigma`/`_pow`: λ_eff = λ_gyro·(1+(|z_gyro|/ω₀)^p)
+per sample (measured rate — causal, no spline eval). Unifies the backflips
+flat λ_gyro=400 finding with racing's λ=4.
+
+**Iteration history (each failure diagnosed by single-change bisection):**
+- **U0** (ω₀=1, p=2, +gates+iw+tether+λh10): backflips NEW BEST (4.78°
+  settled — adaptive beats flat 400 by keeping quiet phases soft), but BOTH
+  racing bags broke. Bisection: gates were INNOCENT (slow perfect with gates,
+  agyro off); two real culprits: (1) p=2 ramps at 2–5 rad/s where radar is
+  still informative → blocks roll/yaw corrections (slow roll 0.8→4.4°);
+  (2) λ_heading=10 breaks fast position (1.55 m — the old J2 signature).
+- **U1** (ω₀=3, p=4, λh per-regime): backflips 4.75° (best), slow12 fixed,
+  fast position STILL 1.5 m → cross-referencing all broken runs: the TETHER
+  (λ_pos_init=0.5) was the hidden common factor. Fast's P1-P3 init drifts —
+  anchoring to it poisons position; it also degraded slow full-iter yaw
+  (2.47°→0.71° without). Tether = backflips-only rescue, definitively.
+- **U2 + ω₀ probe**: ω₀=4 resolves the last fast/backflips tension — fast
+  gains massively (ori 2.96→2.39 settled), backflips gives back only 0.24°.
+
+**FINAL universal weighting** (CLAUDE.md has the command):
+scale=1.0 + λ_gyro_omega(ω₀=4, p=4) + omega_soft_sigma=2 + accel_soft_sigma=4
++ radar_intensity_weight=1.0.
+
+| bag (+extras) | settled | live | dt | vs specialized best |
+|---|---|---|---|---|
+| fast (grids) | 0.493/2.39 | 0.566/2.94 | 0.35 s | pos −23%, ori better |
+| slow live (iter12+λh10) | 0.286/1.55 | 0.302/2.17 | 0.70 s | settled better, live ori +0.25 |
+| slow mapping (full iter) | 0.281/1.22, yaw 0.71 | — | 1.64 s | beats M1 on pos |
+| backflips (tether+zbias+p27.5) | 1.780/4.99 | 1.746/6.33 | ~0.6 s | beats flat-λ400 best |
+
+**Honest per-bag residue** (not weighting): grids dt_pos/dt_ori (platform/
+dynamics params), λ_heading (heading-source trust: 10 for slow-live+backflips,
+default for fast — 10 breaks fast position), tether + z-bias + locked pitch
+(backflips-only; the z-bias/pitch entanglement still needs the joint
+calibration, Phase-2), iteration cap (slow real-time variant),
+lock_gyro_bias=0 (backflips). ω₀=3 variant trades: backflips settled ori 4.75°
+(absolute best) for fast ori +0.5°.
+
 ### Asymmetric ω-gate split (`radar_pos_split`, branch radar-pos-split, 2026-06-12)
 
 Position-during-flip information experiment: new `RadarPosOnlyAnalyticFactor`

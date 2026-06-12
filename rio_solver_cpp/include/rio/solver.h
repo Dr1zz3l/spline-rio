@@ -154,6 +154,21 @@ struct SolverConfig {
     // complementary split.  SW solver only.
     double radar_pos_split{0.0};
 
+    // ω-adaptive gyro weight (ROADMAP Part 5, universal-config unification of
+    // the backflips λ_gyro=400 finding): per-sample effective weight
+    //   λ_eff = lambda_gyro · (1 + (|z_gyro|/ω₀)²)
+    // using the MEASURED rate (direct, causal, no spline eval needed).
+    // Rationale: the gyro is the only clean sensor during fast rotation —
+    // trust it more exactly there; in gentle flight λ_eff ≈ lambda_gyro so
+    // racing behavior is unchanged.  With ω₀ = 1 rad/s: 4→~400 at 10 rad/s
+    // (matches the backflips sweep optimum).  0.0 (default): disabled.
+    double lambda_gyro_omega_sigma{0.0};
+    // Exponent p in w = 1 + (|z_gyro|/ω₀)^p.  p=2 ramps early (hurts racing:
+    // stiffens the gyro at 2–5 rad/s where radar is still informative);
+    // p=4 stays ≈flat below ~0.7·ω₀ and ramps hard above — kicks in only for
+    // genuinely aggressive rotation.
+    double lambda_gyro_omega_pow{2.0};
+
     // Per-point radar weighting from signal intensity/SNR (ROADMAP Part 4,
     // "per-point noise"; the Python WLS already weights by intensity).
     // Weight w_i = clamp((I_i / I_med)^α, 0.25, 4.0) with I_med the per-frame
