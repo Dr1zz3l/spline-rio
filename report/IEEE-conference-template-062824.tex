@@ -883,6 +883,54 @@ velocity constraints that bound this drift.  Orientation improvement
 is more modest (47--72\%) because the gyroscope already constrains
 orientation strongly at 1\,kHz.
 
+\subsection{Held-Out Validation}
+\label{sec:heldout}
+All tuning in this paper used three bags (slow racing, fast racing,
+backflips).  To test generalization, the final configuration was run
+\emph{unmodified} on flights never used for any decision.
+On the held-out flights recorded with the same sensor configuration,
+accuracy matches or beats the tuning bags: a second, independent
+fast-racing flight reaches 0.45\,m\,/\,2.90\degree\ live
+(vs.\ 0.50\,m\,/\,3.24\degree\ on the tuning bag), and a circular
+trajectory reaches 0.88\,m\,/\,4.10\degree\ live.
+Five additional stress-tier bags from an earlier recording day use an
+older radar firmware with $12\times$ coarser Doppler quantization
+(0.604 vs.\ 0.049\,m/s), partially unusable accelerometer axes, and
+per-day time offsets; the system degrades gracefully there
+(0.5--5\,m position depending on maneuver), and notably the
+\emph{old-firmware backflips} orientation improves from
+14.8\degree\ (its previous, individually tuned best) to
+10.7\degree\ under the untuned universal configuration --- the
+rate-adaptive weighting transfers across both firmware and day.
+A data-health screening (radar frame-rate continuity, IMU/MoCap
+coverage) precedes all held-out evaluation, since several early bags
+contain radar UART dropouts; all evaluation windows lie on healthy
+spans.
+
+\subsection{Output Covariance Consistency (NEES)}
+\label{sec:nees}
+A factor source for a larger fusion graph must report \emph{honest}
+covariance.  We extract the live-edge joint covariance of
+$(\vv_w, \vR)$ each window from the converged problem
+(\texttt{ceres::Covariance} over the active support control points,
+tangent space, marginalization prior included) and compute the
+normalized estimation error squared (NEES) against MoCap;
+for a consistent estimator the NEES of each 3-DoF block is
+$\chi^2_3$-distributed with mean~3.
+On the racing flights the \emph{orientation} NEES mean is
+$0.7$--$0.9{\times}$ its consistent value --- the reported covariance
+is essentially calibrated, a consequence of the measurement weights
+approximating effective-noise whitening.  Velocity NEES medians are
+1.5--7 (mildly overconfident); their means are dominated by a few
+windows where the finite-difference MoCap velocity reference itself
+is unreliable.  On backflips the orientation covariance is
+overconfident by ${\sim}3\times$ in standard deviation (unmodeled
+flip-time error), and only 6 of 50 windows survive the ground-truth
+quality mask (Sec.~\ref{sec:setup}).  Deployment recipe: emit the
+estimator covariance with a per-regime inflation factor
+($1\times$ gentle, $3\times$ aggressive), or calibrate online from
+innovation statistics.
+
 \subsection{Ablation Studies}
 Table~\ref{tab:ablations} summarizes key design choices.
 
