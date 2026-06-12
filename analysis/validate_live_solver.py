@@ -222,9 +222,10 @@ def _solve_cpp(initial_state, solver_radar_frames, imu_data,
         n = frame.num_points()
         if n == 0:
             continue
-        pts = np.zeros((n, 4))
+        pts = np.zeros((n, 5))
         pts[:, :3] = frame.positions[:n]
         pts[:, 3]  = frame.velocities[:n] if frame.velocities is not None else 0.0
+        pts[:, 4]  = frame.intensities[:n] if frame.intensities is not None else 0.0
         cpp_radar_frames.append(rio_solver.make_radar_frame(frame.timestamp, pts))
 
     # --- Convert IMU samples ---
@@ -387,6 +388,7 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
     cfg.omega_soft_sigma        = solver_cfg.get('omega_soft_sigma', 0.0)
     cfg.accel_soft_sigma        = solver_cfg.get('accel_soft_sigma', 0.0)
     cfg.radar_pos_split         = solver_cfg.get('radar_pos_split', 0.0)
+    cfg.radar_intensity_weight  = solver_cfg.get('radar_intensity_weight', 0.0)
     cfg.radar_zbias_fixed       = solver_cfg.get('radar_zbias_fixed', 0.0)
     cfg.optimize_pitch_only     = solver_cfg.get('optimize_pitch_only', True)
     cfg.lambda_extrinsic_prior  = solver_cfg.get('lambda_extrinsic_prior', 10.0)
@@ -423,9 +425,10 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
         n = frame.num_points()
         if n == 0:
             continue
-        pts = np.zeros((n, 4))
+        pts = np.zeros((n, 5))
         pts[:, :3] = frame.positions[:n]
         pts[:, 3]  = frame.velocities[:n] if frame.velocities is not None else 0.0
+        pts[:, 4]  = frame.intensities[:n] if frame.intensities is not None else 0.0
         cpp_radar_all.append((frame.timestamp, rio_solver.make_radar_frame(frame.timestamp, pts)))
 
     # Convert IMU once

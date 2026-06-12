@@ -159,6 +159,7 @@ PYBIND11_MODULE(rio_solver, m) {
         .def_readwrite("omega_soft_sigma",     &SolverConfig::omega_soft_sigma)
         .def_readwrite("accel_soft_sigma",     &SolverConfig::accel_soft_sigma)
         .def_readwrite("radar_pos_split",      &SolverConfig::radar_pos_split)
+        .def_readwrite("radar_intensity_weight", &SolverConfig::radar_intensity_weight)
         .def_readwrite("radar_zbias_fixed",    &SolverConfig::radar_zbias_fixed)
         .def_readwrite("optimize_pitch_only", &SolverConfig::optimize_pitch_only)
         .def_readwrite("lambda_extrinsic_prior", &SolverConfig::lambda_extrinsic_prior)
@@ -200,7 +201,8 @@ PYBIND11_MODULE(rio_solver, m) {
         .def_readwrite("x", &RadarPoint::x)
         .def_readwrite("y", &RadarPoint::y)
         .def_readwrite("z", &RadarPoint::z)
-        .def_readwrite("v", &RadarPoint::v);
+        .def_readwrite("v", &RadarPoint::v)
+        .def_readwrite("intensity", &RadarPoint::intensity);
 
     py::class_<RadarFrame>(m, "RadarFrame")
         .def(py::init<>())
@@ -335,17 +337,19 @@ PYBIND11_MODULE(rio_solver, m) {
             frame.timestamp = timestamp;
             auto r = pts.unchecked<2>();
             int n = static_cast<int>(r.shape(0));
+            const bool has_intensity = r.shape(1) >= 5;
             frame.points.resize(n);
             for (int i = 0; i < n; ++i) {
                 frame.points[i].x = r(i, 0);
                 frame.points[i].y = r(i, 1);
                 frame.points[i].z = r(i, 2);
                 frame.points[i].v = r(i, 3);
+                frame.points[i].intensity = has_intensity ? r(i, 4) : 0.0;
             }
             return frame;
         },
         py::arg("timestamp"), py::arg("points_nx4"),
-        "Create a RadarFrame from a Nx4 numpy array [x,y,z,v].");
+        "Create a RadarFrame from a Nx4 [x,y,z,v] or Nx5 [x,y,z,v,intensity] numpy array.");
 
     // ---- SlidingWindowSolver ------------------------------------------------
     py::class_<SlidingWindowSolver>(m, "SlidingWindowSolver")

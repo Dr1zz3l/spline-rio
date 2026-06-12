@@ -501,9 +501,10 @@ settled **0.314 m / 1.116°, yaw 0.556°** — best orientation of ANY run
 #   live 0.303 m / 1.92° (beats legacy live on both axes)
 --set marg_prior_scale=1.0 --set max_iterations=12 --set lambda_heading=10.0
 
-# LIVE aggressive dynamics: 0.45 s/window (dt_pos sweep 2026-06-12; iteration
-# caps unsafe here — leave max_iterations at default, natural count is ~11)
---set marg_prior_scale=1.0 --set dt_pos=0.04
+# LIVE aggressive dynamics: 0.36-0.41 s/window (dt_pos sweep 2026-06-12; iteration
+# caps unsafe here — leave max_iterations at default, natural count is ~11;
+# dt_ori=0.016 adopted same day: −8% pos, −0.25° live ori, see racing re-tune)
+--set marg_prior_scale=1.0 --set dt_pos=0.04 --set dt_ori=0.016
 
 # MAPPING / settled (offline): 2.06 s/window
 #   settled 0.314 m / 1.12° (yaw 0.56° — best of all runs)
@@ -814,6 +815,32 @@ combo2: 0.54 s/window. tether=0.25 variant = live-position priority
    eval artifact on backflips; live-vel shift unexplained, low priority).
 7. Huber on gyro (small C++; DEMOTED — λg saturation 400→1000 suggests gyro
    weighting already plateaued).
+
+### Racing re-tune with Part-5 machinery (2026-06-12, branch radar-pos-split)
+
+dt_ori was never swept on racing (V1c said 16 ms suffices even for backflips);
+accel gate + λ_ori_accel relevance never checked there. All parity anchors ✓
+(f_ref ≡ documented F6; s_ref ≡ I-config; f_dto16 bit-identical across rebuild).
+
+| run | settled pos/ori | live pos/ori | dt/win |
+|---|---|---|---|
+| fast ref (F6) | 0.701/3.13 | 0.803/3.55 | 0.43 s |
+| **fast dt_ori=16 ms — ADOPTED** | **0.646/3.05** | **0.721/3.31** | 0.36–0.41 s |
+| fast accel gate ω₀=4 / 8 | 0.646/3.11 · 0.670/3.12 | 0.747/3.61 · 0.773/3.58 | — |
+| fast λ_ori_accel=0 | 0.710/3.15 | 0.808/3.57 | — |
+| slow ref (I-config) | 0.287/1.63 | 0.303/1.92 | 0.70 s |
+| slow dt_ori=16 ms (iter12) | 0.291/1.83 | 0.308/2.20 | 0.71 s |
+| slow dt_ori=16 ms (full iter) | 0.421/1.62 | 0.587/2.24 | 1.62 s |
+| slow accel gate ω₀=4 | 0.287/1.64 | 0.303/1.95 | 0.71 s |
+
+**Findings:**
+1. **fast: dt_ori=16 ms is a clean win** (−8% pos, −0.25° live ori) — adopted.
+   The expected SPEED gain did not materialize (0.43→0.41 s; bottleneck is not
+   the ori-knot count at dt_pos=40 ms) — the win is accuracy/conditioning.
+2. **slow: keep I-config.** dt_ori=16 ms costs ori (+0.28° live); accel gate
+   neutral; the gates are aggressive-dynamics tools, as theorized.
+3. λ_ori_accel ≈ irrelevant on fast too (Δ within run-to-run variation) —
+   the regularizer matters nowhere at current weights.
 
 ### Asymmetric ω-gate split (`radar_pos_split`, branch radar-pos-split, 2026-06-12)
 

@@ -14,6 +14,7 @@ namespace rio {
 struct RadarPoint {
     double x, y, z;   // position in sensor frame (m)
     double v;         // Doppler velocity (m/s)
+    double intensity{0.0};  // signal intensity/SNR (loader units; 0 = absent)
 };
 
 struct RadarFrame {
@@ -152,6 +153,15 @@ struct SolverConfig {
     // Requires omega_soft_sigma > 0.  0.0 (default): disabled; 1.0 =
     // complementary split.  SW solver only.
     double radar_pos_split{0.0};
+
+    // Per-point radar weighting from signal intensity/SNR (ROADMAP Part 4,
+    // "per-point noise"; the Python WLS already weights by intensity).
+    // Weight w_i = clamp((I_i / I_med)^α, 0.25, 4.0) with I_med the per-frame
+    // median — median-relative so the global radar weight scale is unchanged
+    // (pure redistribution within a frame).  α = radar_intensity_weight:
+    // 0.0 (default) disabled, 1.0 = linear-relative (matches WLS precedent).
+    // SW solver only.
+    double radar_intensity_weight{0.0};
 
     // Fixed radar elevation (z) bias correction (ROADMAP Part 4 / z-bias).
     // The IWR6843's 2-TX elevation diversity produces a systematic per-point

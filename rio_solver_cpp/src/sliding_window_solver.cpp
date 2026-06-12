@@ -407,11 +407,34 @@ SolverResult SlidingWindowSolver::solve_window(
             }
         }
 
+        // Per-frame median intensity for median-relative per-point weighting
+        // (radar_intensity_weight; median ⇒ global radar scale unchanged).
+        double inv_med_intensity = 0.0;
+        if (cfg_.radar_intensity_weight > 0.0) {
+            std::vector<double> ints;
+            ints.reserve(frame.points.size());
+            for (const auto& pt : frame.points)
+                if (pt.intensity > 0.0) ints.push_back(pt.intensity);
+            if (ints.size() >= 3) {
+                std::nth_element(ints.begin(), ints.begin() + ints.size()/2, ints.end());
+                const double med = ints[ints.size()/2];
+                if (med > 0.0) inv_med_intensity = 1.0 / med;
+            }
+        }
+
         for (const auto& pt : frame.points) {
             double range = std::sqrt(pt.x*pt.x + pt.y*pt.y + pt.z*pt.z);
             if (range < cfg_.min_range) continue;
             Eigen::Vector3d u_sensor(pt.x/range, pt.y/range, pt.z/range);
             const double v_meas_c = pt.v - cfg_.radar_zbias_fixed * u_sensor.z();
+
+            // Per-point intensity weight w = clamp((I/I_med)^α, 0.25, 4)
+            double w_int = 1.0;
+            if (inv_med_intensity > 0.0 && pt.intensity > 0.0) {
+                w_int = std::pow(pt.intensity * inv_med_intensity,
+                                 cfg_.radar_intensity_weight);
+                w_int = std::max(0.25, std::min(w_int, 4.0));
+            }
 
             std::vector<double*> params;
             for (int k = 0; k < N_ORI; ++k) params.push_back(traj_.ori_knot_data(ori0 + k));
@@ -433,19 +456,20 @@ SolverResult SlidingWindowSolver::solve_window(
                     u_pos, inv_dt_pos,
                     R_radar_to_body, t_body_sensor);
             }
-            // Soft gate: wrap a per-frame ScaledLoss around an owned Huber
-            // (the shared huber_loss cannot be wrapped — ownership).
+            // Soft gate and/or per-point intensity weight: wrap a per-point
+            // ScaledLoss around an owned Huber (the shared huber_loss cannot
+            // be wrapped — ownership).
             ceres::LossFunction* loss = huber_loss;
-            if (w_omega < 1.0)
+            if (w_omega < 1.0 || w_int != 1.0)
                 loss = new ceres::ScaledLoss(
-                    new ceres::HuberLoss(cfg_.huber_delta), w_omega,
+                    new ceres::HuberLoss(cfg_.huber_delta), w_omega * w_int,
                     ceres::TAKE_OWNERSHIP);
             problem.AddResidualBlock(cost, loss, params);
 
             // Asymmetric split: complementary position-only radar factor with
             // orientation/ω frozen at warm-start (see radar_pos_split docs).
             if (cfg_.radar_pos_split > 0.0 && w_omega < 1.0) {
-                const double w_split = (1.0 - w_omega) * cfg_.radar_pos_split;
+                const double w_split = (1.0 - w_omega) * cfg_.radar_pos_split * w_int;
                 if (w_split > 1e-6) {
                     std::vector<double*> pparams;
                     for (int k = 0; k < N_POS; ++k)
