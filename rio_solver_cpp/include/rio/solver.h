@@ -134,6 +134,15 @@ struct SolverConfig {
     // 0.0 (default): disabled. Suggested sweep for backflips: {2, 4, 8}.
     double omega_soft_sigma{0.0};
 
+    // ω-dependent ACCEL down-weighting (ROADMAP Part 5 Tier-1 #6): same
+    // rationale and form as omega_soft_sigma but applied to the accelerometer
+    // factor — during flips the accel carries thrust transients, vibration and
+    // lever-arm error (residual std 91.7 m/s² on backflips), and its
+    // gravity-direction information is ~nil mid-flip; it mainly distorts
+    // orientation there.  w = 1/(1 + (|ω|/ω₀)²), |ω| from the warm-start
+    // spline at build time.  0.0 (default): disabled.
+    double accel_soft_sigma{0.0};
+
     // Fixed radar elevation (z) bias correction (ROADMAP Part 4 / z-bias).
     // The IWR6843's 2-TX elevation diversity produces a systematic per-point
     // Doppler error proportional to the ray's sensor-frame z component:

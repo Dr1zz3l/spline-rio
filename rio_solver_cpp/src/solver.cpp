@@ -362,6 +362,19 @@ SolverResult solve(
 
             // Accel factor (needs position too)
             if (has_pos) {
+                // ω-dependent accel down-weighting (mirrors the radar soft gate):
+                // |ω| from the init spline at problem-build time.
+                double w_acc = 1.0;
+                if (cfg.accel_soft_sigma > 0.0) {
+                    const double* kp[N_ORI];
+                    for (int i = 0; i < N_ORI; ++i) kp[i] = traj.ori_knot_data(ori0 + i);
+                    Sophus::SO3d dummy_R;
+                    Eigen::Vector3d omega;
+                    CeresSplineHelper<N_ORI>::template evaluate_lie<double, Sophus::SO3>(
+                        kp, u_ori, inv_dt_ori, &dummy_R, &omega, nullptr);
+                    const double q = omega.norm() / cfg.accel_soft_sigma;
+                    w_acc = 1.0 / (1.0 + q * q);   // σ_eff² = σ₀²(1 + q²)
+                }
                 Eigen::Vector3d z_acc(imu.ax, imu.ay, imu.az);
                 auto* cost = make_accel_cost(z_acc, u_ori, inv_dt_ori, u_pos, inv_dt_pos);
 
@@ -374,7 +387,7 @@ SolverResult solve(
 
                 auto* loss = new ceres::ScaledLoss(
                     new ceres::HuberLoss(cfg.huber_delta_accel),
-                    cfg.lambda_accel,
+                    cfg.lambda_accel * w_acc,
                     ceres::TAKE_OWNERSHIP);
                 problem.AddResidualBlock(cost, loss, params);
             }
@@ -428,6 +441,19 @@ SolverResult solve(
 
             // Accel factor (needs position too)
             if (has_pos) {
+                // ω-dependent accel down-weighting (mirrors the radar soft gate):
+                // |ω| from the init spline at problem-build time.
+                double w_acc = 1.0;
+                if (cfg.accel_soft_sigma > 0.0) {
+                    const double* kp[N_ORI];
+                    for (int i = 0; i < N_ORI; ++i) kp[i] = traj.ori_knot_data(ori0 + i);
+                    Sophus::SO3d dummy_R;
+                    Eigen::Vector3d omega;
+                    CeresSplineHelper<N_ORI>::template evaluate_lie<double, Sophus::SO3>(
+                        kp, u_ori, inv_dt_ori, &dummy_R, &omega, nullptr);
+                    const double q = omega.norm() / cfg.accel_soft_sigma;
+                    w_acc = 1.0 / (1.0 + q * q);   // σ_eff² = σ₀²(1 + q²)
+                }
                 Eigen::Vector3d z_acc(imu.ax, imu.ay, imu.az);
                 auto* cost = make_accel_cost(z_acc, u_ori, inv_dt_ori, u_pos, inv_dt_pos);
 
@@ -440,7 +466,7 @@ SolverResult solve(
 
                 auto* loss = new ceres::ScaledLoss(
                     new ceres::HuberLoss(cfg.huber_delta_accel),
-                    cfg.lambda_accel,
+                    cfg.lambda_accel * w_acc,
                     ceres::TAKE_OWNERSHIP);
                 problem.AddResidualBlock(cost, loss, params);
             }

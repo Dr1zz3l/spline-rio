@@ -62,13 +62,15 @@ cd analysis/
 #   --set marg_prior_scale=1.0 --set max_iterations=12 --set lambda_heading=5.0  (~0.8s/window)
 # Per-window diagnostics printed: cost0, jac/res/lin/other timing, iter count, prior cond/rank, tr(S⁻¹)/tr(H⁻¹)
 
-# Backflips sliding window (2026-06-12 Tier-0 retune: stiff gyro + light tether + pitch 27.5 + ω₀=2):
+# Backflips sliding window (2026-06-12 retune: stiff gyro + light tether + pitch 27.5 + radar ω₀=2 + accel ω₀=4):
 ../.venv/bin/python3 validate_live_solver.py backflips_best_velocity --mocap-yaw --cpp --sliding-window \
   --set dt_ori=0.008 --set lock_gyro_bias=0 --set marg_prior_scale=1.0 \
-  --set lambda_pos_init_prior=0.5 --set omega_soft_sigma=2.0 --set lambda_gyro=400 \
-  --set radar_zbias_fixed=-1.0 --set-ext 'rotation_euler_deg=[180.0,27.5,0.0]'
-# → settled 1.75m/5.83°, live 1.77m/6.99°, 0.54s/window  (was 1.99/9.22, 2.14/8.67 before
+  --set lambda_pos_init_prior=0.5 --set omega_soft_sigma=2.0 --set accel_soft_sigma=4.0 \
+  --set lambda_gyro=400 --set radar_zbias_fixed=-1.0 --set-ext 'rotation_euler_deg=[180.0,27.5,0.0]'
+# → settled 1.80m/5.29°, live 1.77m/6.37°, ~0.55s/window  (was 1.99/9.22, 2.14/8.67 before
 #   the 2026-06-12 ROADMAP Part-5 retune; Phase 3 was 2.56m settled / 3.33m live)
+# accel_soft_sigma: ω-dependent ACCEL down-weighting (mirror of the radar soft gate) —
+# accel distorts orientation mid-flip; ori −0.6° at position par (ROADMAP Part 5 Tier-1 #6).
 # Key knobs (ROADMAP Part 5): lambda_gyro=400 backflips-only (ori 9.2→7.15° alone, zero pos
 # cost — soft gate absorbs the radar trade-off; DO NOT raise λ_gyro on racing: costs position);
 # tether λ=0.5 (old λ=10 was pre-stiff-gyro; λ=0 still blows up position); locked pitch 27.5°
@@ -251,7 +253,7 @@ Per-bag config auto-selected via `bags.yaml` solver_overrides:
 | slow_racing | align=0 λh10 (mapping) | **0.314m / 1.12°** (yaw 0.56°) | 0.442m / 1.98° | 2.06s |
 | fast_racing | scale=1.0 full iter | **0.596m** / 3.35° | **0.697m** / 4.00° | 1.37s |
 | fast_racing | scale=1.0 dt_pos=0.04 | 0.701m / **3.13°** | 0.803m / **3.55°** | **0.37s** |
-| backflips | λg400 + tether.5 + p27.5 + ω₀2 + z-bias | **1.75m** / **5.83°** | **1.77m** / **6.99°** | 0.54s |
+| backflips | λg400 + tether.5 + p27.5 + gates 2/4 + z-bias | **1.80m** / **5.29°** | **1.77m** / **6.37°** | 0.55s |
 
 dt_pos was over-dense for fast bags (position plateaus at 40ms, ori improves, iter 28→11).
 Window must stay 3.0s for fast (2.0s → roll/yaw ~11° even with consistent prior — confirmed

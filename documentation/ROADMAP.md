@@ -796,7 +796,22 @@ combo2: 0.54 s/window. tether=0.25 variant = live-position priority
    RESOLVED-NEUTRAL at full convergence (combo1 ± 0.03°): the optimizer
    absorbs the init lag. May still matter under iteration caps; not part of
    the operating point.
-6. Accel soft-gate during flips (small C++, mirror omega_soft_sigma) — NEXT.
+6. **Accel soft-gate — DONE, VALIDATED** (`accel_soft_sigma`, both solvers,
+   default 0=off; w = 1/(1+(|ω|/ω₀)²) on the accel factor, |ω| from the
+   warm-start spline — exact mirror of the radar gate). On combo2
+   (settled pos/ori | live pos/ori; combo2 rerun = bit-identical parity ✓):
+
+   | accel ω₀ | settled | live |
+   |---|---|---|
+   | off (combo2) | 1.751/5.83 | 1.769/6.99 |
+   | 2 | 1.797/5.36 | 1.792/6.40 |
+   | **4 (NEW OPERATING POINT)** | **1.804/5.29** | **1.766/6.37** |
+   | 8 | 1.792/5.42 | 1.746/6.47 |
+
+   Broad optimum like the radar gate; ori −0.5/−0.6°, position par
+   (settled +5 cm, live −0.3 cm). Confirms accel-distorts-ori-mid-flip.
+   Caveat: live velocity RMSE 2.13→2.58 m/s (settled-vel metric is a known
+   eval artifact on backflips; live-vel shift unexplained, low priority).
 7. Huber on gyro (small C++; DEMOTED — λg saturation 400→1000 suggests gyro
    weighting already plateaued).
 

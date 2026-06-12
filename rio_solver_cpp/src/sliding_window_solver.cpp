@@ -507,6 +507,19 @@ SolverResult SlidingWindowSolver::solve_window(
 
             // Accel factor
             if (has_pos) {
+                // ω-dependent accel down-weighting (mirrors the radar soft gate):
+                // |ω| from the warm-start spline at build time.
+                double w_acc = 1.0;
+                if (cfg_.accel_soft_sigma > 0.0) {
+                    const double* kp[N_ORI];
+                    for (int k = 0; k < N_ORI; ++k) kp[k] = traj_.ori_knot_data(ori0 + k);
+                    Sophus::SO3d dummy_R;
+                    Eigen::Vector3d omega;
+                    CeresSplineHelper<N_ORI>::template evaluate_lie<double, Sophus::SO3>(
+                        kp, u_ori, inv_dt_ori, &dummy_R, &omega, nullptr);
+                    const double q = omega.norm() / cfg_.accel_soft_sigma;
+                    w_acc = 1.0 / (1.0 + q * q);   // σ_eff² = σ₀²(1 + q²)
+                }
                 Eigen::Vector3d z_acc(imu.ax, imu.ay, imu.az);
                 auto* cost = make_accel_cost(z_acc, u_ori, inv_dt_ori, u_pos, inv_dt_pos);
                 std::vector<double*> params;
@@ -515,7 +528,7 @@ SolverResult SlidingWindowSolver::solve_window(
                 params.push_back(traj_.bias_data());
                 auto* huber_a = new ceres::HuberLoss(cfg_.huber_delta_accel);
                 problem.AddResidualBlock(cost,
-                    new ceres::ScaledLoss(huber_a, cfg_.lambda_accel, ceres::TAKE_OWNERSHIP), params);
+                    new ceres::ScaledLoss(huber_a, cfg_.lambda_accel * w_acc, ceres::TAKE_OWNERSHIP), params);
             }
 
             // Gravity direction (when not accelerating hard)
@@ -559,6 +572,18 @@ SolverResult SlidingWindowSolver::solve_window(
 
             // Accel
             if (has_pos) {
+                // ω-dependent accel down-weighting (mirrors the radar soft gate).
+                double w_acc = 1.0;
+                if (cfg_.accel_soft_sigma > 0.0) {
+                    const double* kp[N_ORI];
+                    for (int k = 0; k < N_ORI; ++k) kp[k] = traj_.ori_knot_data(ori0 + k);
+                    Sophus::SO3d dummy_R;
+                    Eigen::Vector3d omega;
+                    CeresSplineHelper<N_ORI>::template evaluate_lie<double, Sophus::SO3>(
+                        kp, u_ori, inv_dt_ori, &dummy_R, &omega, nullptr);
+                    const double q = omega.norm() / cfg_.accel_soft_sigma;
+                    w_acc = 1.0 / (1.0 + q * q);   // σ_eff² = σ₀²(1 + q²)
+                }
                 Eigen::Vector3d z_acc(imu.ax, imu.ay, imu.az);
                 auto* cost = make_accel_cost(z_acc, u_ori, inv_dt_ori, u_pos, inv_dt_pos);
                 std::vector<double*> params;
@@ -567,7 +592,7 @@ SolverResult SlidingWindowSolver::solve_window(
                 params.push_back(traj_.bias_data());
                 auto* huber_a = new ceres::HuberLoss(cfg_.huber_delta_accel);
                 problem.AddResidualBlock(cost,
-                    new ceres::ScaledLoss(huber_a, cfg_.lambda_accel, ceres::TAKE_OWNERSHIP), params);
+                    new ceres::ScaledLoss(huber_a, cfg_.lambda_accel * w_acc, ceres::TAKE_OWNERSHIP), params);
             }
 
             // Gravity direction (when not accelerating hard)
