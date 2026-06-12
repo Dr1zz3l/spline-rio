@@ -124,3 +124,11 @@ primär verstehen wie und ob man aus Radar eine State Estimation bekommt — ist
 See CLAUDE.md "UNIVERSAL weighting config results" + ROADMAP Part 5 subsections:
 universal = scale 1.0, λg 4·(1+(|ω|/4)⁴), gates 4/8, SNR α=1; per-regime extras:
 grids, λh, tether/b (backflips), locked pitch 27.5 global.
+
+## Finalization (user instruction 2026-06-12 17:02)
+1. After the rewrite compiles: `latexmk -pdf IEEE-conference-template-062824.tex`
+   (or pdflatex+bibtex x2), COMMIT THE PDF (it is normally untracked? check —
+   commit it explicitly so it is viewable on github.com).
+2. Merge all branches to main: adaptive-knots → radar-pos-split are stacked;
+   merge radar-pos-split (contains everything) into main, push main.
+   adaptive-knots is an ancestor — fast-forward covered.
