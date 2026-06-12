@@ -745,9 +745,50 @@ Full SW config (tether 10 + soft gate 4 + z-bias −1.0 + scale 1.0) + λ_gyro:
   during flips because accel/radar residuals outweighed gyro fidelity;
   open-loop gyro = 7.8° bounded what pure integration gives; λg=400 fusion
   (7.12° live-capable with heading anchors) now slightly beats open-loop.
-  Remaining ~7° floor candidates: accel distortion mid-flip (pivot #3),
-  gyro-vs-mocap GT error during flips (V1d: mocap is degraded exactly there
-  — the floor may be partly GT artifact), Greville init lag (#4).
+
+### Backflips ~7° floor — tiered attack plan (2026-06-12, post-pivot)
+
+The config was tuned GREEDILY in sequence (soft gate → tether → z-bias → λg);
+older knobs must be re-checked at the new λg=400 operating point.
+
+**Tier 0 — zero code, config re-tunes at λg=400:**
+1. **Tether re-sweep λ_pos_init ∈ {0, 3, 10}** — TOP candidate: Part 4b measured
+   ori 6.93° with tether OFF (vs 10.07 with); the tether only exists to fight
+   the z-sink blowup, which radar_zbias_fixed=−1.0 now fixes at the source.
+   Tether-off may give ~6.5–7° ori AND hold position.
+2. ω₀ ∈ {2, 8} and λ_ori_accel ∈ {0, 0.01} quick re-checks (both tuned with
+   soft gyro; may be redundant/mis-set under stiff gyro).
+3. dt_pos sweep on backflips {10→20, 40 ms} (never swept there; fast_racing
+   gained ori AND 3× speed).
+4. Locked-pitch sweep {25.5°, 27.5°} — racing self-calibrates to 27–28°; the
+   locked 25.5° may simply be wrong (backflips radar core 2.47 m/s has room).
+
+**Tier 1 — small code changes:**
+5. Greville init fix (Python-only; init lag ~2·dt_ori ≈9° during flips; also
+   fixes the tether TARGET being lagged — interacts with #1).
+6. Accel soft-gate during flips (small C++, mirror omega_soft_sigma).
+7. Huber on gyro (small C++; DEMOTED — λg saturation 400→1000 suggests gyro
+   weighting already plateaued).
+
+**Tier 2 — measurement honesty:**
+8. Quantify mocap GT error during flips (12% occlusion-masked samples at flip
+   peaks, FD clipping ~13%) — may show the true floor < 7°; paper caveat
+   regardless.
+
+**Resolved-negative, do NOT retry:** radar–IMU time offset (Part 3b), denser
+dt_ori (bistability, Part 3b), whitening-as-speed-lever (Part 1 third session).
+
+### Adaptive knots — residual relevance (compute, not accuracy)
+
+The Phase-0 kill was for ACCURACY on backflips. A compute-reduction use case
+survives: ori knots dominate the SW state dimension (375 ori vs 75–600 pos
+CPs/window), and V1c showed dt_ori=16 ms tracks even backflips at the noise
+floor. Path: (a) FIRST try uniform dt_ori=16 ms on racing bags (zero code —
+if it holds accuracy, halves ori params → linear-solve win, helps slow_racing's
+0.82 s the most); (b) only if mixed-dynamics flights (live deployment story)
+need per-segment density does the validated non-uniform machinery
+(`analysis/adaptive_knots/`, V0) become worth the C++ Phase-1 effort. Gated,
+not dead.
 
 ## Key references
 
