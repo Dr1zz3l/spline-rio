@@ -1238,41 +1238,44 @@ orientation by 6--8\degree.  The C++ design avoids this by construction.
 \section{Conclusion}
 \label{sec:conclusion}
 
-We presented a continuous-time B-spline RIO system with a
-\emph{consistent} fixed-lag smoother, evaluated as a
-\emph{velocity and orientation} provider for fusion with
-position-fixing sensors.  At the live leading edge, velocity and
-orientation RMSE are \SI{0.46}{\metre\per\second}/\SI{1.9}{\degree}
-(slow racing) and \SI{0.39}{\metre\per\second}/\SI{3.6}{\degree}
-(fast racing); position drifts 0.63\% and 1.79\% of distance
-traveled.  The key enabler is a Markov-blanket factor-selection rule
-that makes the Schur complement marginalization a true marginal: the
-prior then needs no tuning (unscaled across all flight regimes), the
-settled trajectory is smooth across stride boundaries, and the
-diagnostic symptoms of the inconsistent variant --- regime-dependent
-prior weights with a harmful intermediate region --- are documented
-as a reusable warning sign.  Combined with warm-start alignment,
-direct marginal evaluation, and a position-spline density matched to
-the dynamics, per-window solve time is 0.37--0.86\,s on a laptop:
-aggressive racing runs in real time at a 0.4\,s stride.
-Extreme maneuvers (backflips) --- initially a failure case ---
-reach 3.7\%/9.2\degree\ settled and 4.0\%/8.7\degree\ live at
-0.66\,s per window once two radar systematics are modeled:
-rate-dependent intra-frame smearing (continuous noise inflation)
-and the elevation bias of the 2-TX array, which we show is the same
-physical error that the extrinsic-pitch self-calibration silently
-absorbs in level flight.
+\emph{Can a single-chip mmWave radar plus IMU provide usable 6-DOF
+state estimation?}  Yes --- as a \emph{velocity and orientation}
+source: at the live leading edge,
+\SI{0.46}{\metre\per\second}/\SI{2.0}{\degree} on gentle racing,
+\SI{0.41}{\metre\per\second}/\SI{3.2}{\degree} on aggressive racing
+(0.35--0.70\,s per window on a laptop), confirmed on held-out flights
+and with NEES-consistent orientation covariance.
+Absolute position is not observable from Doppler+IMU and drifts with
+distance (0.6--1.1\% on racing, 2.8\% under tumbling); yaw requires a
+heading sensor.  Within those structural limits, \emph{good results
+took three things}: (1) a \emph{consistent} fixed-lag smoother ---
+the Markov-blanket factor-selection rule makes the marginalization a
+true marginal, eliminating regime-dependent prior tuning whose
+symptom pattern we document as a reusable diagnostic;
+(2) a \emph{dynamics-adaptive trust allocation} across the
+measurement streams (rate-adaptive gyroscope weight, rate-inflated
+radar/accelerometer noise, per-point SNR weighting) --- one
+configuration from hover to \SI{10}{\radian\per\second}, with the
+velocity--orientation trade made explicit as a measured Pareto curve;
+and (3) \emph{characterized sensor systematics} --- including the
+finding that the apparent elevation bias under tumbling is a
+flight-regime error proxy, not an antenna constant, and that the
+extrinsic pitch is a calibration plateau best locked, not estimated
+online.  Notably, the largest accuracy gains came from diagnosis-led
+re-weighting of existing measurements, not from added model capacity:
+a representation-level study showed the orientation spline already
+tracks \SI{10}{\radian\per\second} flips at the gyroscope noise floor,
+disproving our own adaptive-knot-density hypothesis before
+implementation.
 
-The main open limitations are: (1) the residual $\sim$9\degree\
-orientation error through flips, which attenuates the reconstructed
-loop geometry --- adaptive (non-uniform) knot spacing and per-chirp
-radar timestamps are the identified levers; (2) absolute position
-within a window remains weakly observable from Doppler alone, so
-fixed-lag position is anchored by dead-reckoned initialization on
-aggressive maneuvers; and (3) comparison against external RIO
-baselines on this platform.  Future work will address these,
-alongside data-driven effective-noise weighting derived from the
-reduced-$\chi^2$ analysis of the residuals.
+Open limitations: (1) loop-scale position geometry through flips is
+bounded by during-flip radar data quality (Doppler noise
+$15\times$ the level-flight core), demonstrated by an asymmetric
+factor-split ablation; (2) ground truth itself degrades during flips
+(MoCap occlusion), bounding what can be measured there; and
+(3) external RIO baselines on this platform remain future work,
+since cross-paper number comparisons without shared hardware and
+firmware would overclaim.
 
 %==================================================================
 \bibliographystyle{IEEEtran}
