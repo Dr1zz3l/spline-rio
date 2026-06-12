@@ -914,6 +914,57 @@ calibration, Phase-2), iteration cap (slow real-time variant),
 lock_gyro_bias=0 (backflips). ω₀=3 variant trades: backflips settled ori 4.75°
 (absolute best) for fast ori +0.5°.
 
+### Velocity as a primary metric (2026-06-12, user reframing)
+
+Deployment context: RIO here is a velocity+orientation factor source for a
+larger graph — there is NO absolute-position sensor (no camera/GPS); radar
+Doppler is the closest thing (velocity). Position is the integral and drifts
+with distance by construction → **primary metrics: live velocity RMSE, live
+orientation RMSE, and position drift-% (the witness of velocity BIAS)**.
+
+**Racing: no trade — velocity moves with everything else.** Universal config:
+fast live vel 0.406 (iw-best 0.378, F6-era 0.487), drift 1.25%; slow live
+0.462 (≈ref), drift 0.63%; slow mapping settled vel 0.192, drift 0.58%.
+
+**Backflips: the gates trade velocity for orientation** (live vel | live ori):
+
+| config | live vel | live ori | drift % |
+|---|---|---|---|
+| session start (λg4, radar gate 4, tether 10) | 1.80 | 8.67° | 3.9 |
+| λg=400, same gates | 1.80 | 7.62° | — |
+| combo2 (radar gate ω₀ 4→2, tether .5, p27.5) | 2.13 | 6.99° | 3.3 |
+| + accel gate 4 (= universal gates 2/4) | 2.58 | 6.33° | 3.2 |
+
+λ_gyro (flat or adaptive), tether re-tune, pitch fix: **velocity-free wins**.
+The radar-gate tightening (4→2) and the accel gate: each buys ori with vel —
+the same mid-flip information starvation seen in position, in its purest form.
+
+**Metric subtleties (do not chase velocity RMSE blindly):**
+1. SETTLED velocity on backflips/slow is a known retrospective-eval artifact
+   (stride-boundary jumps; settled vel >> live vel is unphysical) — use LIVE.
+2. The split-factor sweep exposes vel-RMSE's blind spot: split 0→2 WORSENS
+   live vel RMSE (2.58→2.92) while IMPROVING live position (1.77→1.65) —
+   noisy-but-unbiased velocity beats smooth-but-biased for the integral.
+   Downstream factor-graph consumers want unbiased velocity + honest
+   covariance; vel RMSE rewards smoothness. Drift-% is the bias witness.
+3. GT-velocity during flips is mocap-FD with 12% occlusion-masked samples at
+   flip peaks (V1d) — the absolute backflips vel numbers carry GT noise; the
+   BETWEEN-config deltas (same GT) are valid.
+
+**Balanced gates 4/8 (omega_soft_sigma=4, accel_soft_sigma=8) — ADOPTED as
+the universal default.** It DOMINATES 2/4 on live metrics:
+
+| bag | gates 2/4 (live vel/ori/pos) | gates 4/8 (live vel/ori/pos) |
+|---|---|---|
+| backflips | 2.59 / 6.33° / 1.75 m | **2.25 / 6.31° / 1.64 m** (drift 3.04%) |
+| slow12 | 0.46 / 2.17° / 0.30 | 0.46 / **1.97°** / 0.30 |
+| fast | **0.41 / 2.94° / 0.57** | 0.39 / 3.10° / 0.63 |
+
+Backflips and slow strictly prefer 4/8; fast mildly prefers 2/4 (+0.16° ori,
++0.06 m pos at 4/8) — documented as a fast-ori-priority variant. The (2.25,
+6.31°) backflips point is the knee of the measured vel↔ori Pareto; recovering
+the last 0.45 m/s toward the no-gate 1.80 costs ≥1.3° ori.
+
 ### Asymmetric ω-gate split (`radar_pos_split`, branch radar-pos-split, 2026-06-12)
 
 Position-during-flip information experiment: new `RadarPosOnlyAnalyticFactor`
