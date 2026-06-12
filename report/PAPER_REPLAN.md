@@ -132,3 +132,56 @@ grids, λh, tether/b (backflips), locked pitch 27.5 global.
 2. Merge all branches to main: adaptive-knots → radar-pos-split are stacked;
    merge radar-pos-split (contains everything) into main, push main.
    adaptive-knots is an ancestor — fast-forward covered.
+
+## Revision pass 2 — Opus literature check (2026-06-12 18:03, VETTED)
+
+User ran the compiled paper through an independent Opus literature review
+(uploads/17cfe9b2-RIO_paper_revision_notes.md). My vetting against project
+context: items 1,2,4,5 VALID; item 3 (external baseline) correct but DEFERRED
+by user to a later phase. Actions for the next paper pass:
+
+1. **CRITICAL — cite Ng et al., "Continuous-time Radar-inertial Odometry for
+   Automotive Radars", IROS 2021, arXiv:2201.02437.** Closest prior art,
+   currently uncited. REWRITE the "Continuous-time radar-inertial estimation
+   is rare" sentence in Related Work (it is indefensible). Positioning
+   differences to state (VERIFY against the PDF before asserting: number of
+   radars used, SE(3)-vs-split spline): automotive/ground + gentle motion vs
+   our single-chip IWR6843AOP + aggressive/tumbling flight; batch-over-window
+   vs our consistency-analyzed Schur marginalization.
+2. **HIGH — reposition the marginalization contribution.** Add lineage:
+   Dong-Si & Mourikis ICRA 2012 (SW marginalization inconsistency analysis,
+   intra.ece.ucr.edu/~mourikis/papers/DongSi2012-ICRA.pdf), FEJ/observability-
+   constrained estimators (cite via ETH survey "Continuous-Time State
+   Estimation Methods in Robotics: A Survey",
+   research-collection.ethz.ch/handle/20.500.11850/637309), Ctrl-VIO (already
+   cited), LIO-MARS arXiv:2511.13985 (CT knot marginalization + FEJ), Lv et
+   al. CT fixed-lag smoothing T-Mech 2023 (arXiv:2302.07456). Make the precise
+   claim: ours is *correct marginal construction via factor-SET closure from
+   B-spline local support* (no double counting, no conditioning on interior)
+   — a DIFFERENT mechanism from FEJ (which fixes linearization points to
+   preserve the observability nullspace; we instead re-center the prior and
+   keep only curvature). State both mechanisms and the distinction explicitly.
+   Keep the prior-scale-symptom section framed as the transferable diagnostic.
+3. **DEFERRED (user): external baseline.** When resumed: Doer/Trommer toolbox
+   github.com/christopherdoer/rio (ekf_rio, x_rio + public datasets;
+   x-RIO = natural choice), or run ours on their bags; STEAM-ICP code
+   github.com/utiasASRL/steam_icp. Until then keep the honest no-comparison
+   caveat but expect this objection.
+4. **MEDIUM — demote to rigor/validation (not contributions):** NEES analysis
+   (standard Bar-Shalom consistency checking — present as evidence the
+   covariance is usable, move out of contribution bullets); adaptive
+   weighting (defensible specifics only: ONE config hover→tumbling, the
+   explicit vel/ori Pareto knee, held-out validation — not "adaptive
+   weighting" in the abstract).
+5. **Lead with the defensible core:** single-chip radar under
+   aggressive/tumbling flight + the characterization of where radar breaks
+   (intra-frame smearing; b = flight-regime proxy not antenna constant) +
+   honest negative results + the prior-scale diagnostic.
+
+### Bib entries to add (verify metadata at write time)
+- ng2021ctrio: Ng, Choi, Tan, Heng, IROS 2021, arXiv:2201.02437
+- dongsi2012consistency: Dong-Si, Mourikis, ICRA 2012
+- lv2023clic: Lv et al., CT fixed-lag smoothing LIC SLAM, IEEE/ASME T-Mech 2023, arXiv:2302.07456
+- liomars2025: LIO-MARS, arXiv:2511.13985
+- ethsurvey: CT State Estimation Survey (ETH research collection 20.500.11850/637309)
+(burnett2024gp, stironja2026rio, lv2022ctrlvio, lang2023cocolic already added.)
