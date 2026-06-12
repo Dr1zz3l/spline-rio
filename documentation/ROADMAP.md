@@ -752,10 +752,20 @@ The config was tuned GREEDILY in sequence (soft gate → tether → z-bias → �
 older knobs must be re-checked at the new λg=400 operating point.
 
 **Tier 0 — zero code, config re-tunes at λg=400:**
-1. **Tether re-sweep λ_pos_init ∈ {0, 3, 10}** — TOP candidate: Part 4b measured
-   ori 6.93° with tether OFF (vs 10.07 with); the tether only exists to fight
-   the z-sink blowup, which radar_zbias_fixed=−1.0 now fixes at the source.
-   Tether-off may give ~6.5–7° ori AND hold position.
+1. **Tether re-sweep — DONE, λ=1 new best** (settled pos/ori | live pos/ori):
+
+   | λ_pos_init | settled | live |
+   |---|---|---|
+   | 0 | 8.02 m / 5.46° | 9.24 m / 7.28° (pos blowup — tether still load-bearing even with z-bias) |
+   | **1** | **1.870 m / 6.01°** | **1.898 m / 7.19°** |
+   | 2 | 1.893 / 6.16° | 1.977 / 7.20° |
+   | 3 | 1.918 / 6.37° | 2.024 / 7.27° |
+   | 10 (prev) | 1.988 / 7.15° | 2.137 / 7.62° |
+
+   Monotone toward λ=1 on every metric; λ=0.5 probe queued. First live pos
+   < 2 m; settled pos 1.87 approaches the old batch ceiling (1.82). The old
+   λ=10 was tuned pre-λg=400 — the stiff gyro reduces how much absolute
+   anchoring the window needs.
 2. ω₀ ∈ {2, 8} and λ_ori_accel ∈ {0, 0.01} quick re-checks (both tuned with
    soft gyro; may be redundant/mis-set under stiff gyro).
 3. dt_pos sweep on backflips {10→20, 40 ms} (never swept there; fast_racing

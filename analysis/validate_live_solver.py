@@ -1198,9 +1198,12 @@ def main():
             try:
                 _EXTRINSICS_CFG[_k] = float(_v)
             except ValueError:
-                _EXTRINSICS_CFG[_k] = _v
+                import yaml as _yaml
+                try:  # lists etc., e.g. rotation_euler_deg=[180.0,27.5,0.0]
+                    _EXTRINSICS_CFG[_k] = _yaml.safe_load(_v)
+                except Exception:
+                    _EXTRINSICS_CFG[_k] = _v
             print(f"  [--set-ext] {_k} = {_EXTRINSICS_CFG[_k]}")
-            print(f"  [bag override] {k} = {v}")
 
     # --set key=value  (repeatable): override solver.yaml entries at runtime
     # e.g.: --set lambda_bias_prior_accel=100 --set lambda_gravity=0
