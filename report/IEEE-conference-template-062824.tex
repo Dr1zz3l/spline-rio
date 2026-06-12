@@ -370,27 +370,54 @@ limited elevation diversity (2\,TX antennas); the
 \SI{0.049}{\metre\per\second} Doppler resolution sets a lower bound but
 does not drive the choice.
 
-\textbf{Rate-dependent radar noise inflation.}
-A radar frame integrates over tens of milliseconds; at body rate
-$\omega$ the scene smears by $\omega\,T_{\mathrm{frame}}$
-($\approx$17\degree\ at 10\,rad/s), so the single-timestamp Doppler
-model error grows with $|\vom|$.  Rather than discarding frames above
-a rate threshold (a hard gate with a tuning cliff), we inflate the
-per-frame noise continuously,
-$\sigma_{\mathrm{eff}}^2 = \sigma_0^2\bigl(1 + (|\vom|/\omega_0)^2\bigr)$
-with $\omega_0{=}4$\,rad/s, evaluated from the warm-start spline at
-problem-build time.  This matches or beats the hard gate on
-orientation while retaining all measurements
-(Sec.~\ref{sec:backflips}).
+\textbf{Dynamics-adaptive measurement weighting.}
+The central practical finding of this work is that a single
+\emph{rate-adaptive trust allocation} across the three measurement
+streams covers hover to \SI{10}{\radian\per\second} tumbling with one
+configuration.  Each component was derived from a measured failure
+diagnosis (Sec.~\ref{sec:backflips}), not tuned ad hoc:
+\begin{itemize}
+\item \emph{Gyroscope --- trust more when rotating fast.}
+  Per-sample weight
+  $\lambda_g^{\mathrm{eff}} = \lambda_g\bigl(1 + (|\vz_g|/\omega_g)^p\bigr)$
+  with $\lambda_g{=}4$, $\omega_g{=}4$\,rad/s, $p{=}4$, using the
+  \emph{measured} rate (causal, no spline evaluation).  The quartic
+  exponent keeps racing untouched ($\lambda^{\mathrm{eff}}\!\approx\!\lambda_g$
+  below 3\,rad/s) and reaches $\lambda^{\mathrm{eff}}\!\approx\!160$--$500$
+  during flips, where the gyroscope is the only clean sensor.  A
+  quadratic ramp ($p{=}2$) stiffens the gyro already at 2--5\,rad/s ---
+  where radar is still informative --- and degrades racing roll/yaw.
+\item \emph{Radar --- trust less when rotating fast.}
+  A radar frame integrates over tens of milliseconds; at body rate
+  $\omega$ the scene smears by $\omega\,T_{\mathrm{frame}}$
+  ($\approx$17\degree\ at 10\,rad/s).  Per-frame noise inflation
+  $\sigma_{\mathrm{eff}}^2 = \sigma_0^2\bigl(1+(|\vom|/\omega_r)^2\bigr)$,
+  $\omega_r{=}4$\,rad/s, $|\vom|$ from the warm-start spline at
+  problem-build time; continuous, no hard-gate tuning cliff.
+\item \emph{Accelerometer --- same form,} $\omega_a{=}8$\,rad/s:
+  during flips the accelerometer carries thrust transients and
+  vibration, its gravity information is nil mid-flip, and it otherwise
+  distorts orientation through the $\vR$--$\ddot{\vp}$ coupling.
+\item \emph{Per-point SNR weighting.}
+  $w_i = \mathrm{clip}\bigl((I_i/\tilde{I})^{\alpha},\,0.25,\,4\bigr)$
+  with frame-median intensity $\tilde I$ and $\alpha{=}1$
+  (median-relative, so the global radar weight is unchanged).  High-SNR
+  returns carry measurably better Doppler: on aggressive racing this
+  alone improves live orientation from 3.31\degree\ to 2.88\degree\ at
+  unchanged position.
+\end{itemize}
+The weighting trades are made explicit in
+Sec.~\ref{sec:backflips}: on tumbling flight the radar/accelerometer
+gates exchange velocity accuracy for orientation accuracy along a
+measured Pareto curve; $(\omega_r,\omega_a){=}(4,8)$ is its knee.
 
-\textbf{Elevation bias correction.}
-The 2-TX elevation array produces a per-point Doppler error
-proportional to the ray's sensor-frame elevation component,
-$v_{\mathrm{corr}} = v_{\mathrm{meas}} - b\,u_{s,z}$.
-For level flight this error is absorbed by the self-calibrated
-extrinsic pitch (Sec.~\ref{sec:results}); for attitude-tumbling
-maneuvers it must be corrected explicitly
-($b = -1.0$\,m/s for backflips; Sec.~\ref{sec:backflips}).
+\textbf{Flip-regime Doppler correction.}
+Under sustained tumbling an additional attitude-correlated Doppler
+systematic appears, which we absorb with a per-point term
+$v_{\mathrm{corr}} = v_{\mathrm{meas}} - b\,u_{s,z}$ ($b{=}{-}1.5$\,m/s,
+backflips only).  Sec.~\ref{sec:backflips} shows why $b$ must be
+interpreted as a flight-regime error proxy rather than a physical
+elevation bias of the 2-TX array.
 
 \textbf{Accelerometer.}
 \begin{equation}
