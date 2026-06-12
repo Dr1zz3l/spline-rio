@@ -766,17 +766,37 @@ older knobs must be re-checked at the new λg=400 operating point.
    < 2 m; settled pos 1.87 approaches the old batch ceiling (1.82). The old
    λ=10 was tuned pre-λg=400 — the stiff gyro reduces how much absolute
    anchoring the window needs.
-2. ω₀ ∈ {2, 8} and λ_ori_accel ∈ {0, 0.01} quick re-checks (both tuned with
-   soft gyro; may be redundant/mis-set under stiff gyro).
-3. dt_pos sweep on backflips {10→20, 40 ms} (never swept there; fast_racing
-   gained ori AND 3× speed).
-4. Locked-pitch sweep {25.5°, 27.5°} — racing self-calibrates to 27–28°; the
-   locked 25.5° may simply be wrong (backflips radar core 2.47 m/s has room).
+2. ω₀ / λ_ori_accel re-checks — DONE: ω₀=2 trades live pos for live ori
+   (kept in the combo, see below); ω₀=8 worse. **λ_ori_accel ∈ {0, 0.001,
+   0.01} is bit-identical at λg=400** (reg contribution ~1e-6 of gyro) —
+   knob retired from the backflips config.
+3. dt_pos sweep — DONE: 20/40 ms improve position (live 1.82/1.69!) but cost
+   ori (7.74/8.24 live) — a position/speed-priority VARIANT, not the ori
+   operating point.
+4. Locked-pitch — DONE, real win: 27.5° beats 25.5° on both metrics
+   (settled pos 1.87→1.77, ori par); 28.5° ≈ 27.5° (saturated). The locked
+   25.5° was simply wrong — consistent with racing's self-calibrated 27–28°.
+   (Option: move to bags.yaml extrinsics_overrides; kept explicit in the
+   command for now.)
+
+**Combo wave (settled pos/ori | live pos/ori):**
+
+| config | settled | live |
+|---|---|---|
+| tether.5 + p27.5 + ω₀4 (combo1) | 1.770/5.90 | 1.685/7.17 |
+| **tether.5 + p27.5 + ω₀2 (combo2 = NEW OPERATING POINT)** | **1.751/5.83** | **1.769/6.99** |
+| tether.25 + p27.5 + ω₀4 | 1.801/5.83 | 1.579/7.20 |
+| combo1 + greville_init | 1.770/5.87 | 1.687/7.18 |
+
+combo2: 0.54 s/window. tether=0.25 variant = live-position priority
+(1.58 m live!) at slight settled/ori cost.
 
 **Tier 1 — small code changes:**
-5. Greville init fix (Python-only; init lag ~2·dt_ori ≈9° during flips; also
-   fixes the tether TARGET being lagged — interacts with #1).
-6. Accel soft-gate during flips (small C++, mirror omega_soft_sigma).
+5. Greville init fix — IMPLEMENTED (`greville_init`, default off) and
+   RESOLVED-NEUTRAL at full convergence (combo1 ± 0.03°): the optimizer
+   absorbs the init lag. May still matter under iteration caps; not part of
+   the operating point.
+6. Accel soft-gate during flips (small C++, mirror omega_soft_sigma) — NEXT.
 7. Huber on gyro (small C++; DEMOTED — λg saturation 400→1000 suggests gyro
    weighting already plateaued).
 

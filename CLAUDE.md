@@ -62,15 +62,18 @@ cd analysis/
 #   --set marg_prior_scale=1.0 --set max_iterations=12 --set lambda_heading=5.0  (~0.8s/window)
 # Per-window diagnostics printed: cost0, jac/res/lin/other timing, iter count, prior cond/rank, tr(S⁻¹)/tr(H⁻¹)
 
-# Backflips sliding window (2026-06-12 config: consistent prior + tether + soft ω-gate + z-bias + stiff gyro):
+# Backflips sliding window (2026-06-12 Tier-0 retune: stiff gyro + light tether + pitch 27.5 + ω₀=2):
 ../.venv/bin/python3 validate_live_solver.py backflips_best_velocity --mocap-yaw --cpp --sliding-window \
-  --set dt_ori=0.008 --set lambda_ori_accel=0.001 --set lock_gyro_bias=0 \
-  --set marg_prior_scale=1.0 --set lambda_pos_init_prior=10 --set omega_soft_sigma=4.0 \
-  --set radar_zbias_fixed=-1.0 --set lambda_gyro=400
-# → settled 1.99m/7.15°, live 2.14m/7.62°, ~0.65s/window (Phase 3 was: 2.56m settled, 3.33m live)
-# lambda_gyro=400: backflips-only (ROADMAP Part 5 pivot, 2026-06-12) — ori 9.2→7.15°
-# monotone in λg with ZERO position cost (soft gate absorbs the radar trade-off);
-# saturates ~λg=400. DO NOT raise λ_gyro on racing bags (costs position there, W-runs).
+  --set dt_ori=0.008 --set lock_gyro_bias=0 --set marg_prior_scale=1.0 \
+  --set lambda_pos_init_prior=0.5 --set omega_soft_sigma=2.0 --set lambda_gyro=400 \
+  --set radar_zbias_fixed=-1.0 --set-ext 'rotation_euler_deg=[180.0,27.5,0.0]'
+# → settled 1.75m/5.83°, live 1.77m/6.99°, 0.54s/window  (was 1.99/9.22, 2.14/8.67 before
+#   the 2026-06-12 ROADMAP Part-5 retune; Phase 3 was 2.56m settled / 3.33m live)
+# Key knobs (ROADMAP Part 5): lambda_gyro=400 backflips-only (ori 9.2→7.15° alone, zero pos
+# cost — soft gate absorbs the radar trade-off; DO NOT raise λ_gyro on racing: costs position);
+# tether λ=0.5 (old λ=10 was pre-stiff-gyro; λ=0 still blows up position); locked pitch 27.5°
+# (25.5° was wrong — racing self-calibrates to 27-28°); ω₀=2; λ_ori_accel REMOVED (bit-identical
+# at λg=400). Live-pos-priority variant: lambda_pos_init_prior=0.25 → live 1.58m / 7.20°.
 # omega_soft_sigma: ω-dependent radar down-weighting w=1/(1+(|ω|/ω₀)²) — beats the hard
 # ω-gate on orientation without discarding data (ROADMAP Part 3c)
 # radar_zbias_fixed: per-point elevation bias v_corr = v − b·u_z (ROADMAP Part 4b).
@@ -248,7 +251,7 @@ Per-bag config auto-selected via `bags.yaml` solver_overrides:
 | slow_racing | align=0 λh10 (mapping) | **0.314m / 1.12°** (yaw 0.56°) | 0.442m / 1.98° | 2.06s |
 | fast_racing | scale=1.0 full iter | **0.596m** / 3.35° | **0.697m** / 4.00° | 1.37s |
 | fast_racing | scale=1.0 dt_pos=0.04 | 0.701m / **3.13°** | 0.803m / **3.55°** | **0.37s** |
-| backflips | + soft-gate 4 + z-bias −1.0 + λg=400 | **1.99m** / **7.15°** | **2.14m** / **7.62°** | 0.65s |
+| backflips | λg400 + tether.5 + p27.5 + ω₀2 + z-bias | **1.75m** / **5.83°** | **1.77m** / **6.99°** | 0.54s |
 
 dt_pos was over-dense for fast bags (position plateaus at 40ms, ori improves, iter 28→11).
 Window must stay 3.0s for fast (2.0s → roll/yaw ~11° even with consistent prior — confirmed

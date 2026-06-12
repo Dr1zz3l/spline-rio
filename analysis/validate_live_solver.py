@@ -991,6 +991,7 @@ def build_orientation_spline_from_gyro(
     n_knots: int,
     dt_ori: float,
     t_ref: float,
+    greville: bool = False,
 ) -> CumulativeSO3BSpline:
     """
     Sample gyro-integrated rotations at spline knot times and build SO(3) spline.
@@ -1001,12 +1002,19 @@ def build_orientation_spline_from_gyro(
         n_knots        : number of knots in the orientation spline
         dt_ori         : knot spacing (seconds)
         t_ref          : absolute time reference (maps t_rel=0 to this absolute time)
+        greville       : sample at Greville abscissae (knot_t + 2*dt_ori) instead of
+                         knot times. Cubic CP j corresponds to time
+                         (tau_{j+1}+tau_{j+2}+tau_{j+3})/3 = tau_j + 2*dt_ori; sampling
+                         at tau_j lags the whole init curve by 2*dt_ori (~9 deg during
+                         10 rad/s flips at dt_ori=8 ms). See ROADMAP Part 5 / V0.
 
     Returns:
         CumulativeSO3BSpline initialized from gyro integration
     """
     # Relative times for each knot (relative to t_ref)
     knot_times_rel = np.arange(n_knots) * dt_ori
+    if greville:
+        knot_times_rel = knot_times_rel + 2.0 * dt_ori
     # t_ref corresponds to the first IMU sample in the window
     # so t_abs = t_ref + t_rel for each knot
     knot_times_abs = t_ref + knot_times_rel
@@ -1039,6 +1047,7 @@ def build_position_spline_from_radar_integration(
     bspline_degree: int,
     dt_pos: float,
     t_ref: float,
+    greville: bool = False,
 ) -> UniformBSpline:
     """
     Fit position B-spline control points from the integrated radar trajectory.
@@ -1084,7 +1093,13 @@ def build_position_spline_from_radar_integration(
     # at uniformly-spaced control-point times. This is an approximation for degree-5
     # B-splines (ctrl_pts[i] ≠ spline(knot[i])), but produces smooth starting control
     # points and the LM solver corrects the mismatch in the first few iterations.
-    init_times = np.linspace(t_start, t_end, n_pos_points)
+    if greville:
+        # Quintic CP j corresponds to the Greville abscissa mean(tau_{j+1..j+5})
+        # = tau_j + 3*dt_pos. The linspace heuristic below deviates from this by
+        # up to ~2 dt_pos at the boundaries (and sets the SW tether target).
+        init_times = (np.arange(n_pos_points) + 3.0) * dt_pos
+    else:
+        init_times = np.linspace(t_start, t_end, n_pos_points)
     pos_interp = interp1d(t_samples, p_samples, axis=0,
                           kind='linear', fill_value='extrapolate')
     ctrl_pts = pos_interp(np.clip(init_times, t_samples[0], t_samples[-1]))
@@ -1513,10 +1528,13 @@ def main():
     n_interior_ori = int(np.ceil(DURATION / DT_ORI)) + 1
     n_ori_points   = max(ori_degree + 2, n_interior_ori + 2 * BOUNDARY_ORDER)
 
+    GREVILLE_INIT = bool(_SOLVER_CFG.get('greville_init', 0))
     ori_spline = build_orientation_spline_from_gyro(
-        gyro_times, gyro_Rs, n_ori_points, DT_ORI, t_ref
+        gyro_times, gyro_Rs, n_ori_points, DT_ORI, t_ref,
+        greville=GREVILLE_INIT,
     )
-    print(f"\n  Orientation spline: {n_ori_points} knots, dt={DT_ORI:.4f}s  (from gyro)")
+    print(f"\n  Orientation spline: {n_ori_points} knots, dt={DT_ORI:.4f}s  (from gyro"
+          f"{', greville' if GREVILLE_INIT else ''})")
 
     # ==================== P2: Radar velocity integration ====================
     print(f"\n{'P2: Radar velocity integration':-^80}")
@@ -1556,8 +1574,10 @@ def main():
     pos_bspline = build_position_spline_from_radar_integration(
         radar_int_times, radar_int_ps,
         n_pos_points, BSPLINE_DEGREE, DT_POS, t_ref,
+        greville=GREVILLE_INIT,
     )
-    print(f"  Position spline: {n_pos_points} control points, dt={DT_POS:.4f}s  (interp init)")
+    print(f"  Position spline: {n_pos_points} control points, dt={DT_POS:.4f}s  "
+          f"({'greville' if GREVILLE_INIT else 'interp'} init)")
 
     # Compare integrated trajectory to MoCap (eval only)
     if agiros_states:
