@@ -63,27 +63,35 @@ yaw serves that role.
 
 Radar Doppler measures velocity directly; RIO is therefore evaluated
 as a \emph{velocity and orientation} provider intended for fusion with
-position-fixing sensors (GPS, VIO, or SLAM).
+position-fixing sensors (GPS, VIO, or SLAM), and position error is
+reported as drift per distance traveled --- the witness of velocity
+bias.
 A Markov-blanket factor-selection rule makes the marginalization a
-true marginal, eliminating prior-weight tuning across flight regimes;
-together with warm-start alignment and dynamics-matched spline
-density, per-window solve time is 0.37--0.86\,s on a laptop ---
-real time for aggressive racing at a 0.4\,s stride.
+true marginal, eliminating prior-weight tuning across flight regimes.
+A single \emph{dynamics-adaptive measurement weighting law} ---
+rate-adaptive gyroscope trust
+$\lambda_g(1{+}(|\vom|/\omega_0)^4)$, rate-dependent radar and
+accelerometer noise inflation, and per-point SNR weighting ---
+covers hover to \SI{10}{\radian\per\second} tumbling with one
+configuration, validated on held-out flights never used for tuning.
 At the \emph{live leading edge} (the estimate a deployed system would
 emit), velocity and orientation RMSE are
-\SI{0.46}{\metre\per\second}/\SI{1.9}{\degree}
-on gentle racing and \SI{0.39}{\metre\per\second}/\SI{3.6}{\degree} on
-aggressive racing; position drifts \SI{0.63}{\percent} and
-\SI{1.79}{\percent} of distance traveled.
+\SI{0.46}{\metre\per\second}/\SI{2.0}{\degree}
+on gentle racing and \SI{0.41}{\metre\per\second}/\SI{3.2}{\degree} on
+aggressive racing at 0.35--0.70\,s per window on a laptop; position
+drifts \SI{0.6}{\percent} and \SI{1.1}{\percent} of distance.
 Backflips --- attitude-tumbling flight that exposes radar systematics
 invisible in level flight --- reach
-\SI{4.0}{\percent}\,/\,\SI{8.7}{\degree} live after modeling
-rate-dependent intra-frame smearing and the elevation bias of the
-2-TX array, which we show is the same physical error that extrinsic
-pitch self-calibration silently absorbs in level flight.
+\SI{2.8}{\percent}\,/\,\SI{6.3}{\degree} live.
+The estimator's output covariance is NEES-consistent for orientation
+on racing flights (inflation $0.7$--$0.9\times$), supporting its use
+as a calibrated factor source.
 We further document negative results, including a diagnostic symptom
-pattern for marginalization inconsistency and the degradation of IMU
-preintegration at full IMU rate.
+pattern for marginalization inconsistency, a representation-level
+analysis that disproves the adaptive-knot-density hypothesis for this
+regime, and the finding that the apparent radar elevation bias under
+tumbling is a flight-regime error proxy rather than a physical
+antenna constant.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -118,47 +126,52 @@ For orientation, the cumulative SO(3) B-spline
 formulation~\cite{sommer2020efficient,hug2022continuous} provides an
 exact on-manifold representation without re-linearization.
 
-We contribute the following:
-\begin{itemize}
-  \item A complete continuous-time B-spline RIO system with a
-        physically correct Doppler model including lever-arm
-        correction ($\vom \times \mathbf{r}_{\text{ant}}$),
-        online extrinsic pitch self-calibration, rate-dependent
-        radar noise inflation, and an elevation-bias correction
-        for attitude-tumbling flight.
-  \item A sensor-only initialization pipeline (P1--P3) that
-        bootstraps from gyro integration and radar dead-reckoning,
-        requiring no external pose at initialization.
-  \item A \emph{consistent} fixed-lag smoother: a Markov-blanket
-        factor-selection rule for Schur complement marginalization
-        of B-spline control points that yields a true marginal ---
-        eliminating the prior-weight tuning that plagued our (and,
-        we suspect, other) na\"ive implementations --- plus
-        warm-start alignment and direct marginal evaluation that
-        together bring per-window solve time to 0.37--0.86\,s on a
-        laptop (real time for aggressive racing at a 0.4\,s stride).
-  \item An honest evaluation across three maneuver types, including
-        extreme dynamics (backflips), with documented failure modes
-        and negative results --- among them a diagnostic symptom
-        pattern for marginalization inconsistency and a bistability
-        caution for over-dense orientation splines; metrics follow
-        the odometry convention of reporting velocity/orientation
-        accuracy and normalizing position error to distance traveled
-        (drift~\%).
-\end{itemize}
+\textbf{Research question.}
+This work asks, end to end: \emph{can a single-chip mmWave radar,
+fused with an IMU, provide usable 6-DOF state estimation --- and if
+so, what does it take to obtain good results?}  The answer is
+structured in three parts.  (1)~\emph{What the sensor provides:}
+per-point Doppler yields direct ego-velocity, but at 10--60 points
+per frame there are no bearing-stable features for position fixing;
+yaw is a gauge freedom of Doppler+IMU.  The system is therefore a
+\emph{velocity and orientation} source whose position estimate drifts
+with distance --- by construction, not by defect.  (2)~\emph{What it
+takes:} a consistent fixed-lag smoother and a dynamics-adaptive
+weighting of every measurement stream, each step of which we derive
+from a measured failure diagnosis rather than tuning folklore.
+(3)~\emph{What the limits are:} characterized via held-out flights,
+extreme maneuvers, calibrated output covariance, and documented
+negative results.
 
-\textbf{Research objectives.}
-This work investigates (1) whether a continuous-time B-spline
-representation can bridge the asynchronous radar--IMU data rate
-gap without interpolation approximation;
-(2) whether Schur complement marginalization can propagate information
-across sliding-window boundaries consistently and efficiently enough
-for online deployment; and (3) what the practical accuracy ceiling of
-radar-inertial-only odometry (with heading reference) is on a
-high-agility quadrotor platform.  The experiments span gentle
-racing, aggressive racing, and backflips --- the latter an extreme
-regime that exposes radar systematics (elevation bias, intra-frame
-smearing) invisible in level flight.
+We contribute:
+\begin{itemize}
+  \item A complete, reproducible continuous-time B-spline RIO system:
+        physically correct Doppler model with lever arm, sensor-only
+        initialization (P1--P3), full hyperparameter disclosure, and
+        deterministic re-runs.
+  \item A \emph{consistent} fixed-lag smoother: a Markov-blanket
+        factor-selection rule for Schur complement marginalization of
+        B-spline control points that yields a true marginal ---
+        eliminating prior-weight tuning --- plus warm-start alignment
+        and direct marginal evaluation; 0.35--0.70\,s per window on a
+        laptop (real time for aggressive racing at a 0.4\,s stride).
+  \item A \emph{dynamics-adaptive measurement weighting law}:
+        rate-adaptive gyroscope trust, rate-dependent radar and
+        accelerometer noise inflation, and per-point SNR weighting ---
+        one configuration from hover to \SI{10}{\radian\per\second},
+        validated on held-out flights, with the velocity--orientation
+        trade made explicit as a measured Pareto curve.
+  \item A NEES analysis of the estimator's output covariance:
+        orientation is consistent (inflation $0.7$--$0.9\times$) on
+        racing flights --- a prerequisite for use as a factor source
+        in a larger fusion graph.
+  \item Honest negative results: a diagnostic symptom pattern for
+        marginalization inconsistency; a representation-level study
+        that \emph{disproves} the adaptive-knot-density hypothesis for
+        this regime before implementation; the resolution of the
+        extrinsic-pitch/elevation-bias entanglement; and ground-truth
+        quality limits during aggressive maneuvers.
+\end{itemize}
 
 \textbf{Data and code.}
 The datasets (Vicon MoCap lab, TI IWR6843AOPEVM, Pixhawk) and the
@@ -198,14 +211,29 @@ principle to continuous-time B-spline control points and document
 the practical challenges of prior scaling when information asymmetry
 spans ten orders of magnitude.
 
-Hug et al.~\cite{hug2022continuous} is the most closely related work,
-applying a continuous-time sliding-window estimator with Schur
-complement marginalization to a 2D FMCW radar; our system extends this
-to 3D and adds sensor-only initialization and online extrinsic pitch
-self-calibration.  Direct numerical comparison to Doer et
-al.~\cite{doer2020ekf} and Kramer et al.~\cite{kramer2020rve} is not
-possible: those systems use different radar hardware (76\,GHz
-automotive), firmware configurations, and datasets.
+\textbf{Closest related work.}
+Continuous-time \emph{radar}-inertial estimation is rare.
+Burnett et al.~\cite{burnett2024gp} use a Gaussian-process motion
+prior for spinning-radar- and lidar-inertial odometry;
+\v{S}tironja et al.~\cite{stironja2026rio} model the IMU trajectory
+continuously inside an RIO estimator with online spatio-temporal
+calibration.  On the marginalization side, Hug et
+al.~\cite{hug2022continuous} and Ctrl-VIO~\cite{lv2022ctrlvio} apply
+sliding-window marginalization to continuous-time \emph{visual}-inertial
+splines; we are not aware of prior work analyzing the
+\emph{consistency} of Schur marginalization over B-spline control
+points, which Sec.~\ref{sec:sw} shows is where na\"ive implementations
+fail.  In the discrete-time UAV line, Doer and
+Trommer~\cite{doer2020ekf} and extensions to multiple
+radars~\cite{huang2024multiradar} and 4D-radar-aided inertial
+navigation define the state of practice.
+Direct numerical comparison to these systems is not attempted here:
+they use different radar hardware, firmware configurations, and
+datasets, and our own quantization ablation
+(Sec.~\ref{sec:setup}) shows firmware configuration alone changes
+Doppler resolution by $12\times$ --- cross-paper number comparisons
+without a shared benchmark would overclaim.  Baseline re-implementation
+on our datasets is planned future work.
 
 %==================================================================
 \section{System Overview}
@@ -683,24 +711,29 @@ the corresponding error timeseries.
 Bag & Mode & Vel (m/s) & Ori (\degree) & Pos (m) & Drift (\%) & $t_{\mathrm{win}}$ (s) \\
 \midrule
 \multirow{2}{*}{Slow racing}
-  & Settled & 0.42 & 1.63 & 0.287 & 0.60 & \multirow{2}{*}{0.86} \\
-  & \textbf{Live edge} & \textbf{0.46} & \textbf{1.92} & \textbf{0.303} & \textbf{0.63} & \\
+  & Settled & 0.41 & 1.58 & 0.286 & 0.60 & \multirow{2}{*}{0.70} \\
+  & \textbf{Live edge} & \textbf{0.46} & \textbf{1.97} & \textbf{0.303} & \textbf{0.63} & \\
 \midrule
 \multirow{2}{*}{Fast racing}
-  & Settled & 0.32 & 3.13 & 0.701 & 1.56 & \multirow{2}{*}{0.37} \\
-  & \textbf{Live edge} & \textbf{0.39} & \textbf{3.55} & \textbf{0.803} & \textbf{1.79} & \\
+  & Settled & 0.32 & 2.66 & 0.447 & 1.00 & \multirow{2}{*}{0.35} \\
+  & \textbf{Live edge} & \textbf{0.41} & \textbf{3.24} & \textbf{0.501} & \textbf{1.12} & \\
 \midrule
 \multirow{2}{*}{Backflips\textsuperscript{$\ddagger$}}
-  & Settled & 3.05 & 9.22 & 1.989 & 3.68 & \multirow{2}{*}{0.66} \\
-  & \textbf{Live edge} & \textbf{1.80} & \textbf{8.67} & \textbf{2.138} & \textbf{3.95} & \\
+  & Settled & 3.47\textsuperscript{$\ast$} & 4.98 & 1.638 & 3.03 & \multirow{2}{*}{0.6} \\
+  & \textbf{Live edge} & \textbf{2.29} & \textbf{6.29} & \textbf{1.514} & \textbf{2.80} & \\
 \bottomrule
 \multicolumn{7}{@{}p{\columnwidth}@{}}{\scriptsize
   All bags use the unscaled consistent marginalization prior
-  (Sec.~\ref{sec:sw}).  Slow racing: $\Delta t_p{=}5$\,ms, 12 LM
-  iterations, $\lambda_\psi{=}10$.  Fast racing: $\Delta t_p{=}40$\,ms.
-  $^\ddagger$Backflips: $\Delta t_o{=}8$\,ms,
-  $\lambda_{\mathrm{pos\text{-}init}}{=}10$, $\omega_0{=}4$\,rad/s,
-  $b{=}{-}1.0$\,m/s; see Sec.~\ref{sec:backflips}.
+  (Sec.~\ref{sec:sw}) and the \emph{same} dynamics-adaptive weighting
+  law (Sec.~\ref{sec:models}).  Per-regime parameters are limited to
+  spline grids ($\Delta t_p{=}5/40/10$\,ms), the heading weight, and
+  for backflips the position-init anchor
+  ($\lambda_{\mathrm{pos\text{-}init}}{=}0.5$) and flip-regime Doppler
+  correction $b{=}{-}1.5$\,m/s (Sec.~\ref{sec:backflips}).  Extrinsic
+  pitch locked at 27.5\degree\ for all bags.
+  $^\ast$Settled velocity on backflips is a retrospective-evaluation
+  artifact (stride-boundary resampling); the live column is the
+  deployment-relevant figure.
   Drift\,\%: path lengths 48.1\,m / 44.9\,m / 54.1\,m.
   Iteration-capped configurations reproduce bit-identically across
   repeated runs; full-convergence configurations vary by $<$2\%
