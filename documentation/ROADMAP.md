@@ -645,6 +645,79 @@ lever would be incremental problem reuse (diminishing returns).
 4. (speed, only if needed) incremental problem construction / window 2.5 s
    probe for fast.
 
+## Part 5 — Adaptive knot spacing: Phase-0 validation KILLED the hypothesis (2026-06-12, branch `adaptive-knots`)
+
+Plan: generalize the orientation spline to non-uniform knots (Coco-LIC style),
+dense during flips. Phase 0 (`analysis/adaptive_knots/`) validated assumptions
+BEFORE any C++ work — and the go/no-go gate fired **NO-GO**.
+
+### V0 — basis math (PASSED, library kept)
+`nonuniform_bspline.py` + `v0_basis_check.py`: non-uniform cumulative SO(3)
+basis (Cox–de Boor, ghost-knot boundaries) is machine-exact vs scipy AND
+reproduces basalt's `cumulative_blending_matrix_` bit-exactly for uniform
+grids. Two transferable findings:
+1. **Greville abscissae**: CP j corresponds to time (τ_{j+1}+τ_{j+2}+τ_{j+3})/3
+   ≈ τ_j + 2dt, NOT τ_j. Sampling CPs at knot times lags the whole curve by
+   ~2dt (10.5° on a synthetic 7 rad/s signal). Any init/fitting code must
+   sample at Greville times. ACTION ITEM: check whether the solver's Python
+   init (`_base_rotations`) has this lag — if yes, fixing it improves
+   warm-start quality during high-ω at zero cost.
+2. **Hard density transitions create angular-accel transients**
+   ~|δ_coarse|/dt_dense² (13,000 rad/s² for 32→4 ms; geometric ramp cuts 7×).
+   ω stays C¹ (verified by h-scaling), but any future non-uniform grid must
+   ramp density geometrically.
+
+### V1 — representation-error go/no-go (FAILED the GO gate)
+Fitting the SO(3) spline directly to backflips MoCap (`v1_representation_error.py`):
+uniform **8 ms already represents the flips to 1.28° RMSE** (vs the 8.3–9.2°
+solver error); adaptive equal-budget improves only 1.26× (gate required ≥2×).
+The flips peak at ~11 rad/s with 0.7 s period — slow relative to 8 ms knots.
+
+### V1b–d — what the rate-correlated residual actually is
+(`v1b_gyro_analysis.py`, `v1c_followup.py`, `v1d_gyro_only.py`)
+- **ω-tracking is grid-independent**: spline fit to the gyro stream gives ω
+  residual RMS ≈ 0.295 rad/s FLAT across dt = 16/8/4 ms with **flip ≈ quiet**
+  (0.294 vs 0.292), near the measured >25 Hz vibration floor (0.17 rad/s,
+  rate-INDEPENDENT). The Part-4c corr(|r_gyro|,|ω|)=+0.94 was measured against
+  the SOLVED trajectory → it is the **optimizer failing to rotate, not the
+  spline failing to represent**. (Supporting: solved-residual full std 4.19
+  rad/s ≈ the <25 Hz flip-segment signal RMS — the solution barely tracks the
+  flips at all in the worst segments.)
+- **Open-loop gyro dead-reckoning beats the solver**: zero-bias integration
+  over the clean 17 s window = **7.80° RMSE vs solver 9.2°** → the fusion
+  (radar+accel+tether) is net-NEGATIVE for orientation on this bag. The
+  orientation lever is weighting/robustness during flips, not knot density.
+- **MoCap GT is degraded exactly during flips**: broken tail t>17.2 s
+  (48,758 rad/s FD spikes, 116–126 ms dropout gaps; reported RMSE unaffected —
+  eval window ends before it), plus 12% occlusion-masked samples concentrated
+  at flip peaks. Interpolation through them clips FD-ω peaks ~13%, which
+  masquerades as a gyro scale error (regression says −13%, but applying it to
+  dead-reckoning explodes 7.8°→118° → artifact). Implication: (a) gyro scale
+  cannot be calibrated against this mocap; (b) during-flip mocap orientation
+  itself likely carries few-degree smoothing/lag errors — part of the "9°"
+  may be GT error. Paper caveat material.
+
+### Verdict & pivot
+**Adaptive/non-uniform knots: NO-GO for the backflips ori gap** (representation
+is not the limiter; racing bags never needed it). C++ Phases 1–3 cancelled.
+Phase-0 cost: one day, zero solver changes — the validate-before-code gate
+worked exactly as designed. Keep: `analysis/adaptive_knots/` library + V0
+findings + `placement.py` (if a future budget-reduction use-case appears, e.g.
+coarse knots on long quiet segments for compute, not accuracy).
+
+**Pivot candidates for the ori gap (in suggested order):**
+1. **λ_gyro sweep on backflips** {4, 40, 400} (W3 showed ori improves
+   monotonically with λ_gyro on fast_racing; never tried on backflips; soft
+   gate already down-weights radar during flips — the accel factor is the
+   remaining suspect distorting orientation).
+2. **Huber on gyro** (currently pure L2; σ_core 0.156 vs std 4.19 — open
+   thread from Part 4c, small C++ change).
+3. **Accel soft-gate during flips** (mirror omega_soft_sigma onto the accel
+   factor: thrust transients + lever-arm/vibration make accel poison during
+   flips; the gravity-direction information it provides is ~nil mid-flip anyway).
+4. Greville init check (V0 finding 1).
+5. Paper: mocap-GT-degradation caveat for the backflips table.
+
 ## Key references
 
 - LC-RIO-ET: Radar-Inertial Odometry with Online Spatio-Temporal Calibration via
