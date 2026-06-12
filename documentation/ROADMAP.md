@@ -842,6 +842,37 @@ accel gate + λ_ori_accel relevance never checked there. All parity anchors ✓
 3. λ_ori_accel ≈ irrelevant on fast too (Δ within run-to-run variation) —
    the regularizer matters nowhere at current weights.
 
+### Per-point radar intensity weighting (`radar_intensity_weight`, 2026-06-12)
+
+w_i = clamp((I_i/I_med_frame)^α, 0.25, 4), median-relative (global radar scale
+unchanged), folded into the soft-gate/split losses. Intensity plumbed
+Python→C++ (RadarPoint.intensity, Nx5 arrays). ⚠ Implementation lesson: the
+SW driver has its OWN frame-conversion loop (validate_live_solver.py ~line
+424) separate from the batch one (~220) — the first sweep silently ran with
+zero intensities and produced bit-identical results (which is also what
+caught it; default-off paths re-proved parity for free).
+
+| config | settled pos/ori | live pos/ori |
+|---|---|---|
+| fast dto16, α=0 (ref) | 0.646/3.05 | 0.721/3.31 |
+| fast α=0.5 | 0.640/2.81 | 0.721/3.10 |
+| **fast α=1.0 — ADOPTED** | **0.639/2.55** | **0.728/2.88** |
+| fast α=2.0 | 0.626/2.25 | 0.724/2.66 |
+| backflips final, α=1.0 | 1.789/5.24 (ref 1.804/5.29) | 1.749/6.39 (ref 1.766/6.37) |
+| slow I-config, α=1.0 | 0.287/1.62 (ref 0.287/1.63) | 0.303/1.90 (ref 0.303/1.92) |
+
+**Findings:**
+1. **Big orientation win on fast_racing**: live ori 3.31→2.88° at α=1 (first
+   sub-3° at real-time speed), position par — high-SNR points carry much
+   better Doppler. α=2 improves the geodesic headline further (2.25/2.66) but
+   roll/yaw per-axis tick UP vs α=1 (trade regime begins) → α=1 adopted as the
+   broad-optimum operating point.
+2. Backflips: marginal settled gain only (−15 mm/−0.05°), live par — during
+   flips ALL points are degraded (consistent with the split-experiment
+   diagnosis); SNR cannot rescue the loop geometry.
+3. Slow: neutral-positive (harmless to enable; not added to the documented
+   config to keep it minimal).
+
 ### Asymmetric ω-gate split (`radar_pos_split`, branch radar-pos-split, 2026-06-12)
 
 Position-during-flip information experiment: new `RadarPosOnlyAnalyticFactor`

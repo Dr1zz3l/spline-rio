@@ -59,7 +59,9 @@ cd analysis/
 #   With them, marg_prior_scale=1.0 works universally — the old per-bag tuning
 #   (slow=1e-7, fast=2e-4, harmful 1e-5–1e-6 regime) was compensating for a
 #   conditioning/double-counting bug in compute_prior(). Recommended fast config:
-#   --set marg_prior_scale=1.0 --set dt_pos=0.04 --set dt_ori=0.016  (~0.4s/window)
+#   --set marg_prior_scale=1.0 --set dt_pos=0.04 --set dt_ori=0.016 \
+#   --set radar_intensity_weight=1.0   (~0.4s/window; iw: per-point SNR weighting,
+#   live ori 3.31→2.88° — ROADMAP Part 5; α=2 better headline but roll/yaw trade)
 # Per-window diagnostics printed: cost0, jac/res/lin/other timing, iter count, prior cond/rank, tr(S⁻¹)/tr(H⁻¹)
 
 # Backflips sliding window (2026-06-12 retune: stiff gyro + light tether + pitch 27.5 + radar ω₀=2 + accel ω₀=4):
@@ -252,7 +254,7 @@ Per-bag config auto-selected via `bags.yaml` solver_overrides:
 | slow_racing | iter12 λh10 (live) | 0.287m / 1.63° | **0.303m / 1.92°** | **0.86s** |
 | slow_racing | align=0 λh10 (mapping) | **0.314m / 1.12°** (yaw 0.56°) | 0.442m / 1.98° | 2.06s |
 | fast_racing | scale=1.0 full iter | **0.596m** / 3.35° | **0.697m** / 4.00° | 1.37s |
-| fast_racing | scale=1.0 dt_pos=0.04 **dt_ori=0.016** | **0.646m / 3.05°** | **0.721m / 3.31°** | **0.36-0.41s** |
+| fast_racing | scale=1.0 dt_pos=.04 dt_ori=.016 **iw=1.0** | **0.639m / 2.55°** | **0.728m / 2.88°** | **0.36-0.41s** |
 | backflips | λg400 + tether.5 + p27.5 + gates 2/4 + z-bias | **1.80m** / **5.29°** | **1.77m** / **6.37°** | 0.55s |
 
 dt_pos AND dt_ori were over-dense for fast (dt_ori=0.016 adopted 2026-06-12: −8% pos,
