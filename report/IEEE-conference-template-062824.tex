@@ -49,8 +49,12 @@ timo.weiss@tum.de}}
 %------------------------------------------------------------------
 \begin{abstract}
 We present a radar-inertial odometry (RIO) system for 6-DOF state
-estimation on a quadrotor using a 60\,GHz mmWave FMCW radar and
-a 1\,kHz IMU.  The state trajectory is represented in continuous time
+estimation on a quadrotor using a single-chip 60\,GHz mmWave FMCW
+radar (10--60 points per frame) and a 1\,kHz IMU, evaluated through
+aggressive racing and attitude-tumbling flight up to
+\SI{10}{\radian\per\second} --- a regime in which the radar
+measurement model itself degrades and which existing RIO evaluations
+do not cover.  The state trajectory is represented in continuous time
 as a quintic position B-spline and a cumulative SO(3) orientation
 B-spline, enabling asynchronous sensor fusion and closed-form
 trajectory derivatives.  Optimization is performed by a fixed-lag
@@ -145,33 +149,38 @@ negative results.
 
 We contribute:
 \begin{itemize}
-  \item A complete, reproducible continuous-time B-spline RIO system:
-        physically correct Doppler model with lever arm, sensor-only
-        initialization (P1--P3), full hyperparameter disclosure, and
-        deterministic re-runs.
-  \item A \emph{consistent} fixed-lag smoother: a Markov-blanket
-        factor-selection rule for Schur complement marginalization of
-        B-spline control points that yields a true marginal ---
-        eliminating prior-weight tuning --- plus warm-start alignment
-        and direct marginal evaluation; 0.35--0.70\,s per window on a
-        laptop (real time for aggressive racing at a 0.4\,s stride).
-  \item A \emph{dynamics-adaptive measurement weighting law}:
-        rate-adaptive gyroscope trust, rate-dependent radar and
-        accelerometer noise inflation, and per-point SNR weighting ---
-        one configuration from hover to \SI{10}{\radian\per\second},
-        validated on held-out flights, with the velocity--orientation
-        trade made explicit as a measured Pareto curve.
-  \item A NEES analysis of the estimator's output covariance:
-        orientation is consistent (inflation $0.7$--$0.9\times$) on
-        racing flights --- a prerequisite for use as a factor source
-        in a larger fusion graph.
-  \item Honest negative results: a diagnostic symptom pattern for
-        marginalization inconsistency; a representation-level study
-        that \emph{disproves} the adaptive-knot-density hypothesis for
-        this regime before implementation; the resolution of the
-        extrinsic-pitch/elevation-bias entanglement; and ground-truth
-        quality limits during aggressive maneuvers.
+  \item \emph{Single-chip radar under aggressive and tumbling flight},
+        with a characterization of where and how the radar measurement
+        model breaks in this regime: rate-dependent intra-frame
+        smearing, and the finding that the apparent elevation bias
+        under tumbling is a flight-regime error proxy rather than a
+        physical antenna constant.  Existing RIO evaluations cover
+        ground vehicles or gentle UAV flight; backflips at
+        \SI{10}{\radian\per\second} on a single-chip sensor are, to
+        our knowledge, unexplored.
+  \item A \emph{consistency-analyzed} fixed-lag smoother: a
+        factor-set selection rule that exploits B-spline local support
+        to make the Schur marginal exactly closed --- a mechanism
+        distinct from and complementary to FEJ --- eliminating
+        prior-weight tuning; with warm-start alignment and direct
+        marginal evaluation, 0.35--0.70\,s per window on a laptop
+        (real time for aggressive racing at a 0.4\,s stride).
+  \item One measurement-weighting configuration covering hover to
+        \SI{10}{\radian\per\second}, with the velocity--orientation
+        trade made explicit as a measured Pareto curve and accuracy
+        validated on \emph{held-out flights} never used for tuning.
+  \item Honest negative results and validation: a diagnostic symptom
+        pattern for marginalization inconsistency; a
+        representation-level study that \emph{disproves} the
+        adaptive-knot-density hypothesis for this regime before
+        implementation; ground-truth quality limits during aggressive
+        maneuvers; and a NEES check showing the reported orientation
+        covariance is consistent on racing flights.
 \end{itemize}
+The complete system --- physically correct Doppler model with lever
+arm, sensor-only initialization, full hyperparameter disclosure,
+deterministic re-runs --- is released with code and datasets for
+independent reproduction.
 
 \textbf{Data and code.}
 The datasets (Vicon MoCap lab, TI IWR6843AOPEVM, Pixhawk) and the
@@ -212,18 +221,39 @@ the practical challenges of prior scaling when information asymmetry
 spans ten orders of magnitude.
 
 \textbf{Closest related work.}
-Continuous-time \emph{radar}-inertial estimation is rare.
+Continuous-time radar-inertial odometry was introduced by
+Ng et al.~\cite{ng2021ctrio}, who fuse Doppler measurements from
+\emph{multiple automotive} radars with an IMU as a least-squares
+problem over a B-spline trajectory, evaluated on passenger vehicles.
 Burnett et al.~\cite{burnett2024gp} use a Gaussian-process motion
-prior for spinning-radar- and lidar-inertial odometry;
+prior for spinning-radar- and lidar-inertial odometry, and
 \v{S}tironja et al.~\cite{stironja2026rio} model the IMU trajectory
 continuously inside an RIO estimator with online spatio-temporal
-calibration.  On the marginalization side, Hug et
-al.~\cite{hug2022continuous} and Ctrl-VIO~\cite{lv2022ctrlvio} apply
-sliding-window marginalization to continuous-time \emph{visual}-inertial
-splines; we are not aware of prior work analyzing the
-\emph{consistency} of Schur marginalization over B-spline control
-points, which Sec.~\ref{sec:sw} shows is where na\"ive implementations
-fail.  In the discrete-time UAV line, Doer and
+calibration.  Our setting differs from all three in sensor and
+regime: a \emph{single-chip} radar (10--60 points per frame,
+2-TX elevation array) on a quadrotor in aggressive racing and
+attitude-tumbling flight up to \SI{10}{\radian\per\second} --- a
+regime in which, as Sec.~\ref{sec:backflips} shows, the radar
+measurement model itself degrades in ways invisible on ground
+vehicles.
+
+\textbf{Sliding-window marginalization and consistency.}
+That na\"ive sliding-window marginalization is inconsistent is long
+established in discrete time: Dong-Si and
+Mourikis~\cite{dongsi2012consistency} analyze which retained states
+may legitimately connect to marginalized ones, and first-estimates
+Jacobian (FEJ) methods fix linearization points to preserve the
+observability nullspace.  In continuous time,
+Ctrl-VIO~\cite{lv2022ctrlvio}, CLIC~\cite{lv2023clic}, and
+LIO-MARS~\cite{quenzel2025liomars} marginalize spline knots leaving
+the window, and Hug et al.~\cite{hug2022continuous} apply Schur
+marginalization to visual-inertial splines.  Our contribution to this
+line is narrower and complementary to FEJ: a factor-\emph{set}
+selection rule that exploits B-spline local support to make the
+marginal exactly closed (no double counting, no conditioning on
+interior states), and a documented symptom pattern by which the
+inconsistent variant can be recognized (Sec.~\ref{sec:prior_scale}).
+In the discrete-time UAV line, Doer and
 Trommer~\cite{doer2020ekf} and extensions to multiple
 radars~\cite{huang2024multiradar} and 4D-radar-aided inertial
 navigation define the state of practice.
@@ -603,6 +633,18 @@ closed, consistent marginal.  With this rule the prior is applied
 \textbf{unscaled} (scale $=1$) across all flight regimes, and its
 Mahalanobis residual at the solution drops from $10^{6}$--$10^{12}$
 to $\mathcal{O}(1)$ --- the prior agrees with the incoming data.
+
+\emph{Relation to FEJ.}  This mechanism is distinct from, and
+complementary to, first-estimates-Jacobian approaches to
+marginalization consistency~\cite{dongsi2012consistency}: FEJ fixes
+the \emph{linearization points} of the prior to preserve the
+observability nullspace, whereas our rule corrects the
+\emph{factor set} entering the Schur complement so that the marginal
+is exactly closed.  We do not employ FEJ; instead the prior is
+re-centered at each window's warm start (curvature retained, gradient
+pull discarded), which in our experiments left no measurable
+inconsistency symptom --- the NEES analysis of
+Sec.~\ref{sec:nees} provides the corresponding evidence.
 
 \textbf{Live-edge warm start.}
 Control points entering the window each stride would otherwise hold
