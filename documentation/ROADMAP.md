@@ -706,17 +706,48 @@ findings + `placement.py` (if a future budget-reduction use-case appears, e.g.
 coarse knots on long quiet segments for compute, not accuracy).
 
 **Pivot candidates for the ori gap (in suggested order):**
-1. **λ_gyro sweep on backflips** {4, 40, 400} (W3 showed ori improves
-   monotonically with λ_gyro on fast_racing; never tried on backflips; soft
-   gate already down-weights radar during flips — the accel factor is the
-   remaining suspect distorting orientation).
+1. **λ_gyro sweep on backflips** — DONE, see below.
 2. **Huber on gyro** (currently pure L2; σ_core 0.156 vs std 4.19 — open
    thread from Part 4c, small C++ change).
 3. **Accel soft-gate during flips** (mirror omega_soft_sigma onto the accel
    factor: thrust transients + lever-arm/vibration make accel poison during
    flips; the gravity-direction information it provides is ~nil mid-flip anyway).
-4. Greville init check (V0 finding 1).
+4. Greville init check (V0 finding 1) — CONFIRMED in code:
+   `validate_live_solver.py` samples init rotations at knot times
+   (line ~1018) and `from_rotation_samples` treats them as knots → init curve
+   lags ~2·dt_ori (≈9° during flips at dt_ori=8 ms); the SW position tether
+   similarly pulls toward a ~3·dt_pos-lagged position init. Untested fix.
 5. Paper: mocap-GT-degradation caveat for the backflips table.
+
+### Pivot result: λ_gyro sweep on backflips SW (2026-06-12) — VALIDATED, new best
+
+Full SW config (tether 10 + soft gate 4 + z-bias −1.0 + scale 1.0) + λ_gyro:
+
+| λ_gyro | settled pos/ori | live pos/ori | per-axis r/p/y | dt/window |
+|---|---|---|---|---|
+| 4 (ref) | 1.989 / 9.22° | 2.138 / 8.67° | ~9.1/8.4/7.3 | 0.66 s |
+| 40 | 1.982 / 7.45° | 2.130 / 7.78° | 5.96/5.85/4.17 | 0.70 s |
+| **400** | **1.988 / 7.15°** | **2.137 / 7.62°** | 5.63/5.46/3.75 | 0.61 s |
+| 1000 | 1.988 / 7.12° | 2.135 / 7.60° | 5.61/5.43/3.73 | — |
+
+- **Monotone-saturating ori improvement, −2.1° settled / −1.05° live,
+  position EXACTLY flat (1.98–1.99 m), timing flat** — unlike the racing
+  W-runs where λ_gyro=400 cost ~0.13 m position. With the soft gate already
+  down-weighting radar during flips, stiffening the gyro has no position
+  cost on backflips. λ_gyro=400 = knee; new backflips SW operating point.
+- Settled ori 7.15° beats the old batch ceiling (8.31°) and approaches the
+  Part-3c batch best (6.97°) while holding 1.99 m position (batch position
+  is 2.2–7.3 m bistable at that config).
+- Batch + λg=400 single run landed in a bad basin (8.13°/7.1 m) — consistent
+  with Part 3b: backflips batch single runs are not a valid comparison;
+  the SW result (deterministic, 4-point monotone, all axes) is the evidence.
+- Interpretation chain (V1b–d → here): the optimizer was under-rotating
+  during flips because accel/radar residuals outweighed gyro fidelity;
+  open-loop gyro = 7.8° bounded what pure integration gives; λg=400 fusion
+  (7.12° live-capable with heading anchors) now slightly beats open-loop.
+  Remaining ~7° floor candidates: accel distortion mid-flip (pivot #3),
+  gyro-vs-mocap GT error during flips (V1d: mocap is degraded exactly there
+  — the floor may be partly GT artifact), Greville init lag (#4).
 
 ## Key references
 

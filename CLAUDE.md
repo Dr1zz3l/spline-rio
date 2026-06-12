@@ -62,12 +62,15 @@ cd analysis/
 #   --set marg_prior_scale=1.0 --set max_iterations=12 --set lambda_heading=5.0  (~0.8s/window)
 # Per-window diagnostics printed: cost0, jac/res/lin/other timing, iter count, prior cond/rank, tr(S⁻¹)/tr(H⁻¹)
 
-# Backflips sliding window (2026-06-12 config: consistent prior + tether + soft ω-gate + z-bias):
+# Backflips sliding window (2026-06-12 config: consistent prior + tether + soft ω-gate + z-bias + stiff gyro):
 ../.venv/bin/python3 validate_live_solver.py backflips_best_velocity --mocap-yaw --cpp --sliding-window \
   --set dt_ori=0.008 --set lambda_ori_accel=0.001 --set lock_gyro_bias=0 \
   --set marg_prior_scale=1.0 --set lambda_pos_init_prior=10 --set omega_soft_sigma=4.0 \
-  --set radar_zbias_fixed=-1.0
-# → settled 1.99m/9.2°, live 2.14m/8.7°, 0.66s/window (Phase 3 was: 2.56m settled, 3.33m live)
+  --set radar_zbias_fixed=-1.0 --set lambda_gyro=400
+# → settled 1.99m/7.15°, live 2.14m/7.62°, ~0.65s/window (Phase 3 was: 2.56m settled, 3.33m live)
+# lambda_gyro=400: backflips-only (ROADMAP Part 5 pivot, 2026-06-12) — ori 9.2→7.15°
+# monotone in λg with ZERO position cost (soft gate absorbs the radar trade-off);
+# saturates ~λg=400. DO NOT raise λ_gyro on racing bags (costs position there, W-runs).
 # omega_soft_sigma: ω-dependent radar down-weighting w=1/(1+(|ω|/ω₀)²) — beats the hard
 # ω-gate on orientation without discarding data (ROADMAP Part 3c)
 # radar_zbias_fixed: per-point elevation bias v_corr = v − b·u_z (ROADMAP Part 4b).
@@ -245,7 +248,7 @@ Per-bag config auto-selected via `bags.yaml` solver_overrides:
 | slow_racing | align=0 λh10 (mapping) | **0.314m / 1.12°** (yaw 0.56°) | 0.442m / 1.98° | 2.06s |
 | fast_racing | scale=1.0 full iter | **0.596m** / 3.35° | **0.697m** / 4.00° | 1.37s |
 | fast_racing | scale=1.0 dt_pos=0.04 | 0.701m / **3.13°** | 0.803m / **3.55°** | **0.37s** |
-| backflips | + soft-gate 4 + z-bias −1.0 | **1.99m** / **9.2°** | **2.14m** / **8.7°** | 0.66s |
+| backflips | + soft-gate 4 + z-bias −1.0 + λg=400 | **1.99m** / **7.15°** | **2.14m** / **7.62°** | 0.65s |
 
 dt_pos was over-dense for fast bags (position plateaus at 40ms, ori improves, iter 28→11).
 Window must stay 3.0s for fast (2.0s → roll/yaw ~11° even with consistent prior — confirmed
