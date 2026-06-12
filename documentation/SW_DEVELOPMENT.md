@@ -259,6 +259,16 @@ integration.
 **Final verdict**: SW backflips ~2.56m/10.87° is the best achievable with a fixed-lag smoother.
 `bags.yaml` `solver_overrides.backflips_best_velocity` retains `dt_ori=0.0008` for batch.
 
+> **CORRECTION (2026-06-12):** `cfg.lambda_pos_init_prior` was never plumbed from
+> the Python driver into the C++ `SolverConfig` (`git log -S` confirms the line
+> never existed; fixed in `validate_live_solver.py:382`). All Phase 3 SW runs —
+> including the documented `--set lambda_pos_init_prior=1000.0` command — silently
+> ran with the tether at the C++ default **0.0**. The Phase 3 results above were
+> therefore produced by `dt_ori=0.008 + lambda_ori_accel=0.001 + marg_prior_scale=0
+> + lock_gyro_bias=0` alone. The "iter=2 / diagonally dominant Hessian" analysis is
+> also affected. Backflips SW deserves a re-run with the now-working tether AND the
+> 2026-06-12 consistent marginalization prior (see `ROADMAP.md`).
+
 ---
 
 ## 8. Phase 2.5: MoCap-Aided Stationary Bias Detection

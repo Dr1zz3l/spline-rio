@@ -54,14 +54,27 @@ cd analysis/
 ../.venv/bin/python3 validate_live_solver.py slow_racing_best_velocity --mocap-yaw --cpp --sliding-window
 ../.venv/bin/python3 validate_live_solver.py fast_racing_best_velocity --mocap-yaw --cpp --sliding-window
 # Default: window=3.0s, stride=0.3s
-# Per-bag marg_prior_scale: slow_racing=1e-7 (per-bag override), fast_racing=2e-4 (default)
-# Avoid 1e-5–1e-6 range: harmful intermediate regime (worse than both extremes)
-# Per-window diagnostics printed: jac/res/lin/other timing, iter count, prior cond/rank, tr(S⁻¹)/tr(H⁻¹)
+# 2026-06-12 consistency fixes (see documentation/ROADMAP.md Part 1 results):
+#   marg_markov_blanket=1 + warm_start_align=1 are new C++ defaults (--set ...=0 for legacy).
+#   With them, marg_prior_scale=1.0 works universally — the old per-bag tuning
+#   (slow=1e-7, fast=2e-4, harmful 1e-5–1e-6 regime) was compensating for a
+#   conditioning/double-counting bug in compute_prior(). Recommended fast config:
+#   --set marg_prior_scale=1.0 --set max_iterations=12 --set lambda_heading=5.0  (~0.8s/window)
+# Per-window diagnostics printed: cost0, jac/res/lin/other timing, iter count, prior cond/rank, tr(S⁻¹)/tr(H⁻¹)
 
-# Backflips sliding window (Phase 3 config — must use --set overrides):
+# Backflips sliding window (2026-06-12 config: consistent prior + tether + soft ω-gate + z-bias):
 ../.venv/bin/python3 validate_live_solver.py backflips_best_velocity --mocap-yaw --cpp --sliding-window \
   --set dt_ori=0.008 --set lambda_ori_accel=0.001 --set lock_gyro_bias=0 \
-  --set marg_prior_scale=0.0 --set lambda_pos_init_prior=1000.0
+  --set marg_prior_scale=1.0 --set lambda_pos_init_prior=10 --set omega_soft_sigma=4.0 \
+  --set radar_zbias_fixed=-1.0
+# → settled 1.99m/9.2°, live 2.14m/8.7°, 0.66s/window (Phase 3 was: 2.56m settled, 3.33m live)
+# omega_soft_sigma: ω-dependent radar down-weighting w=1/(1+(|ω|/ω₀)²) — beats the hard
+# ω-gate on orientation without discarding data (ROADMAP Part 3c)
+# radar_zbias_fixed: per-point elevation bias v_corr = v − b·u_z (ROADMAP Part 4b).
+# DO NOT apply on racing bags — their calibrated pitch_delta (+2°) already absorbs the
+# z-bias for level flight; b=-0.5/-1.0 degrades fast batch 0.76→2.6/5.4m.
+# NOTE: lambda_pos_init_prior was never plumbed before 2026-06-12 (see SW_DEVELOPMENT §7
+# correction); the old Phase 3 command silently ran with tether=0.
 # bags.yaml retains dt_ori=0.0008 for batch; --set dt_ori=0.008 overrides for SW
 
 # Live RIO solver — Python backend (~10 min)
@@ -220,9 +233,24 @@ Per-bag config auto-selected via `bags.yaml` solver_overrides:
 
 | Bag | Settled pos | Settled ori | Live pos | Live vel | Live ori | marg_prior_scale |
 |-----|-------------|-------------|----------|----------|----------|-----------------|
-| slow_racing | 0.218m | 1.57° | **0.393m** | 0.391 m/s | **2.21°** | 1e-7 (per-bag) |
-| fast_racing | 0.804m | 3.10° | **0.877m** | 0.478 m/s | **4.16°** | 2e-4 (default) |
+| slow_racing | 0.225m | 1.57° | **0.336m** | 0.390 m/s | **2.08°** | 1e-7 (per-bag) |
+| fast_racing | 0.726m | 3.19° | **0.829m** | 0.487 m/s | **3.65°** | 2e-4 (default) |
 | backflips¹ | 2.56m | 10.87° | 3.33m | — | 9.33° | 0 (Phase 3 config) |
+
+**2026-06-12 update** (consistency fixes, `documentation/ROADMAP.md` Part 1 results — scale=1.0 universal):
+
+| Bag | Config | Settled pos/ori | Live pos/ori | dt/window |
+|-----|--------|-----------------|--------------|-----------|
+| slow_racing | iter12 λh10 (live) | 0.287m / 1.63° | **0.303m / 1.92°** | **0.86s** |
+| slow_racing | align=0 λh10 (mapping) | **0.314m / 1.12°** (yaw 0.56°) | 0.442m / 1.98° | 2.06s |
+| fast_racing | scale=1.0 full iter | **0.596m** / 3.35° | **0.697m** / 4.00° | 1.37s |
+| fast_racing | scale=1.0 dt_pos=0.04 | 0.701m / **3.13°** | 0.803m / **3.55°** | **0.37s** |
+| backflips | + soft-gate 4 + z-bias −1.0 | **1.99m** / **9.2°** | **2.14m** / **8.7°** | 0.66s |
+
+dt_pos was over-dense for fast bags (position plateaus at 40ms, ori improves, iter 28→11).
+Window must stay 3.0s for fast (2.0s → roll/yaw ~11° even with consistent prior — confirmed
+observability limit, not a prior artifact). Iteration caps must be ≥ natural count for the
+chosen dt_pos (slow@20ms needs ~16; capping at 12 explodes position).
 
 Note: settled vel for slow_racing is 0.886 m/s — eval artifact from near-zero prior causing
 position jumps at stride boundaries in retrospective eval. Real-time live edge is continuous.

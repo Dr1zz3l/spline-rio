@@ -59,3 +59,9 @@ report/*.synctex.gz
 rio_solver_cpp/ceres_vendored_install/
 rio_solver_cpp/build_release/
 lie-spline-experiments/thirdparty/ceres-solver/build_rio/
+
+# Third-party clone (basalt headers source for rio_solver_cpp build)
+lie-spline-experiments/
+# Local session artifacts
+.claude/
+analysis/*.so.bak
