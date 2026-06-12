@@ -884,6 +884,54 @@ SolverResult SlidingWindowSolver::solve_window(
     if (cfg_.dump_system)
         dump_linear_system(problem, dump_blocks, dump_bmap, result.dump_post);
 
+    // ---- Live-edge joint covariance (NEES study, cfg.nees_covariance) ------
+    // ceres::Covariance over the trailing N_POS pos CPs + N_ORI ori knots —
+    // the blocks determining v(t_live), R(t_live).  Tangent-space blocks
+    // (manifold-aware).  Offline use only (~0.1-0.5 s/window).
+    if (cfg_.nees_covariance) {
+        // Active support blocks at the live edge (t_end-eps): pos_index/ori_index
+        // return i0 = first active CP/knot for that time.
+        double u_dummy;
+        int p0 = -1, o0 = -1;
+        traj_.pos_index(t_end - 1e-6, u_dummy, p0);
+        traj_.ori_index(t_end - 1e-6, u_dummy, o0);
+        if (p0 >= pi0 && o0 >= oi0 &&
+            p0 + N_POS - 1 <= pi1 && o0 + N_ORI - 1 <= oi1) {
+            std::vector<const double*> blocks;
+            for (int i = 0; i < N_POS; ++i) blocks.push_back(traj_.pos_cp_data(p0 + i));
+            for (int i = 0; i < N_ORI; ++i) blocks.push_back(traj_.ori_knot_data(o0 + i));
+            std::vector<std::pair<const double*, const double*>> pairs;
+            for (size_t a = 0; a < blocks.size(); ++a)
+                for (size_t b = a; b < blocks.size(); ++b)
+                    pairs.emplace_back(blocks[a], blocks[b]);
+            ceres::Covariance::Options cov_opts;
+            cov_opts.sparse_linear_algebra_library_type = ceres::SUITE_SPARSE;
+            cov_opts.apply_loss_function = true;
+            ceres::Covariance cov(cov_opts);
+            if (cov.Compute(pairs, &problem)) {
+                const int D = 3 * (int)blocks.size();
+                result.nees_cov.setZero(D, D);
+                double buf[9];
+                bool ok = true;
+                for (size_t a = 0; a < blocks.size() && ok; ++a)
+                    for (size_t b = a; b < blocks.size() && ok; ++b) {
+                        ok = cov.GetCovarianceBlockInTangentSpace(blocks[a], blocks[b], buf);
+                        if (!ok) break;
+                        for (int r = 0; r < 3; ++r)
+                            for (int c2 = 0; c2 < 3; ++c2) {
+                                result.nees_cov(3 * a + r, 3 * b + c2) = buf[r * 3 + c2];
+                                result.nees_cov(3 * b + c2, 3 * a + r) = buf[r * 3 + c2];
+                            }
+                    }
+                if (ok) {
+                    result.nees_cov_valid = true;
+                    result.nees_pos_idx0 = p0;
+                    result.nees_ori_idx0 = o0;
+                }
+            }
+        }
+    }
+
     // ---- lock_gyro_bias: post-solve gyro clamp ----------------------------
     // Rank-deficient orientation windows (e.g. backflips at dt_ori=0.0008:
     // 1.25 DoF/gyro-constraint per window) can still move the gyro bias

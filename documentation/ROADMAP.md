@@ -965,6 +965,79 @@ Backflips and slow strictly prefer 4/8; fast mildly prefers 2/4 (+0.16° ori,
 6.31°) backflips point is the knee of the measured vel↔ori Pareto; recovering
 the last 0.45 m/s toward the no-gate 1.80 costs ≥1.3° ori.
 
+### Held-out validation of the universal config (2026-06-12 evening)
+
+Universal config run UNMODIFIED on bags never used in tuning (data-health
+pre-check first: all bags healthy in their configured windows — radar alive
+both halves, full IMU/mocap; the windows already dodge the UART-crash periods).
+
+| bag | tier | settled pos/ori | live pos/ori | live vel |
+|---|---|---|---|---|
+| circle_best_velocity | Mar held-out | 0.69/3.13° | 0.88/4.10° | 0.63 |
+| fast_racing_no_clustering | Mar held-out | **0.38/2.33°** | **0.45/2.90°** | 0.56 |
+| circle (Dec, flipped) | stress | 0.45/8.28° | 0.52/8.76° | 0.52 |
+| circle_fwd (Dec) | stress | 0.58/2.80° | 0.73/3.73° | 0.41 |
+| circle_fast (Dec) | stress | 4.8/77° unflipped → **1.30/6.96° WITH --flip** | — | — |
+| loopings (Dec, flipped) | stress | 4.49/11.3° | 5.21/16.0° | 1.94 |
+| backflips (Dec) | stress | 5.92/**11.5°** | 6.69/**10.7°** | 3.32 |
+
+**Verdict: generalizes.** The Mar held-out flights (same sensors, untouched)
+match or beat the tuning bags (fast_nc beats fast itself). Dec stress tier
+behaves per its known data quality; Dec-backflips ori improves 14.8°→10.7° vs
+its historical best with ZERO tuning (the ω-adaptive gyro transfers).
+**Finding: circle_fast needs the body-frame flip** (77°→7° settled ori) —
+bags.yaml flip set should be re-verified bag-by-bag via validate_physics.
+
+### NEES covariance calibration (4.1, 2026-06-12)
+
+New machinery: `SolverConfig::nees_covariance` → per-window live-edge joint
+covariance via `ceres::Covariance` (tangent-space, marginalization prior
+included) over the active support blocks at t_end; driver `--set nees=1`
+saves (t, vel, quat, Σ 6×6) per window; `nees_eval.py` computes NEES vs
+mocap GT (glitch-masked).
+
+| bag | windows kept | NEES vel (med) | NEES ori (med) | ori inflation |
+|---|---|---|---|---|
+| slow | 49/75 | 1.5 | 1.6 | **×0.7 (mean) — calibrated** |
+| fast | 20/49 | 7.1 | 1.7 | **×0.9 — calibrated** |
+| backflips | 6/50 | 6.4 | 17.4 | ×11.9 (σ ×3.4) — overconfident |
+| circle (pilot) | 6/17 | 4.4 | 4.9 | ×2.1 |
+
+**Headline: the racing ORIENTATION covariance is essentially perfectly
+calibrated** (NEES ≈ dof) — consequence of the weights being effective-noise
+whitening (Part 4a). Velocity is typically calibrated (medians 1.5–7) with
+heavy tails — mean NEES is contaminated by GT-velocity glitch windows (mocap
+FD); the median is the robust statistic. Backflips is ~×3σ overconfident
+(unmodeled flip-time error) and only 6/50 windows survive the GT mask there —
+consistent with the mocap-degradation finding. For the factor-source story:
+emit Σ with per-regime inflation (1× racing, ~3× aggressive), or
+NEES-calibrate online. Caveat: predicted σ ≈ 0.28–0.64 m/s vel, 1.2–1.7° ori.
+
+### Joint b+pitch calibration (4.2, 2026-06-12) — entanglement RESOLVED
+
+3×3 grid on backflips (pitch {26.5,27.5,28.5} × b {−0.5,−1.0,−1.5}) +
+racing verification with pitch LOCKED:
+
+1. **Pitch is a plateau on backflips** (26.5–28.5 indistinguishable; the old
+   25.5→27.5 win was climbing onto it) and **locking pitch=27.5 IMPROVES
+   fast racing** (live pos 0.63→0.50, −21%, ori 3.10→3.24; slow neutral) —
+   27.5° is simply the correct mount angle; the in-solver pitch calibration
+   can be retired (lock_extrinsics=1 + 27.5 globally).
+2. **b is NOT a global antenna constant.** Racing with locked pitch EXPLODES
+   under explicit b (fast: b=−0.5 → 3.3 m, b=−1.0 → 6.7 m) — if the z-bias
+   were physical and antenna-fixed, level flight would tolerate it. On
+   backflips b keeps improving monotonically through −1.5 (1.51 live pos,
+   4.98 settled ori) to −2.0 (1.41, 4.83) — far beyond the WLS-measured
+   −0.5 — so it is a FLIP-REGIME radar error proxy (likely intra-frame
+   motion / attitude-dependent Doppler bias), not an elevation bias.
+   Keep b=−1.5 for backflips (don't chase −2+ without a mechanism), b=0
+   racing. The old "+2° pitch absorbs z-bias" story is retired: pitch was
+   just being estimated correctly all along.
+
+**Config consequence**: fast = universal + lock_extrinsics + pitch 27.5 + b=0
+→ **0.447/2.66 settled, 0.501/3.24 live, vel 0.41** (new fast position best);
+backflips b → −1.5 → 1.64/4.98 settled, 1.51/6.29 live, vel 2.29.
+
 ### Asymmetric ω-gate split (`radar_pos_split`, branch radar-pos-split, 2026-06-12)
 
 Position-during-flip information experiment: new `RadarPosOnlyAnalyticFactor`

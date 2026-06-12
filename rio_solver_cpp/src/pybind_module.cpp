@@ -179,6 +179,7 @@ PYBIND11_MODULE(rio_solver, m) {
         .def_readwrite("lambda_preint_p", &SolverConfig::lambda_preint_p)
         .def_readwrite("preint_hz",       &SolverConfig::preint_hz)
         .def_readwrite("dump_system",     &SolverConfig::dump_system)
+        .def_readwrite("nees_covariance", &SolverConfig::nees_covariance)
         .def_readwrite("use_banded_schur", &SolverConfig::use_banded_schur)
         .def_readwrite("marg_markov_blanket", &SolverConfig::marg_markov_blanket)
         .def_readwrite("warm_start_align",    &SolverConfig::warm_start_align)
@@ -290,7 +291,11 @@ PYBIND11_MODULE(rio_solver, m) {
             })
         // ---- dump_system snapshots ------------------------------------------
         .def_readonly("dump_pre",  &SolverResult::dump_pre)
-        .def_readonly("dump_post", &SolverResult::dump_post);
+        .def_readonly("dump_post", &SolverResult::dump_post)
+        .def_readonly("nees_cov_valid", &SolverResult::nees_cov_valid)
+        .def_readonly("nees_pos_idx0",  &SolverResult::nees_pos_idx0)
+        .def_readonly("nees_ori_idx0",  &SolverResult::nees_ori_idx0)
+        .def_readonly("nees_cov",       &SolverResult::nees_cov);
 
     // ---- Main solve() interface (numpy-friendly) ----------------------------
     m.def("solve",

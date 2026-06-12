@@ -234,6 +234,11 @@ struct SolverConfig {
     // Default: false (no overhead in production).
     bool dump_system{false};
 
+    // Compute the live-edge joint covariance per window via ceres::Covariance
+    // (SolverResult::nees_cov; offline NEES consistency study — adds
+    // ~0.1-0.5 s/window, not for real-time use).
+    bool nees_covariance{false};
+
     // [Session 2] Use BandedSchurSolver (dense Eigen LDLT skeleton) instead of
     // SPARSE_NORMAL_CHOLESKY.  Slower but verifies the custom solver hook.
     // Default: false (use SuiteSparse/EigenSparse as before).
@@ -411,6 +416,16 @@ struct SolverResult {
     double          window_cov_trace{0.0};      // tr(H_bb^{-1}): window-only
     Eigen::MatrixXd boundary_covariance;        // S^{-1},  d_b × d_b
     Eigen::MatrixXd window_covariance;          // H_bb^{-1}, d_b × d_b
+
+    // ---- Live-edge covariance for the NEES study (SolverConfig::nees_covariance)
+    // Joint tangent-space covariance (ceres::Covariance, SPARSE_QR) of the
+    // trailing N_POS position CPs + N_ORI orientation knots of the window —
+    // the blocks that determine v(t_live) and R(t_live).
+    // Layout: [pos CP (nees_pos_idx0..+N_POS-1) ×3 | ori knot (nees_ori_idx0..+N_ORI-1) ×3]
+    bool            nees_cov_valid{false};
+    int             nees_pos_idx0{-1};          // global index of first included pos CP
+    int             nees_ori_idx0{-1};          // global index of first included ori knot
+    Eigen::MatrixXd nees_cov;                   // (3·N_POS+3·N_ORI)² tangent covariance
 
     // ---- Linear system dump (populated when SolverConfig::dump_system = true) --
     // Two snapshots: warm-start (pre-solve) and converged (post-solve).

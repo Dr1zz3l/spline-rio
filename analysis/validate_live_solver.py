@@ -395,6 +395,7 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
     cfg.lambda_gyro_omega_sigma = solver_cfg.get('lambda_gyro_omega_sigma', 0.0)
     cfg.lambda_gyro_omega_pow   = solver_cfg.get('lambda_gyro_omega_pow', 2.0)
     cfg.radar_zbias_fixed       = solver_cfg.get('radar_zbias_fixed', 0.0)
+    cfg.nees_covariance         = bool(solver_cfg.get('nees', 0))
     cfg.optimize_pitch_only     = solver_cfg.get('optimize_pitch_only', True)
     cfg.lambda_extrinsic_prior  = solver_cfg.get('lambda_extrinsic_prior', 10.0)
     cfg.max_iterations          = solver_cfg.get('max_iterations', 400)
@@ -459,6 +460,10 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
 
     t_solve = t_data_start + window_duration
     n_windows = 0
+
+    # NEES study (--set nees=1): collect per-window live-edge covariances
+    NEES_COLLECT = bool(solver_cfg.get('nees', 0))
+    NEES_ENTRIES = []
 
     # Live leading-edge snapshots — one per window, over the stride zone
     _live_eval_dt  = 0.02   # 50 Hz grid → ~15 pts per 0.3 s stride
@@ -555,8 +560,73 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
             snap_ori_vals = np.array([snap_ori_sp.evaluate(t - t_ref)      for t in t_eval_snap])
             live_snapshots.append({'t': t_eval_snap, 'pos': snap_pos_vals, 'vel': snap_vel_vals, 'ori': snap_ori_vals})
 
+        # ---- NEES collection (--set nees=1): live-edge marginal covariance --
+        # Sigma of (v_world(t_live), right-tangent ori(t_live)) via the
+        # ceres::Covariance of the trailing pos CPs + ori knots (result.nees_cov,
+        # tangent layout [6 pos CP x3 | 4 ori knot x3]).
+        if NEES_COLLECT and getattr(result, 'nees_cov_valid', False) and len(t_eval_snap) > 0:
+            try:
+                C = np.array(result.nees_cov)
+                p0g, o0g = result.nees_pos_idx0, result.nees_ori_idx0
+                # Evaluate at t_end - eps: same basis support as the C++ block
+                # selection (pos_index/ori_index at t_end - 1e-6).
+                t_live = float(t_w_end) - 1e-4
+                t_rel  = t_live - t_ref
+                kp = snap_pos_sp.find_knot_span(t_rel)
+                deg_p = snap_pos_sp.degree
+                bN = snap_pos_sp.basis_functions(t_rel, kp, derivative=1)
+                A = np.zeros((6, C.shape[0]))
+                ok = True
+                for l in range(deg_p + 1):
+                    li = (kp - deg_p + l) - p0g        # local pos-CP index in C
+                    if not (0 <= li < 6):
+                        ok = False; break
+                    for ax in range(3):
+                        A[ax, 3 * li + ax] = bN[l]
+                if ok:
+                    R0 = snap_ori_sp.evaluate(t_rel)
+                    k_ori, _, _ = snap_ori_sp._cumulative_basis(t_rel)
+                    act = [k_ori - 3 + l for l in range(4)]
+                    eps = 1e-6
+                    for l, gi in enumerate(act):
+                        li = gi - o0g                  # local ori-knot index in C
+                        if not (0 <= li < 4):
+                            ok = False; break
+                        Rk = Rotation.from_quat(snap_ori_quats[gi]).as_matrix()
+                        for ax in range(3):
+                            dv = np.zeros(3); dv[ax] = eps
+                            q_save = snap_ori_quats[gi].copy()
+                            snap_ori_quats[gi] = Rotation.from_matrix(
+                                Rk @ Rotation.from_rotvec(dv).as_matrix()).as_quat()
+                            sp_p = CumulativeSO3BSpline.from_rotation_samples(
+                                Rotation.from_quat(snap_ori_quats).as_matrix(),
+                                dt=dt_ori, t_ref=t_ref)
+                            R_p = sp_p.evaluate(t_rel)
+                            snap_ori_quats[gi] = q_save
+                            A[3 + np.arange(3), 18 + 3 * li + ax] = \
+                                Rotation.from_matrix(R0.T @ R_p).as_rotvec() / eps
+                if ok:
+                    NEES_ENTRIES.append({
+                        't': t_live,
+                        'vel': snap_pos_sp(t_rel, derivative=1),
+                        'quat': Rotation.from_matrix(R0).as_quat(),
+                        'Sigma': A @ C @ A.T})
+            except Exception as _e:
+                print(f"  [nees] window {n_windows}: skipped ({_e})")
+        elif NEES_COLLECT and not getattr(result, 'nees_cov_valid', False) and n_windows < 2:
+            print(f"  [nees] window {n_windows}: nees_cov invalid (Covariance.Compute failed?)")
+
         t_solve += window_stride
         n_windows += 1
+
+    if NEES_COLLECT and NEES_ENTRIES:
+        _nees_out = Path('../plots/nees_last_run.npz')
+        np.savez(_nees_out,
+                 t=np.array([e['t'] for e in NEES_ENTRIES]),
+                 vel=np.array([e['vel'] for e in NEES_ENTRIES]),
+                 quat=np.array([e['quat'] for e in NEES_ENTRIES]),
+                 Sigma=np.array([e['Sigma'] for e in NEES_ENTRIES]))
+        print(f"  [nees] saved {len(NEES_ENTRIES)} window covariances -> {_nees_out}")
 
     nominal_pitch_sw = extrinsics_cfg.get('rotation_euler_deg', [180.0, 25.5, 0.0])[1]
     opt_pitch_sw = result.extrinsic_euler_deg[1] if n_windows > 0 else nominal_pitch_sw

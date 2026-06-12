@@ -64,8 +64,12 @@ UNIV="--set marg_prior_scale=1.0 --set lambda_gyro_omega_sigma=4.0 --set lambda_
 #  and slow live ori 2.17 vs 1.97 — see ROADMAP "Velocity as a primary metric")
 # Per-bag EXTRAS (grids = platform/dynamics params; the rest see ROADMAP):
 ../.venv/bin/python3 validate_live_solver.py fast_racing_best_velocity --mocap-yaw --cpp --sliding-window \
-  $UNIV --set dt_pos=0.04 --set dt_ori=0.016
-# → 0.544/2.55° settled, 0.630m/3.10° live, vel 0.39, drift 1.4%, ~0.35s/window
+  $UNIV --set dt_pos=0.04 --set dt_ori=0.016 --set lock_extrinsics=1 \
+  --set-ext 'rotation_euler_deg=[180.0,27.5,0.0]'
+# → 0.447/2.66° settled, 0.501m/3.24° live, vel 0.41, ~0.35s/window
+# Locked pitch 27.5° beats in-solver pitch calibration (ROADMAP 4.2: pitch was a
+# plateau; locking improves fast pos −21%). DO NOT add radar_zbias_fixed on racing
+# even with locked pitch (b=−0.5 → 3.3m): b is a flip-regime proxy, not physical.
 ../.venv/bin/python3 validate_live_solver.py slow_racing_best_velocity --mocap-yaw --cpp --sliding-window \
   $UNIV --set max_iterations=12 --set lambda_heading=10.0
 # → live: 0.303m/1.97°, vel 0.46, drift 0.63%, 0.70s
@@ -77,8 +81,12 @@ UNIV="--set marg_prior_scale=1.0 --set lambda_gyro_omega_sigma=4.0 --set lambda_
 # Backflips sliding window (2026-06-12, universal weighting + backflips extras):
 ../.venv/bin/python3 validate_live_solver.py backflips_best_velocity --mocap-yaw --cpp --sliding-window \
   $UNIV --set dt_ori=0.008 --set lock_gyro_bias=0 --set lambda_pos_init_prior=0.5 \
-  --set radar_zbias_fixed=-1.0 --set-ext 'rotation_euler_deg=[180.0,27.5,0.0]'
-# → settled 1.79m/5.20°, live 1.64m/6.31°, vel 2.25, drift 3.0%, ~0.6s/window
+  --set radar_zbias_fixed=-1.5 --set-ext 'rotation_euler_deg=[180.0,27.5,0.0]'
+# → settled 1.64m/4.98°, live 1.51m/6.29°, vel 2.29, ~0.6s/window
+# b=−1.5 (ROADMAP 4.2): b is a FLIP-REGIME radar-error proxy, not a physical
+# elevation bias (racing explodes under any b even with locked pitch; backflips
+# improves monotonically past the WLS-measured −0.5). Curve continues to −2.0
+# (1.41 live pos) — capped at −1.5 pending a mechanism.
 #   (session start: 1.99/9.22°, live 2.14/8.67°, vel 1.80; Phase 3: 2.56m settled /
 #   3.33m live).  λh=10 comes via bags.yaml.  NOTE the vel↔ori gate trade (ROADMAP
 #   "Velocity as a primary metric"): no-gates λg400 era gave vel 1.80 at ori 7.62°.
@@ -267,10 +275,10 @@ position sensor exists; position = integral of velocity):
 
 | Bag | Per-bag extras | Live vel | Live ori | Live pos (drift) | Settled pos/ori | dt/win |
 |-----|--------|---------|---------|------------------|-----------------|--------|
-| fast_racing | grids .04/.016 | **0.39** | 3.10° | 0.63m (1.4%) | 0.544/2.55° | **0.35s** |
+| fast_racing | grids .04/.016 + locked p27.5 | **0.41** | 3.24° | **0.50m** (1.1%) | **0.447/2.66°** | **0.35s** |
 | slow_racing (live) | iter12 + λh10 | **0.46** | **1.97°** | 0.30m (0.63%) | 0.286/1.58° | 0.70s |
 | slow_racing (mapping) | none (full iter) | 0.36 | — | — | **0.281/1.22°** (yaw 0.71°) | 1.64s |
-| backflips | tether.5 + z-bias + p27.5 + lgb0 | **2.25** | **6.31°** | **1.64m (3.0%)** | 1.786/5.20° | ~0.6s |
+| backflips | tether.5 + b−1.5 + p27.5 + lgb0 | **2.29** | **6.29°** | **1.51m** (2.8%) | **1.64/4.98°** | ~0.6s |
 
 Gates 2/4 variant (fast-ori-priority): fast 0.566/2.94° live, 0.493/2.39 settled;
 backflips vel 2.59. Pre-universal specialized bests: fast 0.639/2.55|0.728/2.88;
