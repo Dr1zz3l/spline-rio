@@ -143,6 +143,16 @@ struct SolverConfig {
     // spline at build time.  0.0 (default): disabled.
     double accel_soft_sigma{0.0};
 
+    // Asymmetric ω-gate split (ROADMAP Part 5, position-during-flip
+    // information): when the radar soft gate down-weights the full factor to
+    // w, ALSO add a position-only radar factor (orientation/ω frozen at
+    // warm-start values → linear in pos CPs) with weight
+    // (1−w)·radar_pos_split.  Radar velocity information then keeps flowing
+    // into position during flips without dragging orientation.
+    // Requires omega_soft_sigma > 0.  0.0 (default): disabled; 1.0 =
+    // complementary split.  SW solver only.
+    double radar_pos_split{0.0};
+
     // Fixed radar elevation (z) bias correction (ROADMAP Part 4 / z-bias).
     // The IWR6843's 2-TX elevation diversity produces a systematic per-point
     // Doppler error proportional to the ray's sensor-frame z component:

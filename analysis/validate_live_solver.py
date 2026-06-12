@@ -386,6 +386,7 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
     cfg.omega_gate_threshold    = solver_cfg.get('omega_gate_threshold', 0.0)
     cfg.omega_soft_sigma        = solver_cfg.get('omega_soft_sigma', 0.0)
     cfg.accel_soft_sigma        = solver_cfg.get('accel_soft_sigma', 0.0)
+    cfg.radar_pos_split         = solver_cfg.get('radar_pos_split', 0.0)
     cfg.radar_zbias_fixed       = solver_cfg.get('radar_zbias_fixed', 0.0)
     cfg.optimize_pitch_only     = solver_cfg.get('optimize_pitch_only', True)
     cfg.lambda_extrinsic_prior  = solver_cfg.get('lambda_extrinsic_prior', 10.0)

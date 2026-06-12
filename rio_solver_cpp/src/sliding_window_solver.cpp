@@ -391,14 +391,14 @@ SolverResult SlidingWindowSolver::solve_window(
         // ω-gate (hard skip) and/or ω-dependent noise inflation (soft gate).
         // Both evaluate |ω| from the warm-start spline at problem-build time.
         double w_omega = 1.0;
+        Sophus::SO3d R_ws;            // warm-start rotation at frame time
+        Eigen::Vector3d omega_ws = Eigen::Vector3d::Zero();
         if (cfg_.omega_gate_threshold > 0.0 || cfg_.omega_soft_sigma > 0.0) {
             const double* kp[N_ORI];
             for (int k = 0; k < N_ORI; ++k) kp[k] = traj_.ori_knot_data(ori0 + k);
-            Sophus::SO3d dummy_R;
-            Eigen::Vector3d omega;
             CeresSplineHelper<N_ORI>::template evaluate_lie<double, Sophus::SO3>(
-                kp, u_ori, inv_dt_ori, &dummy_R, &omega, nullptr);
-            const double w_norm = omega.norm();
+                kp, u_ori, inv_dt_ori, &R_ws, &omega_ws, nullptr);
+            const double w_norm = omega_ws.norm();
             if (cfg_.omega_gate_threshold > 0.0 && w_norm > cfg_.omega_gate_threshold)
                 continue;
             if (cfg_.omega_soft_sigma > 0.0) {
@@ -441,6 +441,25 @@ SolverResult SlidingWindowSolver::solve_window(
                     new ceres::HuberLoss(cfg_.huber_delta), w_omega,
                     ceres::TAKE_OWNERSHIP);
             problem.AddResidualBlock(cost, loss, params);
+
+            // Asymmetric split: complementary position-only radar factor with
+            // orientation/ω frozen at warm-start (see radar_pos_split docs).
+            if (cfg_.radar_pos_split > 0.0 && w_omega < 1.0) {
+                const double w_split = (1.0 - w_omega) * cfg_.radar_pos_split;
+                if (w_split > 1e-6) {
+                    std::vector<double*> pparams;
+                    for (int k = 0; k < N_POS; ++k)
+                        pparams.push_back(traj_.pos_cp_data(pos0 + k));
+                    auto* pcost = new analytic::RadarPosOnlyAnalyticFactor(
+                        u_sensor, v_meas_c, u_pos, inv_dt_pos,
+                        R_ws, omega_ws, R_radar_to_body, t_body_sensor);
+                    problem.AddResidualBlock(pcost,
+                        new ceres::ScaledLoss(
+                            new ceres::HuberLoss(cfg_.huber_delta), w_split,
+                            ceres::TAKE_OWNERSHIP),
+                        pparams);
+                }
+            }
         }
     }
 

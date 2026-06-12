@@ -243,5 +243,76 @@ private:
     Sophus::SO3d R_radar_to_body_;
 };
 
+
+// ============================================================================
+// RadarPosOnlyAnalyticFactor  (asymmetric ω-gate split: orientation frozen)
+// ============================================================================
+// Same Doppler model as RadarAnalyticFactor but with R(t), ω(t) FROZEN at
+// their warm-start values (evaluated at problem-build time).  The residual is
+// then LINEAR in the position CPs: the radar's velocity information flows
+// into position without dragging the orientation knots — the complementary
+// half of the ω soft gate (radar_pos_split): the full factor carries weight
+// w = 1/(1+(|ω|/ω₀)²), this factor carries (1−w)·radar_pos_split.
+// Accuracy caveat: the velocity projection is only as good as the warm-start
+// orientation at that time (~5–7° mid-flip ⇒ ~0.1·|v| systematic), which is
+// well below the backflips radar noise core (2.47 m/s).
+// Parameter blocks: [0..N_POS-1] position CPs (3 each).
+class RadarPosOnlyAnalyticFactor : public ceres::CostFunction {
+public:
+    RadarPosOnlyAnalyticFactor(const Eigen::Vector3d& u_sensor,
+                               double v_meas,
+                               double u_pos, double inv_dt_pos,
+                               const Sophus::SO3d& R_ws,
+                               const Eigen::Vector3d& omega_ws,
+                               const Sophus::SO3d& R_radar_to_body,
+                               const Eigen::Vector3d& t_body_sensor)
+        : v_meas_(v_meas), u_pos_(u_pos), inv_dt_pos_(inv_dt_pos),
+          R_ws_(R_ws), omega_ws_(omega_ws), t_body_sensor_(t_body_sensor)
+    {
+        u_body_ = R_radar_to_body.matrix() * u_sensor;
+        set_num_residuals(1);
+        for (int i = 0; i < N_POS; ++i) mutable_parameter_block_sizes()->push_back(3);
+    }
+
+    bool Evaluate(double const* const* params,
+                  double* residuals,
+                  double** jacobians) const override
+    {
+        using Vec3 = Eigen::Vector3d;
+        using Helper = CeresSplineHelper<N_POS>;
+        using VecNP  = Eigen::Matrix<double, N_POS, 1>;
+
+        VecNP p1;
+        Helper::template baseCoeffsWithTime<1>(p1, u_pos_);
+        const VecNP v_coeff = inv_dt_pos_ * Helper::blending_matrix_ * p1;
+        Vec3 v_world = Vec3::Zero();
+        for (int i = 0; i < N_POS; ++i)
+            v_world += v_coeff[i] * Eigen::Map<const Vec3>(params[i]);
+
+        const auto quat = R_ws_.unit_quaternion();
+        const sym::Rot3d sym_R(Eigen::Vector4d(quat.x(), quat.y(), quat.z(), quat.w()));
+        Eigen::Matrix<double, 1, 3> J_v;
+        Eigen::Matrix<double, 1, 3>* const nullj = nullptr;
+        residuals[0] = sym::RadarSensorJacWithJacobians012(
+            v_world, sym_R, omega_ws_, u_body_, t_body_sensor_, v_meas_, 1e-10,
+            jacobians ? &J_v : nullj, nullj, nullj)[0];
+
+        if (!jacobians) return true;
+        for (int i = 0; i < N_POS; ++i) {
+            if (!jacobians[i]) continue;
+            Eigen::Map<Eigen::Matrix<double, 1, 3, Eigen::RowMajor>>(jacobians[i]).noalias()
+                = v_coeff[i] * J_v;
+        }
+        return true;
+    }
+
+private:
+    Eigen::Vector3d u_body_;       // pre-rotated bearing (constant per measurement)
+    double v_meas_, u_pos_, inv_dt_pos_;
+    Sophus::SO3d R_ws_;            // warm-start rotation at measurement time (frozen)
+    Eigen::Vector3d omega_ws_;     // warm-start body rate (frozen; lever-arm term)
+    Eigen::Vector3d t_body_sensor_;
+};
+
 }  // namespace analytic
 }  // namespace rio

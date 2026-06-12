@@ -815,6 +815,41 @@ combo2: 0.54 s/window. tether=0.25 variant = live-position priority
 7. Huber on gyro (small C++; DEMOTED — λg saturation 400→1000 suggests gyro
    weighting already plateaued).
 
+### Asymmetric ω-gate split (`radar_pos_split`, branch radar-pos-split, 2026-06-12)
+
+Position-during-flip information experiment: new `RadarPosOnlyAnalyticFactor`
+(R(t), ω(t) frozen at warm-start → residual LINEAR in pos CPs, zero
+orientation Jacobian) added with complementary weight (1−w)·split wherever the
+soft gate reduces the full factor to w. SW-only; marginalization needs no
+changes (parameter-block selection covers it). Parity: split=0 bit-identical ✓.
+
+| split | settled pos/ori | live pos/ori |
+|---|---|---|
+| 0 (= operating point) | 1.804/5.29 | 1.766/6.37 |
+| 0.5 | 1.802/5.27 | 1.707/6.59 |
+| 1.0 | 1.815/5.40 | 1.684/6.73 |
+| 2.0 | 1.805/5.63 | 1.651/6.95 |
+
+**Findings:**
+1. The mechanism WORKS: live pos improves monotonically (−11.5 cm at split=2)
+   and the multi-view plot at split=2 shows loop-frequency petals appearing in
+   the X-Y settled track + a better-centered z-band (vs the featureless oval
+   at split=0) — radar Doppler during flips DOES carry loop-scale position
+   information, and the split delivers it without an orientation Jacobian.
+2. But the recovered structure is RAGGED, not clean circles — consistent with
+   the during-flip radar noise core (2.47 m/s vs the ~1 m-radius, 0.7 s-period
+   loops needing sustained ~1 m/s velocity accuracy). Data-quality-limited.
+3. Orientation degrades monotonically anyway (live 6.37→6.95° at split 0→2)
+   despite the zero ori-Jacobian: the injected (noisy) position couples back
+   into orientation through the accel factor (R links pos'' and z_acc).
+4. **Verdict: refined sensor-limitation.** The estimator was NOT discarding
+   usable information wholesale — the remaining loop-geometry gap is
+   during-flip radar data quality (Doppler noise at aggressive attitudes).
+   Not adopted as default (ori is the priority metric); `radar_pos_split=0.5`
+   documented as a mild live-pos-priority variant (−6 cm / +0.2° live).
+   Paper framing: the split factor is a clean ablation showing where the
+   information limit lies.
+
 **Tier 2 — measurement honesty:**
 8. Quantify mocap GT error during flips (12% occlusion-masked samples at flip
    peaks, FD clipping ~13%) — may show the true floor < 7°; paper caveat
