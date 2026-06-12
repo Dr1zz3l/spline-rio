@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 # --- 1. Baseline code (pinned for reproducibility) --------------------------
-RIO_COMMIT="${RIO_COMMIT:-master}"   # TODO pin to exact hash after first successful build
+RIO_COMMIT="${RIO_COMMIT:-dcf0bc9}"  # pinned 2026-06-12 (origin/main)
 if [ ! -d rio ]; then
   git clone --recursive https://github.com/christopherdoer/rio.git
 fi
