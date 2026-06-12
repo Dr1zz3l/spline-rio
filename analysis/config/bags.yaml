@@ -13,6 +13,22 @@ bags:
 
 # Per-bag solver parameter overrides. Applied after solver_cpp.yaml, before --set.
 # Use for bags that need different spline configs (e.g. backflips need dense ori knots).
+# Per-bag extrinsics overrides (time offsets are per-DAY calibration).
+# Dec-2025 bags: validate_physics cross-correlation gives radar_imu_offset
+# ≈ 0.073 s and imu_mocap_offset ≈ 0.020 s (vs 0.135 / 0.015 calibrated on
+# the Mar-2026 day). At backflip rates (10 rad/s) the 60 ms error injects
+# ~35° of orientation error into every radar factor.
+extrinsics_overrides:
+  backflips:
+    radar_imu_offset_sec: 0.0733
+    imu_mocap_offset_sec: 0.0200
+  # backflips_best_velocity: TESTED radar_imu_offset_sec=0.1067 (this bag's
+  # cross-corr best fit, vs global 0.135) — REVERTED: position degraded
+  # 2.06→2.79 m, ori ~par (9.56→9.35 live). Cross-corr offset estimates
+  # scatter ±20-30 ms on aggressive bags (slow_racing fits 0.148, this bag
+  # 0.107, same day). Offset refinement needs in-solver joint estimation
+  # (t_d parameter), not config tweaks. See ROADMAP.md.
+
 solver_overrides:
   slow_racing_best_velocity:
     marg_prior_scale: 1.0e-7  # near-zero prior: windows self-sufficient; improves live ori/vel/pos

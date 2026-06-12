@@ -245,14 +245,21 @@ SolverResult solve(
         // ω-gate: skip this frame if body angular rate exceeds threshold.
         // Evaluated from the current spline state (not inside the functor),
         // so this is a fixed gate at problem-build time.
-        if (cfg.omega_gate_threshold > 0.0) {
+        double w_omega = 1.0;
+        if (cfg.omega_gate_threshold > 0.0 || cfg.omega_soft_sigma > 0.0) {
             const double* kp[N_ORI];
             for (int i = 0; i < N_ORI; ++i) kp[i] = traj.ori_knot_data(ori0 + i);
             Sophus::SO3d dummy_R;
             Eigen::Vector3d omega;
             CeresSplineHelper<N_ORI>::template evaluate_lie<double, Sophus::SO3>(
                 kp, u_ori, inv_dt_ori, &dummy_R, &omega, nullptr);
-            if (omega.norm() > cfg.omega_gate_threshold) continue;
+            const double w_norm = omega.norm();
+            if (cfg.omega_gate_threshold > 0.0 && w_norm > cfg.omega_gate_threshold)
+                continue;
+            if (cfg.omega_soft_sigma > 0.0) {
+                const double q = w_norm / cfg.omega_soft_sigma;
+                w_omega = 1.0 / (1.0 + q * q);   // sigma_eff^2 = sigma0^2 (1 + q^2)
+            }
         }
 
         for (const auto& pt : frame.points) {
@@ -261,6 +268,7 @@ SolverResult solve(
             if (range < cfg.min_range) continue;
 
             Eigen::Vector3d u_sensor(pt.x / range, pt.y / range, pt.z / range);
+            const double v_meas_c = pt.v - cfg.radar_zbias_fixed * u_sensor.z();
 
             // Build parameter block list (shared by both functor variants)
             std::vector<double*> param_blocks;
@@ -274,19 +282,25 @@ SolverResult solve(
             if (optimize_ext) {
                 param_blocks.push_back(traj.pitch_delta_data());
                 cost = make_radar_with_pitch_cost(
-                    u_sensor, pt.v,
+                    u_sensor, v_meas_c,
                     u_ori, inv_dt_ori,
                     u_pos, inv_dt_pos,
                     R_radar_to_body, t_body_sensor);
             } else {
                 cost = make_radar_cost(
-                    u_sensor, pt.v,
+                    u_sensor, v_meas_c,
                     u_ori, inv_dt_ori,
                     u_pos, inv_dt_pos,
                     R_radar_to_body, t_body_sensor);
             }
 
-            problem.AddResidualBlock(cost, huber_loss, param_blocks);
+            // Soft gate: per-frame ScaledLoss around an owned Huber.
+            ceres::LossFunction* loss = huber_loss;
+            if (w_omega < 1.0)
+                loss = new ceres::ScaledLoss(
+                    new ceres::HuberLoss(cfg.huber_delta), w_omega,
+                    ceres::TAKE_OWNERSHIP);
+            problem.AddResidualBlock(cost, loss, param_blocks);
         }
     }
 
@@ -513,21 +527,12 @@ SolverResult solve(
         Eigen::Matrix<double, 6, 1> b0;
         for (int i = 0; i < 6; ++i) b0[i] = init_biases[i];
 
-        auto* f_b = new BiasPriorFunctor(b0);
-        std::vector<int> sizes = {6};
-
-        // Accel bias prior (first 3)
-        // Gyro bias prior (last 3)
-        // We apply them together with separate weights by adding 2 factors
-        // using a selection. For simplicity, add one combined factor with
-        // geometric mean weight.
-        // TODO: split into separate accel/gyro blocks if weight difference matters.
+        // Per-component weights baked into the residual (no ScaledLoss):
+        // accel components get sqrt(lambda_ba), gyro components sqrt(lambda_bg).
+        auto* f_b = new BiasPriorFunctor(b0, cfg.lambda_bias_prior_accel,
+                                             cfg.lambda_bias_prior_gyro);
         auto* cost = make_auto_cost(f_b, 6, {6});
-
-        // Use lambda_bias_prior_accel for now (gyro usually same)
-        double w = std::sqrt(cfg.lambda_bias_prior_accel * cfg.lambda_bias_prior_gyro);
-        auto* loss = new ceres::ScaledLoss(nullptr, w, ceres::TAKE_OWNERSHIP);
-        problem.AddResidualBlock(cost, loss, traj.bias_data());
+        problem.AddResidualBlock(cost, nullptr, traj.bias_data());
     }
 
     // ---- Extrinsic pitch prior -----------------------------------------------

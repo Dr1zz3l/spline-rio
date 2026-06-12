@@ -122,6 +122,28 @@ struct SolverConfig {
     // 0.0 (default): disabled. Suggested starting point for backflips: 5.0 rad/s.
     double omega_gate_threshold{0.0};
 
+    // ω-dependent radar noise inflation ("soft gate", ROADMAP Part 3 item 2).
+    // Physical motivation: a radar frame integrates over ~tens of ms; at body
+    // rate ω the scene smears by ω·T_frame (≈17° at 10 rad/s), so the
+    // single-timestamp Doppler model error grows with |ω|.  Instead of
+    // discarding frames (hard gate), down-weight them continuously:
+    //   σ_eff²(ω) = σ₀²·(1 + (|ω|/ω₀)²)  ⇒  weight w = 1/(1 + (|ω|/ω₀)²)
+    // applied as a ScaledLoss around the Huber loss, with |ω| evaluated from
+    // the initial/warm-start spline at problem-build time (like the gate).
+    // omega_soft_sigma = ω₀ in rad/s; weight halves at |ω| = ω₀.
+    // 0.0 (default): disabled. Suggested sweep for backflips: {2, 4, 8}.
+    double omega_soft_sigma{0.0};
+
+    // Fixed radar elevation (z) bias correction (ROADMAP Part 4 / z-bias).
+    // The IWR6843's 2-TX elevation diversity produces a systematic per-point
+    // Doppler error proportional to the ray's sensor-frame z component:
+    //   v_corr = v_meas - radar_zbias_fixed * u_sensor.z()
+    // FINDINGS: WLS z-velocity biased -0.5..-0.65 m/s. Applied at problem
+    // build (no new parameter). Sign/magnitude empirical — sweep ±0.5.
+    // Discriminates antenna-fixed vs scene-driven bias: antenna-fixed should
+    // stop the backflips z-sink; if the sink persists the bias is scene-driven.
+    double radar_zbias_fixed{0.0};
+
     // Optimizer
     int max_iterations{40};
     int num_threads{0};   // 0 = auto (std::thread::hardware_concurrency())
@@ -189,6 +211,74 @@ struct SolverConfig {
     //
     // 0.0 (default): disabled, S used as-is.
     double marg_prior_eig_clip{0.0};
+
+    // ---- Markov-blanket marginalization (consistency fix, ROADMAP §1.1) ------
+    // When true, compute_prior() marginalizes the FULL out-of-next-window set
+    // (previous-boundary "leading" blocks + stride-zone blocks) and includes
+    // ONLY residuals that touch a marginalized block.  By the B-spline locality
+    // property, such residuals' support is automatically contained in
+    // marg ∪ boundary, so the Schur complement is a true marginal — no
+    // conditioning on interior states, no double counting of factors that are
+    // re-added in the next window (previously: ALL residuals touching boundary
+    // or bias — i.e. every IMU factor in the window — were baked into S and
+    // then re-added, making the prior overconfident by orders of magnitude;
+    // that is why marg_prior_scale had to be ~2e-4).
+    // Residuals whose support is not closed (touch a free block outside
+    // marg ∪ boundary ∪ bias, e.g. the ~1 ms pos/ori grid-mismatch sliver, or
+    // pitch_delta) are handled per marg_cond_pitch below / dropped.
+    // false: legacy behaviour (conditioning + double counting + tiny scale).
+    bool marg_markov_blanket{true};
+
+    // ---- Live-edge warm-start alignment (ROADMAP §1.2) -----------------------
+    // New CPs/knots entering the window each stride hold P1-P3 init values
+    // dead-reckoned from t=0, which drift away from the solved trajectory over
+    // the flight.  The resulting seam discontinuity forces LM to drag the new
+    // segment across the gap every window (observed iter≈28 regardless of warm
+    // start).  When true, the entering segment is rigidly aligned to the solved
+    // boundary: pos shifted by (solved - init) at the seam CP, ori left-
+    // multiplied by ΔR = R_solved(seam) · R_init(seam)^T.  This preserves the
+    // locally-accurate P1-P3 shape while removing accumulated drift.
+    // false: legacy behaviour (stale absolute init values).
+    bool warm_start_align{true};
+
+    // ---- Yaw gauge pre-alignment (ROADMAP next-steps) -------------------------
+    // Before each window solve, compute the circular-mean yaw residual of the
+    // window's heading samples against the warm-start spline and rigidly rotate
+    // the whole window state by Rz(Δψ) about the position at the window-start
+    // boundary.  Rotation about the gravity axis is exactly the gauge direction
+    // of the radar+IMU cost (accel/gyro/radar residuals are invariant; only the
+    // heading priors respond), so this closed-form step removes the dominant
+    // curved-valley mode that otherwise consumes most LM iterations — without
+    // changing the converged solution.  The marg prior and boundary anchors are
+    // re-centered/evaluated AFTER the rotation, so they do not fight it.
+    bool yaw_prealign{false};
+
+    // Damping gain for yaw_prealign: the applied rotation is gain·Δψ̄.
+    // gain=1.0 collapses the full mean heading residual but injects the
+    // per-window noise of the Δψ̄ estimate into position (rigid rotation about
+    // the boundary pivot), which random-walks settled position.  gain≈0.5
+    // halves the injected noise while still keeping the optimizer near the
+    // valley bottom (the remaining yaw error decays geometrically across
+    // windows).
+    double yaw_prealign_gain{1.0};
+
+    // Ceres function_tolerance (relative cost-change stopping criterion).
+    // Default matches Ceres (1e-6).  Looser values (1e-5) stop the LM tail
+    // adaptively — unlike a hard max_iterations cap, hard windows still get
+    // their iterations while easy windows exit early.
+    double function_tolerance{1e-6};
+
+    // ---- Fast marginalization prior (direct factor evaluation) ---------------
+    // ceres::Problem::Evaluate() rebuilds an internal Program + Evaluator on
+    // every call (~0.1–0.4 s per window, the "other" wall-time component).
+    // When true, compute_prior() instead calls each res_set cost function's
+    // Evaluate() directly and accumulates the dense Gauss-Newton Hessian
+    // itself (~ms).  Semantics match Problem::Evaluate with
+    // apply_loss_function=true: tangent-space Jacobian columns for SO(3)
+    // blocks (manifold PlusJacobian), Triggs corrector for robust losses,
+    // out-of-set blocks (pitch_delta, window-1 constants) treated as fixed.
+    // false: legacy Problem::Evaluate path (for A/B verification).
+    bool marg_fast_prior{true};
 };
 
 // ============================================================================

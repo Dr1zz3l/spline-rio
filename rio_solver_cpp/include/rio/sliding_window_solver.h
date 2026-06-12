@@ -86,16 +86,34 @@ private:
     // Same discipline as init_biases_: anchors to the init, never the warm-start.
     std::vector<std::array<double, 3>> init_pos_cps_;
 
+    // Initial orientation knots (captured in initialize()).  Used by the
+    // live-edge warm-start alignment (cfg.warm_start_align): the entering
+    // segment's init values are drift-corrected against the solved boundary.
+    std::vector<std::array<double, 4>> init_ori_knots_;
+
+    // Highest CP/knot indices included in the previous window (-1 before the
+    // first solve).  CPs/knots above these indices still hold raw P1-P3 init
+    // values; warm_start_align rigidly aligns them to the solved seam when
+    // they enter the window.
+    int prev_pi1_{-1};
+    int prev_oi1_{-1};
+
     // Add the marginalization prior to a Ceres problem.
     // Connects to traj_ indices [prior_.pos_start, +n_bound_pos) etc.
     void add_prior_to_problem(ceres::Problem& problem);
 
     // Compute new marginalization prior after solving a window.
+    // pi0 / oi0: first (extended-leading) index in the window.
     // pi0_raw / oi0_raw: first "active" (non-extended-leading) index.
     // k_stride_pos / k_stride_ori: number of CP/knot slots per stride.
+    // had_prior: whether the leading blocks were free parameters this window
+    //            (prior attached).  With cfg_.marg_markov_blanket, free leading
+    //            blocks are marginalized together with the stride zone.
     void compute_prior(ceres::Problem& problem,
+                       int pi0, int oi0,
                        int pi0_raw, int oi0_raw,
-                       int k_stride_pos, int k_stride_ori);
+                       int k_stride_pos, int k_stride_ori,
+                       bool had_prior);
 };
 
 }  // namespace rio

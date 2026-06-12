@@ -156,6 +156,8 @@ PYBIND11_MODULE(rio_solver, m) {
         .def_readwrite("lock_gyro_bias", &SolverConfig::lock_gyro_bias)
         .def_readwrite("lambda_pos_init_prior", &SolverConfig::lambda_pos_init_prior)
         .def_readwrite("omega_gate_threshold", &SolverConfig::omega_gate_threshold)
+        .def_readwrite("omega_soft_sigma",     &SolverConfig::omega_soft_sigma)
+        .def_readwrite("radar_zbias_fixed",    &SolverConfig::radar_zbias_fixed)
         .def_readwrite("optimize_pitch_only", &SolverConfig::optimize_pitch_only)
         .def_readwrite("lambda_extrinsic_prior", &SolverConfig::lambda_extrinsic_prior)
         .def_readwrite("max_iterations", &SolverConfig::max_iterations)
@@ -172,7 +174,13 @@ PYBIND11_MODULE(rio_solver, m) {
         .def_readwrite("lambda_preint_p", &SolverConfig::lambda_preint_p)
         .def_readwrite("preint_hz",       &SolverConfig::preint_hz)
         .def_readwrite("dump_system",     &SolverConfig::dump_system)
-        .def_readwrite("use_banded_schur", &SolverConfig::use_banded_schur);
+        .def_readwrite("use_banded_schur", &SolverConfig::use_banded_schur)
+        .def_readwrite("marg_markov_blanket", &SolverConfig::marg_markov_blanket)
+        .def_readwrite("warm_start_align",    &SolverConfig::warm_start_align)
+        .def_readwrite("yaw_prealign",        &SolverConfig::yaw_prealign)
+        .def_readwrite("yaw_prealign_gain",   &SolverConfig::yaw_prealign_gain)
+        .def_readwrite("function_tolerance",  &SolverConfig::function_tolerance)
+        .def_readwrite("marg_fast_prior",     &SolverConfig::marg_fast_prior);
 
     // ---- ExtrinsicConfig ----------------------------------------------------
     py::class_<ExtrinsicConfig>(m, "ExtrinsicConfig")

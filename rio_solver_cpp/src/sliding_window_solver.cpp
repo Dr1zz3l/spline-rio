@@ -176,6 +176,9 @@ void SlidingWindowSolver::initialize(
     traj_.biases    = biases;
     init_biases_    = biases;    // absolute anchor: never updated after initialization
     init_pos_cps_   = pos_cps;  // absolute anchor for position-init prior
+    init_ori_knots_ = ori_knots; // reference shape for warm-start alignment
+    prev_pi1_       = -1;
+    prev_oi1_       = -1;
     traj_.extrinsic_euler_deg = {ext_.roll_deg, ext_.pitch_deg, ext_.yaw_deg};
     traj_.pitch_delta = 0.0;
     prior_.valid    = false;
@@ -217,10 +220,115 @@ SolverResult SlidingWindowSolver::solve_window(
     const int n_win_pos = pi1 - pi0 + 1;
     const int n_win_ori = oi1 - oi0 + 1;
 
+    // ---- Live-edge warm-start alignment (ROADMAP §1.2) ----------------------
+    // CPs/knots entering the window for the first time still hold P1-P3 init
+    // values dead-reckoned from t=0, which drift away from the solved
+    // trajectory.  Additionally, the previous window's TRAILING spline-support
+    // CPs (last N-1 indices) were only constrained by ~one knot interval of
+    // data + regularization and can sit far off the trajectory.  Any CP-level
+    // kink at this seam explodes through the min-snap term (~Δ/dt_pos⁴ →
+    // initial cost ~1e13) and forces LM to spend ~half its iterations
+    // recovering.
+    //
+    // Fix: rigidly align the init segment to the last *data-supported* CP of
+    // the previous window (seam = prev_pi1_ - (N_POS-1)), and overwrite
+    // everything past the seam — both the old weakly-constrained trailing
+    // CPs and the newly entering CPs — with the aligned init shape.  This
+    // preserves the locally-accurate P1-P3 shape (WLS-velocity / gyro
+    // integration over the last stride) while removing absolute drift.
+    // Note: init_pos_cps_ / init_ori_knots_ themselves are NOT modified — the
+    // lambda_pos_init_prior anchor semantics are unchanged.
+    if (cfg_.warm_start_align) {
+        if (prev_pi1_ >= 0 && pi1 > prev_pi1_) {
+            const int seam_p = std::max(pi0, prev_pi1_ - (N_POS - 1));
+            std::array<double, 3> off;
+            for (int c = 0; c < 3; ++c)
+                off[c] = traj_.pos_cps[seam_p][c] - init_pos_cps_[seam_p][c];
+            for (int i = seam_p + 1; i <= pi1; ++i)
+                for (int c = 0; c < 3; ++c)
+                    traj_.pos_cps[i][c] = init_pos_cps_[i][c] + off[c];
+        }
+        if (prev_oi1_ >= 0 && oi1 > prev_oi1_) {
+            const int seam_o = std::max(oi0, prev_oi1_ - (N_ORI - 1));
+            const auto& qs = traj_.ori_knots[seam_o];          // solved seam (xyzw)
+            const auto& qi = init_ori_knots_[seam_o];          // init seam (xyzw)
+            Sophus::SO3d R_solved(Eigen::Quaterniond(qs[3], qs[0], qs[1], qs[2]));
+            Sophus::SO3d R_init  (Eigen::Quaterniond(qi[3], qi[0], qi[1], qi[2]));
+            Sophus::SO3d R_off = R_solved * R_init.inverse();
+            for (int i = seam_o + 1; i <= oi1; ++i) {
+                const auto& q0 = init_ori_knots_[i];
+                Sophus::SO3d R(Eigen::Quaterniond(q0[3], q0[0], q0[1], q0[2]));
+                Eigen::Quaterniond q = (R_off * R).unit_quaternion();
+                traj_.ori_knots[i] = {q.x(), q.y(), q.z(), q.w()};
+            }
+        }
+    }
+
     // Effective t_ref for this window (for passing to the boundary prior logic)
     // The spline with pos_cps starting at pi0 has t_ref = global_t_ref + pi0*dt_pos,
     // and its first valid time is t_ref + (N_POS-1)*dt_pos = t_start.
     // We keep the GLOBAL t_ref in traj_, so pos_index / ori_index give global indices.
+
+    // ---- Yaw gauge pre-alignment (closed-form, see SolverConfig docs) -------
+    // Rotation about gravity is the exact gauge direction of the radar+IMU
+    // cost; only heading priors respond.  Collapse the mean heading residual
+    // analytically instead of letting LM traverse the curved valley.
+    if (cfg_.yaw_prealign && !heading_samples.empty()) {
+        const double inv_dt_o = 1.0 / cfg_.dt_ori;
+        double sum_sin = 0.0, sum_cos = 0.0;
+        int n_h = 0;
+        for (const auto& [t_h, yaw_ref] : heading_samples) {
+            double u; int i0;
+            if (!traj_.ori_index(t_h, u, i0)) continue;
+            if (i0 < oi0 || i0 + N_ORI - 1 > oi1) continue;
+            const double* kp[N_ORI];
+            for (int k = 0; k < N_ORI; ++k) kp[k] = traj_.ori_knot_data(i0 + k);
+            Sophus::SO3d R;
+            CeresSplineHelper<N_ORI>::template evaluate_lie<double, Sophus::SO3>(
+                kp, u, inv_dt_o, &R, nullptr, nullptr);
+            const Eigen::Matrix3d Rm = R.matrix();
+            const double yaw_est = std::atan2(Rm(1, 0), Rm(0, 0));
+            const double d = yaw_ref - yaw_est;
+            sum_sin += std::sin(d);
+            sum_cos += std::cos(d);
+            ++n_h;
+        }
+        if (n_h > 0) {
+            const double dpsi = cfg_.yaw_prealign_gain
+                                * std::atan2(sum_sin / n_h, sum_cos / n_h);
+            // Pivot: warm-start position at the window-start boundary time —
+            // the same point the BoundaryPos anchor pins, so the anchor value
+            // is unchanged by the rotation.
+            const double t_pos_bnd = traj_.t_ref + pi0_raw * traj_.dt_pos;
+            double u_c; int i0_c;
+            Eigen::Vector3d pivot = Eigen::Vector3d::Zero();
+            bool have_pivot = false;
+            if (traj_.pos_index(t_pos_bnd, u_c, i0_c) &&
+                i0_c >= pi0 && i0_c + N_POS - 1 <= pi1) {
+                const double* cps[N_POS];
+                for (int k = 0; k < N_POS; ++k) cps[k] = traj_.pos_cp_data(i0_c + k);
+                CeresSplineHelper<N_POS>::template evaluate<double, 3, 0>(
+                    cps, u_c, 1.0 / cfg_.dt_pos, &pivot);
+                have_pivot = true;
+            }
+            if (have_pivot && std::abs(dpsi) > 1e-6) {
+                const Sophus::SO3d Rz = Sophus::SO3d::rotZ(dpsi);
+                for (int i = oi0; i <= oi1; ++i) {
+                    const auto& q0 = traj_.ori_knots[i];
+                    Sophus::SO3d R(Eigen::Quaterniond(q0[3], q0[0], q0[1], q0[2]));
+                    Eigen::Quaterniond q = (Rz * R).unit_quaternion();
+                    traj_.ori_knots[i] = {q.x(), q.y(), q.z(), q.w()};
+                }
+                const Eigen::Matrix3d Rzm = Rz.matrix();
+                for (int i = pi0; i <= pi1; ++i) {
+                    Eigen::Vector3d p(traj_.pos_cps[i][0], traj_.pos_cps[i][1],
+                                      traj_.pos_cps[i][2]);
+                    p = Rzm * (p - pivot) + pivot;
+                    traj_.pos_cps[i] = {p.x(), p.y(), p.z()};
+                }
+            }
+        }
+    }
 
     // ---- Build Ceres problem ------------------------------------------------
     ceres::Problem problem;
@@ -243,6 +351,7 @@ SolverResult SlidingWindowSolver::solve_window(
     const double inv_dt_ori = 1.0 / cfg_.dt_ori;
 
     // ---- Boundary / marginalization prior -----------------------------------
+    const bool had_prior = prior_.valid;   // captured for compute_prior()
     if (prior_.valid) {
         // Re-linearize: shift the prior's center to the current warm-start so
         // it contributes curvature information without pulling toward a stale
@@ -279,21 +388,30 @@ SolverResult SlidingWindowSolver::solve_window(
         if (ori0 < oi0 || ori0 + N_ORI - 1 > oi1) continue;
         if (pos0 < pi0 || pos0 + N_POS - 1 > pi1) continue;
 
-        // ω-gate: skip this frame if body angular rate exceeds threshold.
-        if (cfg_.omega_gate_threshold > 0.0) {
+        // ω-gate (hard skip) and/or ω-dependent noise inflation (soft gate).
+        // Both evaluate |ω| from the warm-start spline at problem-build time.
+        double w_omega = 1.0;
+        if (cfg_.omega_gate_threshold > 0.0 || cfg_.omega_soft_sigma > 0.0) {
             const double* kp[N_ORI];
             for (int k = 0; k < N_ORI; ++k) kp[k] = traj_.ori_knot_data(ori0 + k);
             Sophus::SO3d dummy_R;
             Eigen::Vector3d omega;
             CeresSplineHelper<N_ORI>::template evaluate_lie<double, Sophus::SO3>(
                 kp, u_ori, inv_dt_ori, &dummy_R, &omega, nullptr);
-            if (omega.norm() > cfg_.omega_gate_threshold) continue;
+            const double w_norm = omega.norm();
+            if (cfg_.omega_gate_threshold > 0.0 && w_norm > cfg_.omega_gate_threshold)
+                continue;
+            if (cfg_.omega_soft_sigma > 0.0) {
+                const double q = w_norm / cfg_.omega_soft_sigma;
+                w_omega = 1.0 / (1.0 + q * q);   // σ_eff² = σ₀²(1 + q²)
+            }
         }
 
         for (const auto& pt : frame.points) {
             double range = std::sqrt(pt.x*pt.x + pt.y*pt.y + pt.z*pt.z);
             if (range < cfg_.min_range) continue;
             Eigen::Vector3d u_sensor(pt.x/range, pt.y/range, pt.z/range);
+            const double v_meas_c = pt.v - cfg_.radar_zbias_fixed * u_sensor.z();
 
             std::vector<double*> params;
             for (int k = 0; k < N_ORI; ++k) params.push_back(traj_.ori_knot_data(ori0 + k));
@@ -304,18 +422,25 @@ SolverResult SlidingWindowSolver::solve_window(
             if (optimize_ext) {
                 params.push_back(traj_.pitch_delta_data());
                 cost = make_radar_with_pitch_cost(
-                    u_sensor, pt.v,
+                    u_sensor, v_meas_c,
                     u_ori, inv_dt_ori,
                     u_pos, inv_dt_pos,
                     R_radar_to_body, t_body_sensor);
             } else {
                 cost = make_radar_cost(
-                    u_sensor, pt.v,
+                    u_sensor, v_meas_c,
                     u_ori, inv_dt_ori,
                     u_pos, inv_dt_pos,
                     R_radar_to_body, t_body_sensor);
             }
-            problem.AddResidualBlock(cost, huber_loss, params);
+            // Soft gate: wrap a per-frame ScaledLoss around an owned Huber
+            // (the shared huber_loss cannot be wrapped — ownership).
+            ceres::LossFunction* loss = huber_loss;
+            if (w_omega < 1.0)
+                loss = new ceres::ScaledLoss(
+                    new ceres::HuberLoss(cfg_.huber_delta), w_omega,
+                    ceres::TAKE_OWNERSHIP);
+            problem.AddResidualBlock(cost, loss, params);
         }
     }
 
@@ -507,14 +632,14 @@ SolverResult SlidingWindowSolver::solve_window(
     // (it is curvature-only); the bias prior is an absolute sensor measurement
     // and must not drift with the warm-start.
     if (cfg_.lambda_bias_prior_accel > 0.0 || cfg_.lambda_bias_prior_gyro > 0.0) {
-        double w = std::sqrt(cfg_.lambda_bias_prior_accel * cfg_.lambda_bias_prior_gyro);
         Eigen::Matrix<double, 6, 1> b0;
         for (int j = 0; j < 6; ++j) b0[j] = init_biases_[j];
-        auto* f = new BiasPriorFunctor(b0);
+        // Per-component weights baked into the residual (no ScaledLoss):
+        // accel components get sqrt(lambda_ba), gyro components sqrt(lambda_bg).
+        auto* f = new BiasPriorFunctor(b0, cfg_.lambda_bias_prior_accel,
+                                           cfg_.lambda_bias_prior_gyro);
         auto* cost = make_auto_cost_sw(f, 6, {6});
-        problem.AddResidualBlock(cost,
-            new ceres::ScaledLoss(nullptr, w, ceres::TAKE_OWNERSHIP),
-            {traj_.bias_data()});
+        problem.AddResidualBlock(cost, nullptr, {traj_.bias_data()});
     }
 
     // ---- Extrinsic pitch prior ---------------------------------------------
@@ -665,6 +790,7 @@ SolverResult SlidingWindowSolver::solve_window(
     options.minimizer_type                  = ceres::TRUST_REGION;
     options.trust_region_strategy_type      = ceres::LEVENBERG_MARQUARDT;
     options.max_num_iterations              = cfg_.max_iterations;
+    options.function_tolerance              = cfg_.function_tolerance;
     {
         int n = cfg_.num_threads;
         if (n <= 0) n = static_cast<int>(std::thread::hardware_concurrency());
@@ -721,7 +847,12 @@ SolverResult SlidingWindowSolver::solve_window(
     // complement boundary covariance), which is used as boundary_covariance below.
     int k_stride_pos = std::max(1, static_cast<int>(std::round(stride / cfg_.dt_pos)));
     int k_stride_ori = std::max(1, static_cast<int>(std::round(stride / cfg_.dt_ori)));
-    compute_prior(problem, pi0_raw, oi0_raw, k_stride_pos, k_stride_ori);
+    compute_prior(problem, pi0, oi0, pi0_raw, oi0_raw, k_stride_pos, k_stride_ori,
+                  had_prior);
+
+    // Record the window extent for the next call's warm-start alignment.
+    prev_pi1_ = pi1;
+    prev_oi1_ = oi1;
 
     // ---- Package result ----------------------------------------------------
     auto wall_end = std::chrono::high_resolution_clock::now();
@@ -817,14 +948,27 @@ void SlidingWindowSolver::add_prior_to_problem(ceres::Problem& problem) {
 // ============================================================================
 void SlidingWindowSolver::compute_prior(
     ceres::Problem& problem,
+    int pi0, int oi0,
     int pi0_raw, int oi0_raw,
-    int k_stride_pos, int k_stride_ori)
+    int k_stride_pos, int k_stride_ori,
+    bool had_prior)
 {
-    // Indices of marginalized variables (in the stride zone)
+    // Indices of marginalized variables.
     //   These CPs/knots go out of support in the next window.
-    int marg_pos_start = pi0_raw;
+    //
+    // Markov-blanket mode (cfg_.marg_markov_blanket): the marginalized set is
+    // EVERYTHING that exists in this window but not in the next one — i.e. the
+    // leading blocks [pi0, pi0_raw) (= previous boundary, free params when a
+    // prior was attached) plus the stride zone.  The old behaviour started at
+    // pi0_raw, silently *conditioning* on the leading blocks (treating them as
+    // perfectly known) instead of marginalizing them.
+    // In window 1 (no prior) the leading blocks are SetParameterBlockConstant,
+    // so the marg set starts at pi0_raw as before (conditioning on genuinely
+    // fixed blocks is exact).
+    const bool mb = cfg_.marg_markov_blanket;
+    int marg_pos_start = (mb && had_prior) ? pi0 : pi0_raw;
     int marg_pos_end   = pi0_raw + k_stride_pos - N_POS;   // inclusive
-    int marg_ori_start = oi0_raw;
+    int marg_ori_start = (mb && had_prior) ? oi0 : oi0_raw;
     int marg_ori_end   = oi0_raw + k_stride_ori - N_ORI;   // inclusive
 
     prior_.drop_reason = "";  // clear from previous call
@@ -871,14 +1015,64 @@ void SlidingWindowSolver::compute_prior(
         eval_blocks.push_back(traj_.ori_knot_data(i));
     eval_blocks.push_back(traj_.bias_data());
 
-    // ---- Collect residuals touching marginalized OR boundary params ---------
-    // Include boundary residuals so that prior propagated from window k-1
-    // contributes correctly to H_bb in the Schur complement.
+    // ---- Collect residuals for the Schur complement --------------------------
     std::unordered_set<ceres::ResidualBlockId> res_set;
-    for (auto* ptr : eval_blocks) {
-        std::vector<ceres::ResidualBlockId> rids;
-        problem.GetResidualBlocksForParameterBlock(ptr, &rids);
-        for (auto id : rids) res_set.insert(id);
+    if (mb) {
+        // Markov-blanket rule: include ONLY residuals touching >= 1 marginalized
+        // block.  By B-spline locality, a factor touching marg block i has
+        // support [i, i+N-1] ⊆ marg ∪ boundary, so the Schur complement is a
+        // true marginal.  The previous MargPrior residual touches the leading
+        // blocks and is picked up automatically.
+        //
+        // Residuals touching boundary/bias but NOT a marg block are excluded:
+        // they are re-added to the next window's problem, and including them
+        // here would double-count their information (the old behaviour pulled
+        // in EVERY IMU factor of the window via the bias block — the root cause
+        // of the overconfident prior that required marg_prior_scale ≈ 2e-4).
+        std::vector<double*> marg_blocks;
+        for (int i = marg_pos_start; i <= marg_pos_end; ++i)
+            marg_blocks.push_back(traj_.pos_cp_data(i));
+        for (int i = marg_ori_start; i <= marg_ori_end; ++i)
+            marg_blocks.push_back(traj_.ori_knot_data(i));
+        for (auto* ptr : marg_blocks) {
+            std::vector<ceres::ResidualBlockId> rids;
+            problem.GetResidualBlocksForParameterBlock(ptr, &rids);
+            for (auto id : rids) res_set.insert(id);
+        }
+
+        // Support-closure filter: drop residuals touching any FREE block outside
+        // marg ∪ boundary ∪ bias.  Two known cases:
+        //  - pitch_delta (persistent global, not part of the prior): allowed as
+        //    a documented conditioning approximation (slow-varying, strong prior).
+        //  - pos/ori grid mismatch sliver: when (N_ORI-1)*dt_ori is within one
+        //    knot of (N_POS-1)*dt_pos, a ~1 ms band of factors touches an ori
+        //    marg block while its pos support reaches one CP past the boundary.
+        //    Dropping them loses a sliver of information but keeps the prior
+        //    consistent (standard treatment, cf. DSO/OKVIS).
+        std::unordered_set<double*> allowed(eval_blocks.begin(), eval_blocks.end());
+        if (!cfg_.lock_extrinsics)
+            allowed.insert(traj_.pitch_delta_data());
+        for (auto it = res_set.begin(); it != res_set.end(); ) {
+            std::vector<double*> pbs;
+            problem.GetParameterBlocksForResidualBlock(*it, &pbs);
+            bool ok = true;
+            for (auto* pb : pbs) {
+                if (allowed.count(pb)) continue;
+                if (problem.IsParameterBlockConstant(pb)) continue;  // exact
+                ok = false;
+                break;
+            }
+            it = ok ? std::next(it) : res_set.erase(it);
+        }
+    } else {
+        // Legacy: residuals touching marginalized OR boundary params.
+        // Conditions on interior states and double-counts boundary factors;
+        // kept for A/B comparison (--set marg_markov_blanket=0).
+        for (auto* ptr : eval_blocks) {
+            std::vector<ceres::ResidualBlockId> rids;
+            problem.GetResidualBlocksForParameterBlock(ptr, &rids);
+            for (auto id : rids) res_set.insert(id);
+        }
     }
     if (res_set.empty()) {
         prior_.valid = false;
@@ -886,43 +1080,163 @@ void SlidingWindowSolver::compute_prior(
         return;
     }
 
-    // ---- Evaluate restricted Jacobian ---------------------------------------
-    ceres::Problem::EvaluateOptions eval_opts;
-    eval_opts.apply_loss_function = true;
-    eval_opts.parameter_blocks = eval_blocks;
-    eval_opts.residual_blocks = std::vector<ceres::ResidualBlockId>(
-        res_set.begin(), res_set.end());
+    // ---- Form the dense Gauss-Newton Hessian over [a | b] columns -----------
+    const int d_total = d_a + d_b;
+    Eigen::MatrixXd H_full;
 
-    double cost;
-    ceres::CRSMatrix J_crs;
-    if (!problem.Evaluate(eval_opts, &cost, nullptr, nullptr, &J_crs)) {
-        prior_.valid = false;
-        prior_.drop_reason = "problem.Evaluate() failed";
-        return;
+    if (cfg_.marg_fast_prior) {
+        // Direct factor evaluation (ROADMAP: compute_prior direct evaluation).
+        // Problem::Evaluate() rebuilds an internal Program + Evaluator on every
+        // call (~0.1–0.4 s/window); instead, evaluate each res_set cost
+        // function directly and accumulate H = Σ J̃ᵀJ̃ ourselves (~ms).
+        // Semantics matched to Problem::Evaluate(apply_loss_function=true):
+        //   - SO(3) blocks: ambient (N×4) Jacobian × manifold PlusJacobian
+        //     (4×3) → tangent-space columns
+        //   - robust losses: Triggs corrector (alpha term only when ρ'' > 0,
+        //     same convention as ceres::internal::Corrector / VINS-Mono)
+        //   - blocks outside [a|b] (pitch_delta, window-1 constants): fixed,
+        //     their Jacobians are simply not accumulated.
+        H_full = Eigen::MatrixXd::Zero(d_total, d_total);
+
+        // Column layout, same order as eval_blocks: [marg_pos, marg_ori,
+        // bound_pos, bound_ori, bias], 3 tangent columns per CP/knot, 6 bias.
+        struct ColInfo { int col; bool is_so3; };
+        std::unordered_map<const double*, ColInfo> colmap;
+        {
+            int col = 0;
+            for (int i = marg_pos_start; i <= marg_pos_end; ++i, col += 3)
+                colmap[traj_.pos_cp_data(i)] = {col, false};
+            for (int i = marg_ori_start; i <= marg_ori_end; ++i, col += 3)
+                colmap[traj_.ori_knot_data(i)] = {col, true};
+            for (int i = bound_pos_start; i <= bound_pos_end; ++i, col += 3)
+                colmap[traj_.pos_cp_data(i)] = {col, false};
+            for (int i = bound_ori_start; i <= bound_ori_end; ++i, col += 3)
+                colmap[traj_.ori_knot_data(i)] = {col, true};
+            colmap[traj_.bias_data()] = {col, false};
+        }
+
+        Sophus::Manifold<Sophus::SO3> so3_manifold_local;
+        using RowMat = Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic,
+                                     Eigen::RowMajor>;
+
+        std::vector<double*>         pbs;
+        std::vector<const double*>   cpbs;
+        std::vector<RowMat>          jac_bufs;
+        std::vector<double*>         jac_ptrs;
+        std::vector<Eigen::MatrixXd> jac_local;   // tangent-space, corrected
+        std::vector<int>             jac_col;     // column offset (-1 = skip)
+        Eigen::VectorXd r;
+
+        for (const auto& rid : res_set) {
+            const ceres::CostFunction* cf =
+                problem.GetCostFunctionForResidualBlock(rid);
+            const ceres::LossFunction* lf =
+                problem.GetLossFunctionForResidualBlock(rid);
+            problem.GetParameterBlocksForResidualBlock(rid, &pbs);
+            const auto& psz = cf->parameter_block_sizes();
+            const int nres  = cf->num_residuals();
+            const int npb   = static_cast<int>(pbs.size());
+
+            r.resize(nres);
+            cpbs.assign(pbs.begin(), pbs.end());
+            jac_bufs.resize(npb);
+            jac_ptrs.assign(npb, nullptr);
+            for (int i = 0; i < npb; ++i) {
+                jac_bufs[i].resize(nres, psz[i]);
+                jac_ptrs[i] = jac_bufs[i].data();
+            }
+            if (!cf->Evaluate(cpbs.data(), r.data(), jac_ptrs.data()))
+                continue;
+
+            // Robust-loss correction
+            double sqrt_rho1 = 1.0, alpha_sq_norm = 0.0;
+            if (lf) {
+                const double sq_norm = r.squaredNorm();
+                double rho[3];
+                lf->Evaluate(sq_norm, rho);
+                sqrt_rho1 = std::sqrt(rho[1]);
+                if (rho[2] > 0.0 && sq_norm > 0.0) {
+                    const double alpha =
+                        1.0 - std::sqrt(1.0 + 2.0 * sq_norm * rho[2] / rho[1]);
+                    alpha_sq_norm = alpha / sq_norm;
+                }
+            }
+
+            // Tangent-space conversion + loss scaling, per block
+            jac_local.assign(npb, Eigen::MatrixXd());
+            jac_col.assign(npb, -1);
+            for (int i = 0; i < npb; ++i) {
+                auto it = colmap.find(pbs[i]);
+                if (it == colmap.end()) continue;   // fixed: skip
+                Eigen::MatrixXd Jl;
+                if (it->second.is_so3) {
+                    Eigen::Matrix<double, 4, 3, Eigen::RowMajor> plus;
+                    so3_manifold_local.PlusJacobian(pbs[i], plus.data());
+                    Jl.noalias() = jac_bufs[i] * plus;
+                } else {
+                    Jl = jac_bufs[i];
+                }
+                if (lf) {
+                    if (alpha_sq_norm != 0.0)
+                        Jl -= alpha_sq_norm * (r * (r.transpose() * Jl));
+                    Jl *= sqrt_rho1;
+                }
+                jac_local[i] = std::move(Jl);
+                jac_col[i]   = it->second.col;
+            }
+
+            // Accumulate upper-triangular block products
+            for (int i = 0; i < npb; ++i) {
+                if (jac_col[i] < 0) continue;
+                for (int j = i; j < npb; ++j) {
+                    if (jac_col[j] < 0) continue;
+                    int ci = jac_col[i], cj = jac_col[j];
+                    const Eigen::MatrixXd* Ji = &jac_local[i];
+                    const Eigen::MatrixXd* Jj = &jac_local[j];
+                    if (ci > cj) { std::swap(ci, cj); std::swap(Ji, Jj); }
+                    H_full.block(ci, cj, Ji->cols(), Jj->cols()).noalias() +=
+                        Ji->transpose() * (*Jj);
+                }
+            }
+        }
+        // Mirror upper triangle to lower (diagonal blocks of repeated
+        // parameter pairs were accumulated once with ci<=cj ordering).
+        H_full.triangularView<Eigen::StrictlyLower>() =
+            H_full.triangularView<Eigen::StrictlyUpper>().transpose();
+    } else {
+        // ---- Legacy: restricted Problem::Evaluate ---------------------------
+        ceres::Problem::EvaluateOptions eval_opts;
+        eval_opts.apply_loss_function = true;
+        eval_opts.parameter_blocks = eval_blocks;
+        eval_opts.residual_blocks = std::vector<ceres::ResidualBlockId>(
+            res_set.begin(), res_set.end());
+
+        double cost;
+        ceres::CRSMatrix J_crs;
+        if (!problem.Evaluate(eval_opts, &cost, nullptr, nullptr, &J_crs)) {
+            prior_.valid = false;
+            prior_.drop_reason = "problem.Evaluate() failed";
+            return;
+        }
+        if (J_crs.num_cols != d_total) {
+            prior_.valid = false;
+            prior_.drop_reason = "J column count mismatch ("
+                                 + std::to_string(J_crs.num_cols)
+                                 + " vs " + std::to_string(d_total) + ")";
+            return;
+        }
+        const int nr = J_crs.num_rows;
+        Eigen::MatrixXd J = Eigen::MatrixXd::Zero(nr, d_total);
+        for (int row = 0; row < nr; ++row)
+            for (int idx = J_crs.rows[row]; idx < J_crs.rows[row + 1]; ++idx)
+                J(row, J_crs.cols[idx]) = J_crs.values[idx];
+        H_full.noalias() = J.transpose() * J;
     }
 
-    if (J_crs.num_cols != d_a + d_b) {
-        // Column count mismatch (can happen if some blocks are constant)
-        prior_.valid = false;
-        prior_.drop_reason = "J column count mismatch (" + std::to_string(J_crs.num_cols)
-                             + " vs " + std::to_string(d_a + d_b) + ")";
-        return;
-    }
-
-    // ---- Convert CRS → dense (restricted Jacobian is small) ----------------
-    const int nr = J_crs.num_rows;
-    Eigen::MatrixXd J = Eigen::MatrixXd::Zero(nr, d_a + d_b);
-    for (int row = 0; row < nr; ++row)
-        for (int idx = J_crs.rows[row]; idx < J_crs.rows[row + 1]; ++idx)
-            J(row, J_crs.cols[idx]) = J_crs.values[idx];
-
-    // ---- H = J^T J, split into blocks --------------------------------------
-    Eigen::MatrixXd J_a = J.leftCols(d_a);
-    Eigen::MatrixXd J_b = J.rightCols(d_b);
-
-    Eigen::MatrixXd H_aa = J_a.transpose() * J_a;
-    Eigen::MatrixXd H_ab = J_a.transpose() * J_b;
-    Eigen::MatrixXd H_bb = J_b.transpose() * J_b;
+    // ---- Split H into blocks ------------------------------------------------
+    Eigen::MatrixXd H_aa = H_full.topLeftCorner(d_a, d_a);
+    Eigen::MatrixXd H_ab = H_full.topRightCorner(d_a, d_b);
+    Eigen::MatrixXd H_bb = H_full.bottomRightCorner(d_b, d_b);
 
     // ---- Current-window boundary covariance = H_bb^{-1} ---------------------
     // This is the covariance of the boundary state from the current window's
@@ -949,49 +1263,40 @@ void SlidingWindowSolver::compute_prior(
     }
     Eigen::MatrixXd S = H_bb - H_ab.transpose() * ldlt.solve(H_ab);
 
-    // ---- Optional eigenvalue clipping to balance prior across DOF -----------
-    // Without clipping, S is dominated by gyro-constrained orientation DOF
-    // (eigenvalue ~5.5e14) vs position DOF (~1e4), cond≈5.5e10.  A single
-    // marg_prior_scale cannot simultaneously handle both extremes.  Clipping
-    // caps the max eigenvalue so no single DOF dominates, allowing a universal
-    // scale to work across different flight dynamics.
-    if (cfg_.marg_prior_eig_clip > 0.0) {
-        Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eig_clip(S);
-        if (eig_clip.info() == Eigen::Success) {
-            Eigen::VectorXd clipped = eig_clip.eigenvalues().array()
-                                          .min(cfg_.marg_prior_eig_clip)
-                                          .max(0.0);
-            S = eig_clip.eigenvectors()
-                * clipped.asDiagonal()
-                * eig_clip.eigenvectors().transpose();
-        }
-    }
-
-    // ---- LLT Cholesky of S (PSD regularization) ----------------------------
-    S += 1e-6 * Eigen::MatrixXd::Identity(d_b, d_b);
-    Eigen::LLT<Eigen::MatrixXd> llt(S);
-    if (llt.info() != Eigen::Success) {
+    // ---- PSD projection square root of S ------------------------------------
+    // S = J^T J Schur complement is mathematically PSD, but floating-point
+    // round-off produces small negative eigenvalues — especially with the
+    // Markov-blanket res_set, where S is genuinely low-rank (boundary pos DOF
+    // get little direct stride-zone information).  A plain LLT then fails
+    // ("Schur complement not PSD") and the prior is dropped entirely.
+    //
+    // Instead: eigendecompose once, clamp eigenvalues to [0, eig_clip], and use
+    //   sqrt_info = V · diag(sqrt(λ))      (so sqrt_info · sqrt_infoᵀ = S⁺)
+    // MargPriorFunctor only requires sqrt_info · sqrt_infoᵀ = S (no triangular
+    // structure), so this is a drop-in PSD-projection square root.  Negative
+    // directions carry no information and are zeroed rather than failing.
+    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eig(S);
+    if (eig.info() != Eigen::Success) {
         prior_.valid = false;
-        prior_.drop_reason = "LLT of S failed (Schur complement not PSD)";
+        prior_.drop_reason = "eigendecomposition of S failed";
         return;
     }
+    Eigen::VectorXd lam = eig.eigenvalues();
+    // Optional max-eigenvalue clipping to balance prior across DOF (gyro-
+    // dominated orientation eigenvalues ~5.5e14 vs position ~1e4).
+    if (cfg_.marg_prior_eig_clip > 0.0)
+        lam = lam.array().min(cfg_.marg_prior_eig_clip);
+    lam = lam.array().max(0.0);   // PSD projection
 
-    // ---- Eigenvalue diagnostics + covariance of S ---------------------------
-    // Note: diagnostics reflect the (possibly clipped) S.
-    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eig(S, Eigen::EigenvaluesOnly);
-    if (eig.info() == Eigen::Success) {
-        double lmin = eig.eigenvalues().minCoeff();
-        double lmax = eig.eigenvalues().maxCoeff();
+    const double lmax = lam.maxCoeff();
+    {
+        const double lmin = lam.minCoeff();
         prior_.min_eigenvalue = lmin;
         prior_.max_eigenvalue = lmax;
         prior_.cond_number    = (lmin > 0.0) ? (lmax / lmin)
                                               : std::numeric_limits<double>::infinity();
         prior_.numerical_rank = static_cast<int>(
-            (eig.eigenvalues().array() > 1e-6 * lmax).count());
-        if (prior_.cond_number > 1e10)
-            std::cerr << "[compute_prior] WARNING: ill-conditioned S"
-                      << "  cond=" << prior_.cond_number
-                      << "  rank=" << prior_.numerical_rank << "/" << d_b << "\n";
+            (lam.array() > 1e-6 * lmax).count());
 
         // Adaptive scale: normalises max eigenvalue of S to lambda_boundary_pos.
         // With use_adaptive_marg_scale=true, final_scale = marg_prior_scale * adaptive_scale.
@@ -1002,13 +1307,22 @@ void SlidingWindowSolver::compute_prior(
         prior_.adaptive_scale = std::max(prior_.adaptive_scale, 1e-8);
     }
 
-    // Covariance S^{-1} via LLT back-solve (cost: O(d_b^3), negligible for d_b≤30)
-    prior_.covariance = llt.solve(Eigen::MatrixXd::Identity(d_b, d_b));
-    prior_.trace_cov  = prior_.covariance.trace();
+    // sqrt_info = V · diag(sqrt(λ_clamped))
+    prior_.sqrt_info = eig.eigenvectors() * lam.cwiseSqrt().asDiagonal();
+
+    // Covariance: pseudo-inverse over the informative subspace (diagnostics only)
+    {
+        Eigen::VectorXd inv_lam = Eigen::VectorXd::Zero(d_b);
+        const double floor_ev = std::max(1e-12 * lmax, 1e-300);
+        for (int i = 0; i < d_b; ++i)
+            if (lam[i] > floor_ev) inv_lam[i] = 1.0 / lam[i];
+        prior_.covariance = eig.eigenvectors() * inv_lam.asDiagonal()
+                            * eig.eigenvectors().transpose();
+        prior_.trace_cov  = prior_.covariance.trace();
+    }
 
     // ---- Store prior --------------------------------------------------------
     prior_.valid     = true;
-    prior_.sqrt_info = llt.matrixL();   // lower Cholesky L, S = L*L^T
     prior_.d_b       = d_b;
 
     prior_.bound_pos.resize(n_bound_pos);

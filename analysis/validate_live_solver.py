@@ -192,6 +192,8 @@ def _solve_cpp(initial_state, solver_radar_frames, imu_data,
     cfg.lock_extrinsics     = solver_cfg.get('lock_extrinsics', False)
     cfg.lock_gyro_bias      = solver_cfg.get('lock_gyro_bias', False)
     cfg.omega_gate_threshold = solver_cfg.get('omega_gate_threshold', 0.0)
+    cfg.omega_soft_sigma     = solver_cfg.get('omega_soft_sigma', 0.0)
+    cfg.radar_zbias_fixed    = solver_cfg.get('radar_zbias_fixed', 0.0)
     cfg.optimize_pitch_only = solver_cfg.get('optimize_pitch_only', True)
     cfg.lambda_extrinsic_prior = solver_cfg.get('lambda_extrinsic_prior', 10.0)
     cfg.max_iterations      = solver_cfg.get('max_iterations', 400)
@@ -377,7 +379,12 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
     cfg.lambda_boundary_ori_yaw = solver_cfg.get('lambda_boundary_ori_yaw', 0.0)
     cfg.lock_extrinsics         = solver_cfg.get('lock_extrinsics', False)
     cfg.lock_gyro_bias          = solver_cfg.get('lock_gyro_bias', False)
+    # NOTE: was missing until 2026-06-12 — all earlier SW runs (incl. the
+    # documented backflips Phase 3 command) silently used the C++ default 0.0.
+    cfg.lambda_pos_init_prior   = solver_cfg.get('lambda_pos_init_prior', 0.0)
     cfg.omega_gate_threshold    = solver_cfg.get('omega_gate_threshold', 0.0)
+    cfg.omega_soft_sigma        = solver_cfg.get('omega_soft_sigma', 0.0)
+    cfg.radar_zbias_fixed       = solver_cfg.get('radar_zbias_fixed', 0.0)
     cfg.optimize_pitch_only     = solver_cfg.get('optimize_pitch_only', True)
     cfg.lambda_extrinsic_prior  = solver_cfg.get('lambda_extrinsic_prior', 10.0)
     cfg.max_iterations          = solver_cfg.get('max_iterations', 400)
@@ -393,6 +400,15 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
     cfg.preint_hz               = solver_cfg.get('preint_hz', 100.0)
     cfg.dump_system             = bool(solver_cfg.get('dump_system', False))
     cfg.use_banded_schur        = bool(solver_cfg.get('use_banded_schur', False))
+    # ROADMAP §1.1 / §1.2 consistency fixes (default ON; --set ...=0 for legacy A/B)
+    cfg.marg_markov_blanket     = bool(int(solver_cfg.get('marg_markov_blanket', 1)))
+    cfg.warm_start_align        = bool(int(solver_cfg.get('warm_start_align', 1)))
+    # Yaw gauge pre-alignment (closed-form heading collapse; default off)
+    cfg.yaw_prealign            = bool(int(solver_cfg.get('yaw_prealign', 0)))
+    cfg.yaw_prealign_gain       = float(solver_cfg.get('yaw_prealign_gain', 1.0))
+    # Fast marginalization prior: direct factor evaluation (default ON)
+    cfg.marg_fast_prior         = bool(int(solver_cfg.get('marg_fast_prior', 1)))
+    cfg.function_tolerance      = float(solver_cfg.get('function_tolerance', 1e-6))
 
     # Create stateful solver and initialize with full P1-P3 trajectory
     solver = rio_solver.SlidingWindowSolver(cfg, ext)
@@ -472,6 +488,7 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
         _register_cpp_result(result)
 
         cost_str = f"{result.cost_history[-1]:.3f}" if result.cost_history else "n/a"
+        cost0_str = f"{result.cost_history[0]:.1e}" if len(result.cost_history) > 1 else "n/a"
         t_jac_w  = result.time_jacobian_eval_s
         t_res_w  = result.time_residual_eval_s
         t_lin_w  = result.time_linear_solver_s
@@ -498,7 +515,7 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
             bcov_str = "  bcov=n/a"
         print(f"  [sw {n_windows+1:3d}] t={t_w_start:.2f}–{t_w_end:.2f}s"
               f"  {len(window_radar):3d}fr  {int(imu_mask.sum()):4d}imu"
-              f"  cost={cost_str}  iter={result.num_iterations}  dt={dt_w:.2f}s"
+              f"  cost0={cost0_str}  cost={cost_str}  iter={result.num_iterations}  dt={dt_w:.2f}s"
               + timing_str + prior_str + bcov_str)
 
         # Snapshot leading-edge estimate in stride zone [t_w_end - stride, t_w_end]
@@ -1129,6 +1146,7 @@ def main():
 
     NO_PLOT = '--no-plot' in sys.argv
     SAVE_ARRAYS = '--save-arrays' in sys.argv
+    RESIDUAL_STATS = '--residual-stats' in sys.argv
     USE_PREINTEGRATE = '--preintegrate' in sys.argv
     USE_GNC = '--gnc' in sys.argv
     USE_CPP = '--cpp' in sys.argv
@@ -1161,6 +1179,27 @@ def main():
     if bag_key in _BAG_SOLVER_OVERRIDES:
         for k, v in _BAG_SOLVER_OVERRIDES[bag_key].items():
             _SOLVER_CFG[k] = v
+
+    # Apply per-bag extrinsics overrides from bags.yaml (extrinsics_overrides:).
+    # Time offsets (radar_imu_offset_sec, imu_mocap_offset_sec) are per-DAY
+    # calibration: the Dec-2025 bags have radar_imu_offset ≈ 0.073 s vs the
+    # 0.135 s calibrated on the Mar-2026 day (validate_physics cross-corr).
+    _BAG_EXT_OVERRIDES = load_config()['bags'].get('extrinsics_overrides', {})
+    if bag_key in _BAG_EXT_OVERRIDES:
+        for k, v in _BAG_EXT_OVERRIDES[bag_key].items():
+            _EXTRINSICS_CFG[k] = v
+            print(f"  [bag extrinsics override] {k} = {v}")
+
+    # --set-ext key=value (repeatable): override extrinsics.yaml entries at
+    # runtime (e.g. --set-ext radar_imu_offset_sec=0.120 for offset sweeps).
+    for _i, _arg in enumerate(sys.argv):
+        if _arg == '--set-ext' and _i + 1 < len(sys.argv):
+            _k, _, _v = sys.argv[_i + 1].partition('=')
+            try:
+                _EXTRINSICS_CFG[_k] = float(_v)
+            except ValueError:
+                _EXTRINSICS_CFG[_k] = _v
+            print(f"  [--set-ext] {_k} = {_EXTRINSICS_CFG[_k]}")
             print(f"  [bag override] {k} = {v}")
 
     # --set key=value  (repeatable): override solver.yaml entries at runtime
@@ -2079,6 +2118,86 @@ def main():
         if noise_rad_per_sqrts > 0:
             print(f"\n  [P5] Gyro noise={noise_deg_per_sqrts:.1f} deg/sqrt(s) -> "
                   f"pos_rmse={pos_rmse:.4f} m  ori_rmse={rot_rmse:.4f} deg")
+
+        # ============ Residual statistics vs SOLVED trajectory (--residual-stats) ============
+        # Per-sensor residuals against the solution: sigma_eff estimation
+        # (ROADMAP: data-driven weighting) AND residual-vs-time series — the
+        # placement criterion for adaptive knot spacing (high model error =>
+        # more knots).  Robust sigma = 1.4826*MAD; suggested lambda = 1/sigma^2.
+        if RESIDUAL_STATS:
+            _ps  = optimized_state.pos_bspline
+            _osp = optimized_state.ori_spline
+            _tr  = _ps.t_ref
+            _ba, _bg = optimized_state.acc_bias, optimized_state.gyr_bias
+            _gw  = np.array([0.0, 0.0, -9.81])
+            _eps = 5e-4
+            _ta = _tr + max(_ps.t_start, _osp.t_start) + _eps
+            _tb = _tr + min(_ps.t_end,   _osp.t_end)   - _eps
+
+            def _omega_at(_t_rel):
+                _R1 = _osp.evaluate(_t_rel - _eps)
+                _R2 = _osp.evaluate(_t_rel + _eps)
+                from cumulative_so3_bspline import so3_log as _slog
+                return _slog(_R1.T @ _R2) / (2 * _eps)
+
+            _g_t, _g_res, _a_res, _w_norm = [], [], [], []
+            for _s in imu_data[::2]:
+                if not (_ta <= _s.timestamp <= _tb):
+                    continue
+                _trel = _s.timestamp - _tr
+                _w  = _omega_at(_trel)
+                _R  = _osp.evaluate(_trel)
+                _aw = _ps(_trel, derivative=2)
+                _g_res.append(_s.angular_velocity - _w - _bg)
+                _a_res.append(_s.linear_acceleration - _R.T @ (_aw - _gw) - _ba)
+                _g_t.append(_s.timestamp - _tr)
+                _w_norm.append(np.linalg.norm(_w))
+            _g_res = np.array(_g_res); _a_res = np.array(_a_res)
+            _g_t = np.array(_g_t); _w_norm = np.array(_w_norm)
+
+            _r_t, _r_res = [], []
+            for _f in solver_radar_frames:
+                if not (_ta <= _f.timestamp <= _tb) or _f.num_points() == 0:
+                    continue
+                _trel = _f.timestamp - _tr
+                _R  = _osp.evaluate(_trel)
+                _vw = _ps(_trel, derivative=1)
+                _w  = _omega_at(_trel)
+                _vant = _R.T @ _vw + np.cross(_w, TRANSLATION)
+                _P = _f.positions[:_f.num_points()]
+                _rng = np.linalg.norm(_P, axis=1)
+                _ok = _rng > 0.2
+                _ub = (SENSOR_ROTATION @ (_P[_ok] / _rng[_ok, None]).T).T
+                _vp = -(_ub @ _vant)
+                _rr = _f.velocities[:_f.num_points()][_ok] - _vp
+                _r_res.extend(_rr); _r_t.extend([_trel] * len(_rr))
+            _r_res = np.array(_r_res); _r_t = np.array(_r_t)
+
+            def _stats(_x):
+                _x = _x.ravel()
+                _mad = 1.4826 * np.median(np.abs(_x - np.median(_x)))
+                return len(_x), _x.mean(), _x.std(), _mad
+
+            print(f"\n{'Residual statistics vs solved trajectory':-^80}")
+            for _name, _arr, _lam_cur in [('gyro  (rad/s)', _g_res, 4.0),
+                                          ('accel (m/s^2)', _a_res, 0.01),
+                                          ('radar (m/s)',   _r_res, 1.0)]:
+                _n, _m, _sd, _rmad = _stats(_arr)
+                print(f"  {_name}: N={_n:6d}  mean={_m:+.4f}  std={_sd:.4f}  "
+                      f"robust_sigma={_rmad:.4f}  ->  lambda_eff=1/sigma^2={1.0/max(_rmad,1e-9)**2:.3g}"
+                      f"  (current lambda={_lam_cur})")
+            # adaptive-knots opportunity: correlation of |r_g| with |omega|
+            _gmag = np.linalg.norm(_g_res, axis=1)
+            _amag = np.linalg.norm(_a_res, axis=1)
+            if len(_gmag) > 10:
+                print(f"  corr(|r_gyro|, |omega|) = {np.corrcoef(_gmag, _w_norm)[0,1]:+.3f}   "
+                      f"corr(|r_accel|, |omega|) = {np.corrcoef(_amag, _w_norm)[0,1]:+.3f}")
+            _rs_dir = Path(__file__).parent.parent / 'plots' / bag_key
+            _rs_dir.mkdir(parents=True, exist_ok=True)
+            _rs_out = _rs_dir / f'residual_stats_{bag_key}.npz'
+            np.savez(_rs_out, t=_g_t, gyro_res=_g_res, accel_res=_a_res,
+                     omega_norm=_w_norm, radar_t=_r_t, radar_res=_r_res)
+            print(f"  Saved residual time series: {_rs_out}")
 
         # ==================== Save arrays (before NO_PLOT check) ====================
         if SAVE_ARRAYS:
