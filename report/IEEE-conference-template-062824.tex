@@ -965,17 +965,19 @@ A chain of three fixes revised this verdict.
 (i)~The consistent unscaled prior (Sec.~\ref{sec:sw}) restores
 inter-window information transfer.
 (ii)~A soft position anchor to the dead-reckoned initialization
-($\lambda_{\mathrm{pos\text{-}init}}{=}10$ per CP) bounds the
+($\lambda_{\mathrm{pos\text{-}init}}{=}0.5$ per CP) bounds the
 position random walk that sparse, rate-inflated radar cannot prevent
-within a 3\,s window.
-(iii)~The rate-dependent noise inflation ($\omega_0{=}4$\,rad/s) and
-the elevation-bias correction ($b{=}{-}1.0$\,m/s,
-Sec.~\ref{sec:models}) remove the two dominant radar systematics
-during flips.
-Together these reach \textbf{1.99\,m\,/\,9.2\degree\ settled and
-2.14\,m\,/\,8.7\degree\ live at 0.66\,s per window}
-(Table~\ref{tab:sw}) --- settled position now matches the batch
-ceiling and live orientation is below the batch figure.
+within a 3\,s window (without it position diverges to 8\,m; on racing
+bags the same anchor is \emph{harmful} --- it is a flip-regime rescue,
+not a general ingredient).
+(iii)~The dynamics-adaptive weighting law (Sec.~\ref{sec:models}) ---
+in particular rate-adaptive gyroscope trust, which on this bag alone
+is worth $\sim$3\degree\ of orientation at zero position cost ---
+plus the flip-regime Doppler correction $b{=}{-}1.5$\,m/s.
+Together these reach \textbf{1.64\,m\,/\,5.0\degree\ settled and
+1.51\,m\,/\,6.3\degree\ live at $\sim$0.6\,s per window}
+(Table~\ref{tab:sw}) --- well beyond the former batch ceiling of
+1.81\,m\,/\,8.4\degree\ on both axes.
 
 \emph{Why $\Delta t_o{=}8$\,ms in the window.}
 At the batch density $\Delta t_o{=}0.8$\,ms a 3\,s window has
@@ -992,23 +994,35 @@ final cost \emph{anti-correlates} with accuracy --- the
 underconstrained problem overfits with the wrong global orientation.
 Single-run comparisons at this density are not trustworthy.
 
-\emph{Attributing the z-axis failure.}
+\emph{Attributing the z-axis failure --- and what $b$ really is.}
 A visual trajectory check (numeric RMSE conceals it) showed the SW
 estimate sinking in altitude.  Disabling the position anchor exposes
 the raw behaviour: a near-constant $-0.57$\,m/s world-$z$ drift
-($-8$\,m over the flight), matching the known elevation bias.
-Sweeping the per-point correction $b \in \{+0.5, 0, -0.5, -1.0\}$\,m/s
-produces a linear family of $z$-error curves, and $b{=}{-}1.0$
-flattens the drift (final $z$ error $+0.2$\,m vs.\ $-5.5$\,m
-uncorrected) --- confirming the antenna-fixed elevation-bias model.
-Notably, applying the same correction to the racing bags
-\emph{degrades} them monotonically (fast-racing batch position
-0.76\,$\to$\,2.6\,$\to$\,5.4\,m for $b{=}0,-0.5,-1.0$): in level
-flight the self-calibrated extrinsic pitch
-(25.5\degree\,$\to$\,27.6\degree) already absorbs the elevation bias,
-so the explicit correction double-counts.  The extrinsic-pitch offset
-and the radar elevation bias are the same physical error in two
-parameterizations; they disentangle only under attitude-rich motion.
+($-8$\,m over the flight).  Sweeping the per-point correction
+$v_{\mathrm{corr}} = v - b\,u_{s,z}$ produces a linear family of
+$z$-error curves and large negative $b$ flattens the drift, so we
+initially interpreted $b$ as the antenna-fixed elevation bias of the
+2-TX array.  A joint calibration experiment \emph{disproves} this
+interpretation: (i)~with extrinsic pitch \emph{locked} at its
+plateau value, level-flight racing degrades catastrophically under
+any explicit $b$ (fast-racing position
+0.50\,$\to$\,3.3\,$\to$\,6.7\,m for $b{=}0,-0.5,-1.0$) --- a true
+antenna-fixed bias would be tolerated, since nothing else can absorb
+it; and (ii)~on backflips the optimum keeps growing monotonically
+past the WLS-measured static bias of $-0.5$\,m/s (through $-1.5$
+to $-2.0$), into physically implausible territory.
+We conclude $b$ is a \emph{flight-regime error proxy} --- it absorbs
+an attitude-correlated Doppler systematic during flips (most likely
+intra-frame motion distortion) that happens to project like an
+elevation term --- and we cap it at $b{=}{-}1.5$ rather than chase
+the monotone trend without a mechanism.
+Relatedly, a $3{\times}3$ grid over (locked pitch, $b$) shows
+extrinsic pitch is a \emph{plateau} (26.5--28.5\degree\
+indistinguishable on backflips), and locking pitch at 27.5\degree\
+\emph{improves} fast racing over online pitch self-calibration
+(live position $-21\%$); the earlier ``self-calibrated $+2\degree$
+absorbs the elevation bias'' reading is retired ---
+27.5\degree\ is simply the correct mount angle.
 
 \emph{Remaining gap.}
 The residual $\sim$9\degree\ orientation error during flips
