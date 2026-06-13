@@ -280,8 +280,11 @@ platform.
 The system runs on a quadrotor with a TI IWR6843AOPEVM
 mmWave radar (60--64\,GHz FMCW), a Pixhawk flight
 controller IMU, and a Vicon MoCap system used for ground
-truth evaluation.  The radar is mounted upside-down with a 30\degree\
-downward tilt; extrinsic rotation $[180\degree, 25.5\degree, 0\degree]$
+truth evaluation.  The radar is mounted upside-down with a nominal
+$30\degree$ downward tilt (CAD); the mount is 3D-printed and
+hand-assembled, so the as-built angle is uncertain by a few degrees and
+is recovered by online extrinsic calibration (Sec.~\ref{sec:results}).
+The nominal extrinsic rotation is $[180\degree, 25.5\degree, 0\degree]$
 (roll, pitch, yaw), translation $[0.08, 0.02, -0.01]$\,m in the body
 frame.  The radar operates at $\sim$11\,Hz with 0.049\,m/s Doppler
 resolution (best-velocity firmware configuration).  Raw IMU rate
@@ -778,10 +781,12 @@ Backflips\textsuperscript{\dag} & 1.935 & 8.44 & 1.814 & 3.35 & --- \\
 \end{table}
 
 The extrinsic pitch self-calibrates from the nominal 25.5\degree\ to
-27.1\degree\ (slow racing) and 27.6\degree\ (fast racing), consistent
-with the physical 30\degree\ mount angle.  Racing bags converge to
-the same pitch estimate regardless of whether initialization starts
-at 25.5\degree\ or 30\degree.
+27.1\degree\ (slow racing) and 27.6\degree\ (fast racing) --- recovering
+the as-built mount angle, which the 3D-printed, hand-assembled fixture
+leaves a few degrees short of the 30\degree\ CAD nominal.  Racing bags
+converge to the same pitch estimate regardless of whether initialization
+starts at 25.5\degree\ or 30\degree, so the estimate is data-driven, not
+init-dependent --- an independent check on the extrinsic calibration.
 
 \subsection{Sliding Window: Settled vs.\ Live}
 \label{sec:sw_results}
@@ -1330,7 +1335,9 @@ indistinguishable on backflips), and locking pitch at 27.5\degree\
 \emph{improves} fast racing over online pitch self-calibration
 (live position $-21\%$); the earlier ``self-calibrated $+2\degree$
 absorbs the elevation bias'' reading is retired ---
-27.5\degree\ is simply the correct mount angle.
+27.5\degree\ is simply the correct as-built mount angle (a few degrees
+short of the $30\degree$ CAD nominal; the 3D-printed, loosely-fastened
+fixture accounts for the difference).
 
 \emph{Remaining gap.}
 The residual $\sim$9\degree\ orientation error during flips
