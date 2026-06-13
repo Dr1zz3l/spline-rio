@@ -403,7 +403,11 @@ $\vR_{bw} = \vR_{wb}^{\top}$.  The residual
 $r_k = v_{D,\text{meas}} - v_{D,\text{pred}}$ uses Huber
 loss with $\delta = 1.0$\,m/s, chosen to accommodate the
 $\pm0.5$--\SI{0.65}{\metre\per\second} systematic z-velocity bias from
-limited elevation diversity (2\,TX antennas); the
+limited elevation diversity (2\,TX antennas), whose systematic part is
+absorbed on our pitched mount by the extrinsic pitch calibration
+(Sec.~\ref{sec:results}) so the kernel sees only the remainder; the
+portability of this kernel choice to other mount geometries is examined
+in Sec.~\ref{sec:baselines}.  The
 \SI{0.049}{\metre\per\second} Doppler resolution sets a lower bound but
 does not drive the choice.
 
@@ -1017,14 +1021,21 @@ minority of elevation-biased single-chip returns; our pipeline uses a
 Huber-robust least squares that only down-weights them.  Measured
 against the ground-truth attitude, the per-frame vertical ego-velocity
 bias is $-0.06$ to $-0.16$\,m/s under our Huber front-end (matching the
-observed drift) but only $-0.01$ to $-0.10$\,m/s under RANSAC.  Adding
-reve-equivalent RANSAC rejection to our front-end reduces the vertical
-drift on all four flights by an order of magnitude --- to $0.5$--$1.9$\,m
-($0.7$--$1.3\%$, velocity RMSE $\sim$$0.07$\,m/s), comparable to the
-baselines.  The single-chip elevation bias is therefore real but not
-fundamental: it is an outlier-rejection gap.  We retain the Huber
-front-end in the results reported here and adopt a RANSAC front-end as
-future work (Sec.~\ref{sec:conclusion}).  Under
+observed drift) but at most $0.10$\,m/s in magnitude under RANSAC.
+Adding reve-equivalent RANSAC rejection to our front-end (their stock
+$0.15$\,m/s inlier threshold) closes the order-of-magnitude gap on all
+four flights, reaching the same order as the baselines ($0.5$--$1.9$\,m,
+$0.7$--$1.3\%$ drift, velocity RMSE $\sim$$0.07$\,m/s).  The single-chip
+elevation bias is therefore real but not fundamental: it is an
+outlier-rejection gap that the baselines close with RANSAC.  On our own
+platform the systematic part of this bias is absorbed by the
+$27.5\degree$ pitched mount via extrinsic pitch calibration
+(Sec.~\ref{sec:results}), so the Huber front-end is adequate there and
+is what we report; RANSAC closes the residual portability gap to a
+horizontal-boresight mount, where that remedy does not apply.
+Integrating RANSAC as the default front-end --- with the
+dynamics-adaptive weighting law re-validated against it across all
+regimes --- is future work.  Under
 whole-trajectory Umeyama alignment (Table~\ref{tab:baselines-decomp})
 the baselines fall to 0.1--0.9\,m, consistent with their published
 full-alignment figures (the baselines are faithfully reproduced) and
@@ -1090,7 +1101,8 @@ attitude RMSE (per-axis RMS, yaw excluded): the three systems are comparable, so
 large orientation gap in Table~\ref{tab:baselines} is yaw, not attitude.  \emph{Our
 drift} splits our position error into horizontal and vertical: the horizontal component
 is competitive, and the loss is a vertical bias from unrejected elevation-biased
-radar returns that a RANSAC front-end removes (Sec.~\ref{sec:baselines}).
+radar returns that a RANSAC front-end rejects, closing the gap by an order of
+magnitude (Sec.~\ref{sec:baselines}).
 \emph{Whole-traj.\ ATE} re-evaluates every system under the standard EVO/KITTI Umeyama
 alignment (no scale) for cross-checking against published figures.}
 \label{tab:baselines-decomp}
@@ -1108,6 +1120,8 @@ Flight & ekf-rio & ekf-yrio & Ours & horiz.\ & vert.\ & ekf-rio & ekf-yrio & Our
 3 & 0.25 & 0.26 & 0.25 & \textbf{0.5} & 14.7 & 0.36 & 0.26 & 10.86 \\
 4 & 0.74 & 0.74 & 0.72 & \textbf{1.1} & 13.1 & 0.30 & 0.15 & 5.48 \\
 \bottomrule
+\addlinespace[2pt]
+\multicolumn{9}{l}{\footnotesize Ours\,$+$\,RANSAC front-end (Sec.~\ref{sec:baselines}): vertical drift $0.6$--$1.3\%$; whole-traj.\ ATE $0.46/0.24/0.76/0.46$\,m (flights~1--4).}\\
 \end{tabular}
 \end{table*}
 
@@ -1489,8 +1503,9 @@ adding the same rejection cuts our vertical drift to $0.5$--$1.9$\,m ---
 while their radar-update gate, starved by our sparse clouds and
 racing-frame vibration, rejects up to 99.7\% of updates and their
 filters dead-reckon on our slow-racing bag (degrading, not diverging, on
-the faster one).  A RANSAC radar front-end is the better default and
-should replace our Huber front-end in future work.
+the faster one).  A RANSAC radar front-end closes this portability gap;
+integrating it as the default --- with the dynamics-adaptive weighting
+law re-validated against it --- is future work.
 
 %==================================================================
 \bibliographystyle{IEEEtran}

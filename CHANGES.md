@@ -70,12 +70,31 @@ regularization factor was not implemented.
 ## 3. Paper edits made (Task C) — done
 - Sec. VI-F: replaced the "unresolved / future work" vertical paragraph with the resolved
   mechanism (Huber vs RANSAC front-end, the per-frame bias numbers) + the all-four-flights
-  RANSAC result; retains the Huber front-end as the reported default and names RANSAC as
-  future work.
-- Table VI caption: "cause unresolved" → "a vertical bias … that a RANSAC front-end removes".
+  RANSAC result.
+- Table VI caption: "cause unresolved" → "a vertical bias … that a RANSAC front-end rejects,
+  closing the gap by an order of magnitude".
 - Conclusion limitation (3): "cause unresolved — ruled out altitude aiding" → traced to
-  radar-front-end outlier rejection (reve RANSAC vs our Huber), with the future-work line
-  "a RANSAC radar front-end is the better default and should replace our Huber front-end".
+  radar-front-end outlier rejection (reve RANSAC vs our Huber).
+
+### Framing reframe (2nd review note) — RANSAC = mount-portability fix, NOT universal default
+The first draft of these edits called RANSAC "the better default [that] should replace our
+Huber front-end" — an overclaim: the paper *demonstrates* RANSAC superiority only on the
+foreign-mount ICINS cross-validation, not on our own pitched-mount results. Reframed to claim
+only what is shown:
+- RANSAC closes the **portability gap** to a horizontal-boresight mount; on our 27.5° pitched
+  mount the systematic bias is absorbed by extrinsic pitch calibration so Huber is adequate and
+  is what we report. Deferral reason stated: adopting RANSAC as default requires re-validating
+  the dynamics-adaptive weighting law against it across all regimes — future work.
+- Sec. IV-B bridge added: the Huber δ=1.0 z-bias accommodation is reconciled with VI-F (pitched
+  mount absorbs the systematic part; portability examined in VI-F) so the two sections cohere.
+- Table VI: added a note row with the RANSAC-corrected whole-traj ATE (0.46/0.24/0.76/0.46 m)
+  so the reader does not carry away the 9.6–10.9 m Huber naive-port figure.
+- Tightened "comparable to the baselines" → "reaching the same order as the baselines" (we are
+  ~2–4× of yaw-aided ekf-yrio, genuinely comparable only to unaided ekf-rio).
+- Stated the RANSAC inlier threshold (0.15 m/s) is **reve's stock value** (verified:
+  `reve/.../radar_ego_velocity_estimator.py` default + `params_demo_dataset.yaml`), preempting
+  "tuned the gate".
+- Fixed the RANSAC bias range to "at most 0.10 m/s in magnitude" (flight_1 is +0.002, positive).
 - (Decision: keep Huber as the reported default; do NOT change the main-pipeline numbers.)
 - PDF rebuilt (11 pages, clean, all citations resolve).
 
