@@ -1269,9 +1269,13 @@ B0 confirmed the ±60° elevation gate WAS applied (converted bag |elev|max 57.5
 slow_racing neutral (0.303→0.303), fast_racing improves (0.501→0.389 live pos), backflips
 neutral (1.51→1.55) — RANSAC is a net-better front-end. DECISION: keep Huber as the reported
 default this paper. Framing (2nd review note): RANSAC presented as a MOUNT-PORTABILITY fix
-(closes the gap on a horizontal-boresight mount; our pitched mount absorbs the bias via pitch
-calib so Huber is adequate), NOT a "universal better default" — the latter would overclaim
-beyond the ICINS cross-validation. Adopting RANSAC as default = re-validate the
+(closes the gap on a horizontal-boresight mount; Huber empirically adequate on our platform,
+Tables II–VIII), NOT a "universal better default" — the latter would overclaim beyond the
+ICINS cross-validation. MECHANISM HEDGED: do NOT claim pitch calibration absorbs the bias —
+that contradicts VII-B ("+2° absorbs elevation bias" reading retired; 27.5° is just the correct
+angle); mount geometry demoted to a hedged "plausibly". Tried B1 diagnostic on own bags to
+demonstrate near-zero Huber vertical bias — conventions don't transfer (spurious y-bias), not
+used. Adopting RANSAC as default = re-validate the
 dynamics-adaptive weighting law across all regimes (future work). Paper edits: Sec IV-B bridge,
 Sec VI-F mechanism paragraph (reframed), Table VI caption + RANSAC note row (whole-traj
 0.46/0.24/0.76/0.46 m), Conclusion limitation (3). reve inlier 0.15 confirmed stock.

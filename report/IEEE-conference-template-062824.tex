@@ -403,11 +403,9 @@ $\vR_{bw} = \vR_{wb}^{\top}$.  The residual
 $r_k = v_{D,\text{meas}} - v_{D,\text{pred}}$ uses Huber
 loss with $\delta = 1.0$\,m/s, chosen to accommodate the
 $\pm0.5$--\SI{0.65}{\metre\per\second} systematic z-velocity bias from
-limited elevation diversity (2\,TX antennas), whose systematic part is
-absorbed on our pitched mount by the extrinsic pitch calibration
-(Sec.~\ref{sec:results}) so the kernel sees only the remainder; the
-portability of this kernel choice to other mount geometries is examined
-in Sec.~\ref{sec:baselines}.  The
+limited elevation diversity (2\,TX antennas); this kernel is adequate on
+our platform (Sec.~\ref{sec:results}), and its portability to other
+mount geometries is examined in Sec.~\ref{sec:baselines}.  The
 \SI{0.049}{\metre\per\second} Doppler resolution sets a lower bound but
 does not drive the choice.
 
@@ -1028,11 +1026,12 @@ four flights, reaching the same order as the baselines ($0.5$--$1.9$\,m,
 $0.7$--$1.3\%$ drift, velocity RMSE $\sim$$0.07$\,m/s).  The single-chip
 elevation bias is therefore real but not fundamental: it is an
 outlier-rejection gap that the baselines close with RANSAC.  On our own
-platform the systematic part of this bias is absorbed by the
-$27.5\degree$ pitched mount via extrinsic pitch calibration
-(Sec.~\ref{sec:results}), so the Huber front-end is adequate there and
-is what we report; RANSAC closes the residual portability gap to a
-horizontal-boresight mount, where that remedy does not apply.
+platform the Huber front-end is adequate --- our reported results
+(Sec.~\ref{sec:results}) are $0.28$--$0.5$\,m --- so it is what we
+report; the gap arises on a \emph{horizontal}-boresight mount, plausibly
+because there the radar's poorly observed elevation direction aligns
+with world-vertical and the unrejected returns leak straight into it.
+RANSAC closes this portability gap.
 Integrating RANSAC as the default front-end --- with the
 dynamics-adaptive weighting law re-validated against it across all
 regimes --- is future work.  Under

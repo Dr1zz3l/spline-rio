@@ -81,12 +81,29 @@ The first draft of these edits called RANSAC "the better default [that] should r
 Huber front-end" — an overclaim: the paper *demonstrates* RANSAC superiority only on the
 foreign-mount ICINS cross-validation, not on our own pitched-mount results. Reframed to claim
 only what is shown:
-- RANSAC closes the **portability gap** to a horizontal-boresight mount; on our 27.5° pitched
-  mount the systematic bias is absorbed by extrinsic pitch calibration so Huber is adequate and
+- RANSAC closes the **portability gap** to a horizontal-boresight mount; on our platform
+  Huber is **adequate** (empirically — our reported results, Sec. results, are 0.28–0.5 m) and
   is what we report. Deferral reason stated: adopting RANSAC as default requires re-validating
   the dynamics-adaptive weighting law against it across all regimes — future work.
-- Sec. IV-B bridge added: the Huber δ=1.0 z-bias accommodation is reconciled with VI-F (pitched
-  mount absorbs the systematic part; portability examined in VI-F) so the two sections cohere.
+- Sec. IV-B bridge added: the Huber δ=1.0 choice is reconciled with VI-F (adequate on our
+  platform; portability examined in VI-F) so the two sections cohere.
+
+**MECHANISM HEDGED (not asserted) — it contradicted our own Sec. VII-B.** The first draft of
+this reframe said "the systematic bias is absorbed by the 27.5° pitched mount via extrinsic
+pitch calibration." But Sec. VII-B explicitly **retires** that reading ("the earlier
+'self-calibrated +2° absorbs the elevation bias' reading is retired — 27.5° is simply the
+correct mount angle"). Asserting absorption in IV-B/VI-F would have contradicted VII-B. Fixed:
+lead with the empirically-shown adequacy (our own results), and demote mount geometry to a
+hedged "plausibly because on a horizontal-boresight mount the poorly observed elevation
+direction aligns with world-vertical" — no claim that pitch calibration does bias-absorption work.
+
+**Optional upgrade attempted, did NOT pan out.** Ran the B1 diagnostic on our own bags
+(`icins_zbias_probe.py slow_racing_best_velocity --euler 180,27.5,0`) hoping to show Huber's
+vertical bias is near-zero on our platform (a positive demonstration). It produced spurious
+nonzero *horizontal* biases (y −0.16 to −0.20 m/s) that the solver's good slow_racing result
+(0.28 m) contradicts — the diagnostic's conventions, validated on the *converted* ICINS bags,
+don't transfer cleanly to our own bags. Not trustworthy; no claim built on it. The hedge stands.
+(The `--euler` flag added to the diagnostic is a harmless generalization.)
 - Table VI: added a note row with the RANSAC-corrected whole-traj ATE (0.46/0.24/0.76/0.46 m)
   so the reader does not carry away the 9.6–10.9 m Huber naive-port figure.
 - Tightened "comparable to the baselines" → "reaching the same order as the baselines" (we are

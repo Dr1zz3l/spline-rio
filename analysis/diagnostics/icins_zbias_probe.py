@@ -61,9 +61,14 @@ def main():
     if not bag.exists():
         bag = (REPO / '..' / bag_rel).resolve()
     start_off, dur = bags['timing'][alias]
-    # ICINS extrinsics used in the published runs (their calib, converted)
+    # Extrinsics (R_body_from_sensor). Default = ICINS published calib (their horizontal
+    # mount, converted). Override with --euler r,p,y for our own pitched mount, e.g.
+    # --euler 180,27.5,0 for the racing/backflip bags.
     euler = [-178.501, -0.099, 46.997]
+    if '--euler' in sys.argv:
+        euler = [float(x) for x in sys.argv[sys.argv.index('--euler') + 1].split(',')]
     R_bs = rotation_matrix_from_euler(*np.radians(euler))     # R_body_from_sensor
+    print(f"  extrinsic euler (R_bs) = {euler}")
 
     bd = load_bag_topics(str(bag), verbose=False)
     t0 = bd.start_time + start_off
