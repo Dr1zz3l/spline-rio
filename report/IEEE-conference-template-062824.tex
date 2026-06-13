@@ -1011,13 +1011,25 @@ ablation disabling the barometer in ekf-yrio changes its vertical drift
 by $\le$0.04\,m (within run-to-run variation; their stock
 $\sigma_\mathrm{altimeter}{=}5$\,m makes the baro near-negligible), so
 the baselines obtain accurate vertical estimates from radar and IMU
-alone.  Why our single-chip vertical Doppler degrades on this platform
-while theirs does not is unresolved and left to future work.  Under
+alone.  The cause is the radar front-end.  Doer's \mbox{reve} estimates
+ego-velocity with 3D RANSAC (inlier $0.15$\,m/s), hard-rejecting the
+minority of elevation-biased single-chip returns; our pipeline uses a
+Huber-robust least squares that only down-weights them.  Measured
+against the ground-truth attitude, the per-frame vertical ego-velocity
+bias is $-0.06$ to $-0.16$\,m/s under our Huber front-end (matching the
+observed drift) but only $-0.01$ to $-0.10$\,m/s under RANSAC.  Adding
+reve-equivalent RANSAC rejection to our front-end reduces the vertical
+drift on all four flights by an order of magnitude --- to $0.5$--$1.9$\,m
+($0.7$--$1.3\%$, velocity RMSE $\sim$$0.07$\,m/s), comparable to the
+baselines.  The single-chip elevation bias is therefore real but not
+fundamental: it is an outlier-rejection gap.  We retain the Huber
+front-end in the results reported here and adopt a RANSAC front-end as
+future work (Sec.~\ref{sec:conclusion}).  Under
 whole-trajectory Umeyama alignment (Table~\ref{tab:baselines-decomp})
 the baselines fall to 0.1--0.9\,m, consistent with their published
-full-alignment figures and confirming that the headline gap is our
-vertical error plus the causal metric rather than a porting artifact,
-while our position stays vertical-dominated.
+full-alignment figures (the baselines are faithfully reproduced) and
+showing that the gap survives whole-trajectory alignment, while our
+position stays vertical-dominated.
 
 \textbf{Their filters on our data.}  The reverse port is
 regime-dependent, and we report the measured outcome rather than a
@@ -1077,7 +1089,8 @@ honest structure visible at a glance.  \emph{Roll/pitch} is the heading-independ
 attitude RMSE (per-axis RMS, yaw excluded): the three systems are comparable, so the
 large orientation gap in Table~\ref{tab:baselines} is yaw, not attitude.  \emph{Our
 drift} splits our position error into horizontal and vertical: the horizontal component
-is competitive, and the loss is the structurally unobservable vertical elevation bias.
+is competitive, and the loss is a vertical bias from unrejected elevation-biased
+radar returns that a RANSAC front-end removes (Sec.~\ref{sec:baselines}).
 \emph{Whole-traj.\ ATE} re-evaluates every system under the standard EVO/KITTI Umeyama
 alignment (no scale) for cross-checking against published figures.}
 \label{tab:baselines-decomp}
@@ -1467,13 +1480,17 @@ factor-split ablation; (2) ground truth itself degrades during flips
 (3) cross-validation against the EKF-RIO family
 (Sec.~\ref{sec:baselines}) shows each stack is strongest on the
 platform it was designed for: our solver matches their roll/pitch and
-leads on heading-aided orientation on their public flights but carries
-a large vertical drift there (12--15\% total, only 0.5--1.1\%
-horizontal) whose cause is unresolved --- we ruled out altitude aiding
-by ablation --- while their radar-update gate, starved by our sparse
-clouds and racing-frame vibration, rejects up to 99.7\% of updates and
-their filters dead-reckon on our slow-racing bag (degrading, not
-diverging, on the faster one).
+leads on heading-aided orientation on their public flights but, under a
+naive port, carries a large vertical drift there (12--15\% total, only
+0.5--1.1\% horizontal); we trace this to radar-front-end outlier
+rejection --- \mbox{reve} hard-rejects the elevation-biased single-chip
+returns with RANSAC where our Huber kernel only down-weights them, and
+adding the same rejection cuts our vertical drift to $0.5$--$1.9$\,m ---
+while their radar-update gate, starved by our sparse clouds and
+racing-frame vibration, rejects up to 99.7\% of updates and their
+filters dead-reckon on our slow-racing bag (degrading, not diverging, on
+the faster one).  A RANSAC radar front-end is the better default and
+should replace our Huber front-end in future work.
 
 %==================================================================
 \bibliographystyle{IEEEtran}

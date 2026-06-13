@@ -1870,6 +1870,57 @@ def main():
     else:
         solver_radar_frames = radar_frames
 
+    # Optional reve-style RANSAC outlier rejection on the radar front-end
+    # (--radar-ransac [thresh]).  Mirrors Doer's radar_ego_velocity_estimator
+    # (3D LSQ RANSAC, inlier_thresh 0.15 m/s): hard-rejects the minority of
+    # elevation-biased single-chip returns that a Huber kernel only down-weights.
+    # See diagnostics/icins_zbias_probe.py for the front-end bias measurement.
+    if '--radar-ransac' in sys.argv:
+        import dataclasses as _dc
+        _ri = sys.argv.index('--radar-ransac')
+        _thr = 0.15
+        if _ri + 1 < len(sys.argv):
+            try:
+                _thr = float(sys.argv[_ri + 1])
+            except ValueError:
+                pass
+        _rng = np.random.default_rng(0)
+
+        def _ransac_mask(P, v, thresh, iters=150):
+            n = len(v)
+            if n < 5:
+                return np.ones(n, dtype=bool)
+            Hn = P / np.maximum(np.linalg.norm(P, axis=1, keepdims=True), 1e-6)
+            best = None
+            for _ in range(iters):
+                idx = _rng.choice(n, 3, replace=False)
+                try:
+                    vc = np.linalg.solve(Hn[idx], v[idx])
+                except np.linalg.LinAlgError:
+                    continue
+                inl = np.abs(Hn @ vc - v) < thresh
+                if best is None or inl.sum() > best.sum():
+                    best = inl
+            return best if best is not None and best.sum() >= 5 else np.ones(n, dtype=bool)
+
+        _filt, _kept, _tot = [], 0, 0
+        for _f in solver_radar_frames:
+            if _f.velocities is None or _f.num_points() < 5:
+                _filt.append(_f); continue
+            _P = np.asarray(_f.positions, float)
+            _m = _ransac_mask(_P, np.asarray(_f.velocities, float), _thr)
+            _tot += len(_m); _kept += int(_m.sum())
+            _kw = {}
+            for _a in ('positions', 'velocities', 'intensities', 'ranges',
+                       'noise', 'frame_number', 'time_cpu_cycles'):
+                _val = getattr(_f, _a, None)
+                if _val is not None and np.ndim(_val) >= 1 and len(_val) == len(_m):
+                    _kw[_a] = np.asarray(_val)[_m]
+            _filt.append(_dc.replace(_f, **_kw))
+        solver_radar_frames = _filt
+        print(f"\n  [--radar-ransac {_thr}] kept {_kept}/{_tot} radar points "
+              f"({100 * _kept / max(1, _tot):.1f}%)")
+
     # ==================== Optimize ====================
 
     # Build preintegrated IMU factors (one per consecutive radar frame interval).

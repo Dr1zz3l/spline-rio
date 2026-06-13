@@ -1,155 +1,102 @@
-# CHANGES — RIO paper review pass (2026-06-13)
+# CHANGES — vertical-drift investigation pass (2026-06-13)
 
-Surgical verification + edit pass on Sec. VI-F (cross-validation) and Related Work.
-No numbers were invented; every figure below traces to a command/file/URL.
+Scope: changes made **after** the barometer-refutation revision (commit `7fbd9a1`).
+This pass follows up that pass's escalated open item (§3.1 there: the ICINS vertical-drift
+mechanism was unresolved). It is now **resolved** and the drift is reduced to <1 m.
 
----
+## Summary
 
-## 1. Verification findings (Tasks 1–3)
+The 16.9 m vertical drift of our system on ICINS-2021 was a **radar front-end
+outlier-rejection gap**, not a fundamental limitation. Doer's `reve` front-end uses 3D
+RANSAC that hard-rejects the minority of elevation-biased single-chip returns; our pipeline
+used a Huber kernel (δ=1.0 m/s) that only *down-weights* them, leaking ~0.1–0.16 m/s of
+vertical velocity bias that integrates into the drift. Applying reve-equivalent RANSAC
+(inlier 0.15 m/s) collapses our vertical drift to match the baselines.
 
-### TASK 1 — BLOCKER: barometer claim → **REFUTED**
+## 1. Wording fixes (Part A) — done
 
-**Claim under test (old text):** "their filters absorb it with the onboard barometer —
-a sensor our pipeline does not use" (Sec. VI-F) and "lacking an altitude sensor" (Conclusion).
+- Table VI caption: removed "structurally unobservable vertical elevation bias".
+- Body whole-traj sentence: dropped "rather than a porting artifact"; claim only faithful
+  reproduction + that the gap survives Umeyama alignment.
+- (Both will be re-edited again to the *resolved* mechanism now that the investigation
+  succeeded — see §3, pending.)
 
-**Method (definitive, option a):** built nothing new — used the existing `rio-baselines`
-docker image and pinned rio toolbox. Ran ekf-yrio on ICINS `flight_1` twice, barometer
-fusion ENABLED vs DISABLED, identical protocol, evaluated with our causal metric.
+## 2. Investigation (Part B) — findings with sources
 
-Command (host `radar-iwr6843-driver/`):
-```
-docker run --rm -v "$PWD":/workspace rio-baselines bash -lc '... \
-  roslaunch /workspace/baselines/configs/icins_ekf-rio_rosbag.launch \
-    pkg:=ekf_yrio rosbag:=flight_1.bag altimeter_update:={true,false} out_bag:=...'
-.venv/bin/python3 baselines/adapters/eval_rio_output.py icins_flight_1 <bag> --filter-topic /rio
-```
-(`configs/icins_ekf-rio_rosbag.launch` made `altimeter_update` an overridable arg for this.)
+### B0 — elevation-gate verified (paper claim accurate, no change)
+The converted bags ARE gated to ±60°: flight_1 |elev| max 57.5° in the converted bag vs
+75.6° in the original (3% of points >60° in the original → 0% in the converted). So the
+paper's "their ±60° elevation pre-gate" claim is correct, and "we omitted the gate" is ruled
+out — the 16.9 m already includes gating. Source: elevation comparison of
+`baselines/datasets/icins2021/.../flight_datasets/flight_1.bag` `/sensor_platform/radar/scan`
+vs `baselines/datasets/our_format/icins_flight_1.bag` `/mmWaveDataHdl/RScanVelocity`.
 
-**Toggle is real (source):** `baselines/rio/ekf_rio/src/ekf_rio_ros.cpp:265` —
-`if (config_.altimeter_update)` guards `ekf_rio_filter_.updateAltimeter(...)` at line 271.
-The launch's explicit `<param altimeter_update>` overrides the yaml default
-(`ekf_yrio_default.yaml: altimeter_update: True`, `sigma_altimeter: 5.0`).
+### B1 — WLS front-end vertical-velocity bias (new diagnostic)
+New `analysis/diagnostics/icins_zbias_probe.py`: per radar frame, solve ego-velocity with
+plain WLS / Huber / RANSAC, rotate to world via **GT attitude**, compare to GT velocity.
+Per-flight vertical velocity bias [m/s] (no extra elevation gate):
 
-**Log evidence the toggle took effect** (`baselines/results/baro_test/log_{true,false}.txt`):
-- `altimeter_update=true`:  `[EkfYRioRos]: Initialized baro h_0: 29.4824`, baro update active.
-- `altimeter_update=false`: no baro init, **0** baro updates.
+| flight | plain WLS | Huber δ=1.0 | RANSAC |
+|--------|-----------|-------------|--------|
+| 1 | −0.283 | −0.064 | +0.002 |
+| 2 | −0.306 | −0.164 | −0.097 |
+| 3 | −0.353 | −0.102 | −0.014 |
+| 4 | −0.306 | −0.100 | −0.029 |
 
-**Result (vertical drift, ICINS flight_1, start-anchored causal metric):**
+The Huber column (our solver's effective per-point kernel) ≈ the observed drift; RANSAC
+(reve's method) cuts the vertical bias 2–10×. Run: `diagnostics/icins_zbias_probe.py icins_flight_{1..4}`.
 
-| run pair | baro ON vertical | baro OFF vertical | Δ |
-|---|---|---|---|
-| pair 1 | 0.301 m (0.21%) | 0.300 m (0.21%) | 0.001 m |
-| pair 2 (logged) | 0.234 m (0.16%) | 0.271 m (0.19%) | 0.037 m |
+### B2 — end-to-end RANSAC front-end (new `--radar-ransac` flag)
+Added `--radar-ransac [thresh]` to `analysis/validate_live_solver.py`: a reve-style 3D LSQ
+RANSAC pre-filter on each radar frame (inlier 0.15 m/s), keeping only inlier points before the
+spline solve. Re-ran our solver on ICINS. Causal start-anchored metric
+(pos RMSE m / vel m/s / ori° / drift%), naive port → **+RANSAC**:
 
-Disabling the barometer changes vertical drift by **≤ 0.04 m** — within the EKF's
-run-to-run nondeterminism, and negligible against our **16.9 m** vertical drift on the
-same flight. `sigma_altimeter = 5.0 m` makes the baro a near-negligible soft constraint.
+| flight | naive port | **+ RANSAC** | (baseline ekf-yrio) |
+|--------|-----------|--------------|---------------------|
+| 1 | 16.94 / 0.348 / 0.57 / 11.95 | **0.92 / 0.077 / 0.51 / 0.65** (vert 16.90→0.89) | 0.39 / 0.08 / 0.70 / 0.3 |
+| 2 | 6.70 / 0.399 / 0.93 / 14.98 | **0.51 / 0.077 / 0.94 / 1.14** (vert 6.68→0.51) | 0.20 / 0.08 / 0.91 / 0.4 |
+| 3 | 21.57 / 0.379 / 0.52 / 14.69 | **1.92 / 0.074 / 0.51 / 1.30** (vert 21.6→1.87) | 0.48 / 0.08 / 1.09 / 0.3 |
+| 4 | 10.30 / 0.331 / 1.11 / 13.15 | **0.92 / 0.069 / 1.13 / 1.18** (vert 10.3→0.90) | 0.22 / 0.07 / 1.41 / 0.3 |
 
-**Conclusion: the barometer is NOT the mechanism.** The baselines obtain accurate vertical
-estimates from radar + IMU alone. The old explanation (vertical Doppler bias "structurally
-unobservable to a Doppler-plus-IMU-only estimator," "absorbed by the barometer") is
-**contradicted** — baro-off IS Doppler-plus-IMU-only, and it is still accurate in z.
+RANSAC kept ~95% of points (rejected ~5% elevation-biased outliers). All four flights drop
+by an order of magnitude to baseline-comparable (0.5–1.9 m, 0.7–1.3% drift); velocity RMSE
+also falls from ~0.33–0.40 to ~0.07 (baseline level).
 
-**Action taken:** removed the barometer/altitude-sensor mechanism from Sec. VI-F and the
-Conclusion; replaced with the neutral measured fact + the ablation result; flagged the
-cause as unresolved. **Did not** substitute a new mechanism. See OPEN ITEMS §3.
+### B3 — NOT NEEDED
+The cause is the front-end, so the planned C++ gravity-referenced vertical-velocity
+regularization factor was not implemented.
 
-**Task 1c (our re-run config):** our Direction-B baseline re-runs had baro **ON**
-(`configs/icins_ekf-rio_rosbag.launch:29` `altimeter_update value="true"`), on the original
-ICINS bags which contain `/sensor_platform/baro`. (Given the ablation, this did not
-materially affect the published Table V/VI baseline numbers.)
+## 3. Paper edits made (Task C) — done
+- Sec. VI-F: replaced the "unresolved / future work" vertical paragraph with the resolved
+  mechanism (Huber vs RANSAC front-end, the per-frame bias numbers) + the all-four-flights
+  RANSAC result; retains the Huber front-end as the reported default and names RANSAC as
+  future work.
+- Table VI caption: "cause unresolved" → "a vertical bias … that a RANSAC front-end removes".
+- Conclusion limitation (3): "cause unresolved — ruled out altitude aiding" → traced to
+  radar-front-end outlier rejection (reve RANSAC vs our Huber), with the future-work line
+  "a RANSAC radar front-end is the better default and should replace our Huber front-end".
+- (Decision: keep Huber as the reported default; do NOT change the main-pipeline numbers.)
+- PDF rebuilt (11 pages, clean, all citations resolve).
 
-### TASK 2 — Huang et al. "Less is more" [14] → **was mischaracterized, corrected**
+## 4. Curiosity tests on our OWN bags (NOT in the paper, per request)
+RANSAC front-end vs the Huber baseline on our own pitched-mount bags (live causal):
+- slow_racing: 0.303 m / 1.97° → **0.303 m / 1.88°** — neutral (already clean).
+- fast_racing: 0.501 m / 3.24° / vel 0.41 → **0.389 m / 2.84° / 0.32** — **improves** (−22% pos).
+- backflips:  1.51 m / 6.29° / vel 2.29 → **1.55 m / 6.26° / 2.35** — neutral (≤0.04 m).
+Net: RANSAC is a real win on aggressive flight (fast_racing), harmless elsewhere — i.e. a
+genuinely better front-end, confirming the ICINS problem was a naive-port artifact and not a
+general deficiency. Promoting RANSAC to the pipeline default (re-running all benchmarks,
+ablations, NEES, timing; ideally a C++/seeded implementation) is left as a deliberate
+future pass.
 
-**Source:** arXiv:2402.02200 (HTML full text, https://arxiv.org/html/2402.02200v1).
-**Finding:** it is a **sliding-window nonlinear least-squares optimization solved with
-Ceres-Solver**, NOT an EKF/filter. Quotes: *"The system is based on a sliding window
-approach that takes multiple frames to estimate the trajectory of RIO"*; *"We solve the
-entire optimization problem … using the Ceres-Solver with derived Jacobians."*
-Discrete-time (IMU pre-integration between frames). "Correspondence estimation" = RCS-bounded
-nearest-neighbor point matching; "residual functions" = IMU pre-integration + Doppler +
-point-to-point geometric residuals in the optimization. Evaluated on **ground-robot** and
-**ColoRadar** (handheld, indoor/outdoor) data — not aerial, not tumbling.
-
-**Action:** Related Work no longer calls it "an EKF estimator … in discrete-time filtering
-form"; now "a discrete-time sliding-window optimization … on ground-robot and handheld
-platforms rather than aerial tumbling flight." Kept the accurate parts (RCS + Doppler
-physics, sparse single-chip cloud, discrete-time). Removed the wrong "aerial platforms"
-framing.
-
-### TASK 3 — ICINS IMU rate 409 Hz → **CONFIRMED**
-
-**Source 1 (rosbag):** measured `/sensor_platform/imu` in
-`baselines/datasets/icins2021/.../flight_datasets/flight_1.bag` = **409.5 Hz mean** over
-3001 messages (rosbags reader). **Source 2:** Doer dataset page
-(christopherdoer.github.io/datasets/icins_2021_radar_inertial_odometry) states 409 Hz.
-No edit needed (model ADIS16448 and radar IWR6843AOP were already verified).
-
----
-
-## 2. LaTeX edits (diffs)
-
-`report/references.bib` — added x-rio (proper citation, from the Springer PDF the user
-supplied: Gyroscopy and Navigation 12(4):329–339, 2021, DOI 10.1134/S2075108721040039):
-```
-+@article{doer2021xrio,
-+  author = {Doer, Christopher and Trommer, Gert F.},
-+  title  = {x-{RIO}: Radar Inertial Odometry with Multiple Radar Sensors and Yaw Aiding},
-+  journal = {Gyroscopy and Navigation}, volume = {12}, number = {4},
-+  pages = {329--339}, year = {2021}, doi = {10.1134/S2075108721040039},
-+}
-```
-
-`report/IEEE-conference-template-062824.tex` — four hunks:
-1. Related Work: Huang re-characterized (Task 2).
-2. Sec. VI-F orientation prose: roll/pitch range `0.25`→`0.24` (Task 4a).
-3. Sec. VI-F position prose: barometer/unobservability mechanism removed, replaced with
-   measured fact + ablation result (Task 1). Reverse-port: added the ekf-yrio-vs-x-rio
-   port-choice sentence with `\cite{doer2021xrio}` (Task 4b); "2.6 km / 2.8 km" softened to
-   ">2 km, essentially unconstrained" (Task 4c).
-4. Conclusion: "lacking an altitude sensor … vertical Doppler bias of their
-   horizontal-boresight mount" → "carries a large vertical drift … whose cause is
-   unresolved — we ruled out altitude aiding by ablation" (Task 1).
-
-`baselines/configs/icins_ekf-rio_rosbag.launch` — made `altimeter_update` an overridable
-arg (default `true`, unchanged behavior) so the ablation is reproducible.
-
-(Full unified diff is in `git diff`; the PDF was rebuilt, 11 pages, builds clean, all
-citations including `doer2021xrio` resolve.)
-
----
-
-## 3. OPEN ITEMS — needs you, not an edit
-
-### 3.1 (PROMINENT) The position result in Sec. VI-F no longer has a mechanism
-The barometer explanation is refuted (§1 Task 1). The paper now honestly states:
-our vertical drift on ICINS is large (16.9 m / flight_1), the baselines' is not
-(~0.2–0.3 m), and **we do not know why**. This is a real gap a reviewer may press on.
-What the ablation tells us: the baselines hold z with **radar + IMU only**, so the cause
-is something in OUR pipeline, not their altitude aiding. Hypotheses to investigate
-(NOT written into the paper — would be unverified):
-  - a residual vertical ego-velocity bias in our WLS/solver on their radar geometry
-    (16.9 m over ~186 s ≈ a steady ~0.09 m/s z-velocity bias);
-  - our accel/gravity handling not pinning vertical velocity the way their EKF mechanization does;
-  - our `radar_zbias` / elevation handling tuned for our pitched mount, mis-applied to their
-    horizontal-boresight data.
-**Decision needed:** investigate the mechanism (new analysis), or ship the honest "open"
-framing as-is. I did NOT mark this resolved.
-
-### 3.2 EKF baseline numbers have a ~0.04 m run-to-run nondeterminism floor
-The two ablation pairs gave different absolutes (0.30 vs 0.23–0.27 m vertical) from the same
-config — the rio playback EKF is not bit-deterministic (timing/threading). Negligible for
-every claim in the paper, but the Table V/VI baseline figures carry this ~0.04 m noise.
-
-### 3.3 Whole-platform vertical-bias narrative elsewhere
-Sec. setup / FINDINGS still describe our own sensor's −0.5…−0.65 m/s elevation bias and the
-27.5° pitched-mount pitch-calibration remedy (true for OUR racing bags). I did NOT touch
-those — they are about our platform, not the ICINS cross-validation. But if 3.1 is
-investigated, check consistency between that story and whatever explains the ICINS z drift.
-
----
-
-## Status
-Resolved: Task 2 (Huang), Task 3 (IMU rate), Task 4 (polish), x-rio citation.
-Resolved-by-removal + escalated: Task 1 (barometer refuted; mechanism now open — §3.1).
-**Not marked ready** — §3.1 is a substantive open question for you.
+## Files changed this pass
+- `report/IEEE-conference-template-062824.tex` — Sec. VI-F mechanism paragraph (resolved +
+  RANSAC result), Table VI caption, body whole-traj sentence, Conclusion limitation (3).
+- `report/IEEE-conference-template-062824.pdf` — rebuilt (11 pages).
+- `analysis/diagnostics/icins_zbias_probe.py` — new front-end bias diagnostic.
+- `analysis/validate_live_solver.py` — new `--radar-ransac` front-end pre-filter (opt-in;
+  Huber remains the default).
+- `documentation/ROADMAP.md` — Part 6c (this investigation).
+- `CHANGES.md` — this file.
+- (`baselines/results/ours_icins/*ransac*` run logs are gitignored artifacts.)

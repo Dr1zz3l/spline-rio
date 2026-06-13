@@ -1251,3 +1251,23 @@ Paper edits done (sec:baselines prose, Table V caption→ref Table VI, new Table
 in sec:setup, FEJ wording empirical-only, specs+baro precision, Huang
 `huang2024lessismore` neighbor cite arXiv:2402.02200). PDF builds clean, 11 pages
 (was 10). Branch still `baselines`, awaiting merge.
+
+### Part 6c — ICINS vertical drift RESOLVED: radar front-end outlier rejection (2026-06-13)
+
+The Part-6b open item (why our ICINS vertical drift is 12–15% while the EKF baselines'
+is ~0.3%) is resolved. It is a **radar front-end outlier-rejection gap**, not the
+barometer (refuted in 6b) and not observability. reve uses 3D RANSAC (inlier 0.15 m/s)
+that hard-rejects elevation-biased single-chip returns; our pipeline uses a Huber kernel
+(δ=1.0) that only down-weights them. New diagnostic `analysis/diagnostics/icins_zbias_probe.py`
+(WLS ego-velocity rotated to world via GT attitude): per-frame vertical velocity bias =
+plain-WLS −0.28..−0.35, Huber −0.06..−0.16 (≈ observed drift), RANSAC −0.01..−0.10 m/s.
+New `--radar-ransac` flag in validate_live_solver.py (reve-style 3D RANSAC pre-filter,
+~95% points kept). End-to-end on ICINS (pos RMSE m, naive→+RANSAC): f1 16.94→0.92,
+f2 6.70→0.51, f3 21.57→1.92, f4 10.30→0.92; vel 0.33–0.40→~0.07; all baseline-comparable.
+B0 confirmed the ±60° elevation gate WAS applied (converted bag |elev|max 57.5° vs original
+75.6°), so the paper's gate claim is accurate. Curiosity on our OWN bags (NOT in paper):
+slow_racing neutral (0.303→0.303), fast_racing improves (0.501→0.389 live pos), backflips
+neutral (1.51→1.55) — RANSAC is a net-better front-end. DECISION: keep Huber as the reported
+default this paper; name RANSAC as future-work default (Sec VI-F + Conclusion updated).
+Paper edits: Sec VI-F mechanism paragraph, Table VI caption, Conclusion limitation (3).
+PDF 11 pages, clean. See CHANGES.md for full numbers + sources.
