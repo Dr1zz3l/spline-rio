@@ -107,4 +107,13 @@ docker run --rm -v "$PWD":/workspace rio-baselines bash -lc \
 
 ## Deliverables
 ROADMAP.md Part 6 results table; paper Related-Work caveat replaced + results
-table extended; PDF recommitted. Status: SCAFFOLD ONLY — runs not yet done.
+table extended; PDF recommitted.
+
+Status 2026-06-13: DONE. Direction A = honest negative (see above).
+Direction B = full cross-validation on ICINS-2021 flights 1-4: our solver
+wins live orientation on 3.5/4 bags (0.52-1.11°, yaw mocap-aided), their
+filters win position/velocity (their z-aiding via baro; our 12-15% drift is
+~all z, structurally unobservable on their horizontal-boresight mount —
+per-axis proof in ROADMAP Part 6). Full table + fairness notes:
+documentation/ROADMAP.md Part 6. Paper: Sec. "External Cross-Validation
+Against EKF Baselines" + Table tab:baselines.

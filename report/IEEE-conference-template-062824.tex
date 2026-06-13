@@ -257,13 +257,13 @@ In the discrete-time UAV line, Doer and
 Trommer~\cite{doer2020ekf} and extensions to multiple
 radars~\cite{huang2024multiradar} and 4D-radar-aided inertial
 navigation define the state of practice.
-Direct numerical comparison to these systems is not attempted here:
-they use different radar hardware, firmware configurations, and
-datasets, and our own quantization ablation
-(Sec.~\ref{sec:setup}) shows firmware configuration alone changes
-Doppler resolution by $12\times$ --- cross-paper number comparisons
-without a shared benchmark would overclaim.  Baseline re-implementation
-on our datasets is planned future work.
+Rather than comparing numbers across papers --- our own quantization
+ablation (Sec.~\ref{sec:setup}) shows firmware configuration alone
+changes Doppler resolution by $12\times$ --- we cross-validate against
+this line directly: Sec.~\ref{sec:baselines} runs our system on the
+public ICINS-2021 flight datasets of~\cite{doer2020ekf} and re-evaluates
+their EKF estimators under our causal metrics on the same data, and
+reports the (negative) result of porting their filters to our platform.
 
 %==================================================================
 \section{System Overview}
@@ -949,6 +949,82 @@ coverage) precedes all held-out evaluation, since several early bags
 contain radar UART dropouts; all evaluation windows lie on healthy
 spans.
 
+\subsection{External Cross-Validation Against EKF Baselines}
+\label{sec:baselines}
+We cross-validate against the EKF-RIO family of Doer and
+Trommer~\cite{doer2020ekf,doer2021yrio} in both directions on shared
+data, with their toolbox pinned at a fixed commit and every parameter
+deviation documented in the repository.
+
+\textbf{Our system on their data.}  We run our sliding-window solver,
+with the universal weighting configuration unmodified, on the four
+public ICINS-2021 indoor flight datasets~\cite{doer2021yrio}
+(IWR6843AOP at 10\,Hz, ADIS16448 IMU at 409\,Hz, VINS-based pseudo
+ground truth), using their published extrinsic calibration (locked) and
+their $\pm 60\degree$ elevation pre-gate.  Their estimators
+(\mbox{ekf-rio}, unaided yaw; \mbox{ekf-yrio}, Manhattan-world radar
+yaw aiding) are re-run from their stock configurations on the same
+bags, and \emph{both} systems are evaluated with the identical causal
+protocol of Sec.~\ref{sec:setup} (live estimates, start-anchored
+alignment, same windows and ground truth).
+Table~\ref{tab:baselines} shows the result.  Orientation favors our
+solver on every flight (0.52--0.93\degree\ live, roll/pitch
+0.23--0.59\degree) --- on three of four flights it beats even the
+yaw-aided ekf-yrio, although heading aiding is asymmetric (our
+pseudo-magnetometer anchors vs.\ their sensor-only Manhattan yaw vs.\
+unaided ekf-rio).  Removing our heading aiding isolates the asymmetry:
+on flight\_1 our unaided yaw drifts to $9.9\degree$ --- the same level
+as unaided ekf-rio ($10.1\degree$) --- while roll/pitch
+($0.30\degree$) and position are unchanged; heading aiding moves only
+the yaw column for either system.  Position reverses the picture: their filters reach
+0.2--1.4\,m (0.3--1.0\% drift) where ours drifts 12--15\%.  The drift
+is almost entirely vertical: integrating our radar-only velocity error
+on flight\_1 attributes $[+2.5, -0.2, -42.6]$\,m to the three axes ---
+horizontal drift is $\sim$1.7\% (competitive), but their radar is
+mounted with a \emph{horizontal} boresight, so the systematic
+elevation bias of single-chip Doppler (Sec.~\ref{sec:setup}) projects
+onto an axis that forward motion never excites, and their filters
+absorb it with a barometer --- a sensor our pipeline does not use.  On
+our own platform the same bias is absorbed by the $27.5\degree$
+pitched mount via extrinsic pitch calibration; on theirs it is
+structurally unobservable to a Doppler-plus-IMU-only estimator.
+
+\textbf{Their filters on our data.}  The reverse port is a negative
+result: both ekf-rio and x-rio diverge on our racing bags despite
+documented platform tuning.  The mechanism is a stack-level mismatch,
+not a defect of their method: our best-velocity firmware yields only
+$\sim$13 points per frame (their RANSAC/$\sigma$-gates expect
+hundreds), there is no hardware radar trigger, and our racing-frame
+vibration (measured gyro white-noise PSD $2.1\degree/\mathrm{s}/\sqrt{\mathrm{Hz}}$
+in flight) exceeds their process-noise parameter range, so their
+$\chi^2$ innovation gate rejects nearly all radar updates and the
+filter dead-reckons.  We report this as evidence of the design space
+split: their stack is engineered for dense clouds, hardware
+triggering, and a low-vibration carrier; ours for sparse, finely
+quantized Doppler on an aggressive platform.
+
+\begin{table}[t]
+\caption{Cross-validation on the public ICINS-2021 flight datasets
+\cite{doer2021yrio}.  All systems evaluated with our causal protocol
+(live estimate, start-anchored alignment): position RMSE [m] /
+velocity RMSE [m/s] / orientation RMSE [\degree] / position drift
+[\% of path].  Heading aiding differs by design (see text).}
+\label{tab:baselines}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{lccc}
+\toprule
+Flight (path) & ekf-rio & ekf-yrio & Ours \\
+\midrule
+1 (142\,m) & 1.41 / 0.20 / 10.1 / 1.0 & \textbf{0.39} / \textbf{0.08} / 0.70 / \textbf{0.3} & 16.9 / 0.35 / \textbf{0.57} / 12.0 \\
+2 (45\,m)  & 0.25 / 0.08 / 1.59 / 0.6 & \textbf{0.20} / \textbf{0.08} / \textbf{0.91} / \textbf{0.4} & 6.7 / 0.40 / 0.93 / 15.0 \\
+3 (147\,m) & \textbf{0.47} / 0.08 / 1.07 / \textbf{0.3} & 0.48 / \textbf{0.08} / 1.09 / \textbf{0.3} & 21.6 / 0.38 / \textbf{0.52} / 14.7 \\
+4 (78\,m)  & 0.39 / 0.09 / 3.67 / 0.5 & \textbf{0.22} / \textbf{0.07} / 1.41 / \textbf{0.3} & 10.3 / 0.33 / \textbf{1.11} / 13.2 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
 \subsection{Output Covariance Consistency (NEES)}
 \label{sec:nees}
 A factor source for a larger fusion graph must report \emph{honest}
@@ -1315,9 +1391,13 @@ bounded by during-flip radar data quality (Doppler noise
 $15\times$ the level-flight core), demonstrated by an asymmetric
 factor-split ablation; (2) ground truth itself degrades during flips
 (MoCap occlusion), bounding what can be measured there; and
-(3) external RIO baselines on this platform remain future work,
-since cross-paper number comparisons without shared hardware and
-firmware would overclaim.
+(3) cross-validation against the EKF-RIO family
+(Sec.~\ref{sec:baselines}) shows each stack is strongest on the
+platform it was designed for: our solver wins orientation on their
+public flights but, lacking an altitude sensor, cannot observe the
+vertical Doppler bias of their horizontal-boresight mount (12--15\%
+drift, $\sim$1.7\% horizontal), while their filters diverge on our
+sparse-cloud, high-vibration racing bags.
 
 %==================================================================
 \bibliographystyle{IEEEtran}

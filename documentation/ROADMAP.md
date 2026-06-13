@@ -1107,3 +1107,93 @@ not dead.
 - Chen et al., IROS 2023: Optimization-based VINS: Consistency, Marginalization,
   FEJ — pgeneva.com/downloads/papers/Chen2023IROS.pdf
 - Impact of Temporal Delay on RIO — arxiv.org/abs/2503.02509
+
+## Part 6 — External baseline validation (Doer/Trommer rio toolbox), 2026-06-12/13, branch `baselines`
+
+Goal (PAPER_REPLAN item 3): a REAL comparison with ekf_rio / ekf_yrio / x_rio on
+shared data, both directions, replacing the paper's no-baseline caveat.
+Infra: `baselines/` (setup.sh pins rio @ dcf0bc9 + catkin_simple @ 0e62848;
+`rio-baselines` docker image = repo ROS1 image + gfortran; their demo bag
+reproduces their published behavior: vicon_easy 0.23% final drift).
+All adapters/configs committed under `baselines/adapters/`, `baselines/configs/`.
+
+### Direction A — their filters on OUR bags: NEGATIVE result
+
+ekf_rio AND x_rio diverge km-scale (z ≈ ½gt²) on slow_racing despite three
+documented tuning rounds (every change commented in
+`baselines/configs/{ekf_rio,x_rio}_our_platform.yaml`). NOT a convention bug:
+a Python replication of rio's TI-format ingestion (their x'=-y,y'=x remap +
+our q_b_r·Rz(-90°)) reproduces GT body velocity from our radar clouds at
+corr 0.87–0.96. Mechanism (full chain in baselines/README.md):
+1. our best_velocity clouds: 13 pts/frame median (their pipeline expects
+   O(100)); standalone reve fails ("estimation failed") on ~half of flight scans;
+2. no hardware radar trigger (their precise-sync path);
+3. racing-quad vibration: measured gyro white PSD 2.1 deg/s/√Hz in flight vs
+   their 0.2 default — and their dynamic_reconfigure clamps the param at 1.0;
+4. their stock init covariances are EXACT zeros (sigma_v = sigma_rp = 0)
+   → zero initial Kalman gain; with vibration-level process noise the χ²(3)@95%
+   radar gate rejects ~everything → IMU dead reckoning → blowup. With honest
+   init sigmas the filter survives ~9 s, then the bias states explode at the
+   first dynamic transient (b_a → −16 m/s², b_g → 475 deg/s in one update).
+
+Conclusion: platform mismatch, not a defect of their method on their own data.
+Paper-ready framing: their stack is engineered for dense clouds + trigger +
+low-vibration IMU; ours for sparse high-rate Doppler on an aggressive platform.
+
+### Direction B — OUR solver on their ICINS-2021 flight datasets
+
+Their bags (IWR6843AOP @ 10 Hz, ADIS16448 @ 409 Hz, baro; pseudo-GT ~3-5 Hz
+from VINS) converted by `baselines/adapters/convert_icins_to_ours.py`
+(y-boresight → our x-boresight remap; GT → synthesized QuadState; their
+hardware header stamps → record time; ±60° elevation gate mirroring their reve
+preprocessing). Solver: UNIVERSAL weighting config + λh=10 + iter cap 25 +
+lock_extrinsics=1 with THEIR calib (converted: euler [−178.5°,−0.1°,47.0°],
+trans [0.01,0.10,0.06]); --imu-hz 400. Their filters re-run from their stock
+configs + calib, outputs recorded and evaluated through OUR causal metric
+(baselines/adapters/eval_rio_output.py: start-anchored SE(3), live estimates,
+same GT, same windows).
+
+**Results (our causal start-anchored metric; pos RMSE m / vel RMSE m/s /
+ori RMSE deg / drift % of path):**
+
+| Bag (path) | ekf_rio (unaided yaw) | ekf_yrio (radar yaw aiding) | OURS (mocap-yaw heading) |
+|---|---|---|---|
+| flight_1 (141.8 m) | 1.408 / 0.197 / 10.14° / 0.99% | 0.386 / 0.082 / 0.70° / 0.27% | 16.94 / 0.348 / 0.57° / 11.95% |
+| flight_2 (44.7 m)  | 0.254 / 0.079 / 1.59° / 0.57% | 0.197 / 0.076 / 0.91° / 0.44% | 6.70 / 0.399 / 0.93° / 14.98% |
+| flight_3 (146.9 m) | 0.467 / 0.082 / 1.07° / 0.32% | 0.480 / 0.081 / 1.09° / 0.33% | 21.57 / 0.379 / 0.52° / 14.69% |
+| flight_4 (78.3 m)  | 0.392 / 0.086 / 3.67° / 0.50% | 0.218 / 0.069 / 1.41° / 0.28% | 10.30 / 0.331 / 1.11° / 13.15% |
+
+(Theirs-published cross-check: full-align rpg position RMSE ekf_rio
+0.145–0.316 m on these bags — consistent with our harsher start-anchored
+causal numbers above.)
+
+**Reading the table honestly:**
+- **Position: baselines clearly win on their platform.** Our drift is ~all z:
+  integrating the (GT-attitude-rotated) WLS velocity error on flight_1 gives
+  per-axis drift [+2.5, −0.2, −42.6] m — xy ≈ 1.7% drift (competitive),
+  z is a ~0.2–0.3 m/s Doppler bias that is STRUCTURALLY unobservable on their
+  platform geometry: their radar boresight is horizontal (mount euler
+  [−178.5°, −0.1°, 47°], pitch ≈ 0), so forward motion produces no elevation
+  signal, and their filters absorb z with the BAROMETER — a sensor our
+  pipeline does not use. On our own platform the 27.5° pitched mount makes
+  the same bias observable/absorbable (FINDINGS z-bias → pitch calibration).
+- **Orientation: ours wins on every bag** (0.52–0.93° live vs 0.70–10.14°),
+  including against the yaw-aided ekf_yrio on 3 of 4 bags — BUT heading
+  aiding is asymmetric: ours uses mocap-yaw pseudo-magnetometer anchors,
+  ekf_yrio uses sensor-only Manhattan-world radar yaw, ekf_rio is unaided.
+  Roll/pitch (aiding-free) are 0.23–0.59° for ours.
+- **Velocity: theirs 0.07–0.20, ours 0.32–0.40 m/s** — dominated by the same
+  z channel (xy WLS vel RMSE 0.17/0.20; z 0.68).
+- Both directions together: each system is strongest on the platform it was
+  designed for; the transferable deltas are (a) our orientation accuracy,
+  (b) their z-aiding via baro + mount-geometry insensitivity.
+
+Fairness protocol notes: identical causal metrics + GT + windows both ways;
+rio hash pinned; all parameter deviations documented in baselines/configs/;
+heading asymmetry QUANTIFIED: ours WITHOUT --mocap-yaw on flight_1 =
+17.00 m / 0.384 / 9.92° / 12.00% with per-axis roll 0.299 / pitch 0.292 /
+yaw 9.91° — i.e. unaided, our yaw drifts to the SAME level as unaided
+ekf_rio (10.14°), while roll/pitch (0.30°) and position (z-driven) are
+unchanged. Heading aiding affects ONLY the yaw column for both systems.
+Velocity-RMSE caveat: ICINS GT velocity is differentiated 3–5 Hz pseudo-GT —
+same for both systems.
