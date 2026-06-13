@@ -1247,6 +1247,10 @@ def main():
     USE_GNC = '--gnc' in sys.argv
     USE_CPP = '--cpp' in sys.argv
     USE_SLIDING_WINDOW = '--sliding-window' in sys.argv
+    # Whole-trajectory Umeyama SE(3) alignment for the settled metrics instead of
+    # the default causal start-anchored SE(3). Reported alongside the causal numbers
+    # so baselines can be cross-checked against EVO/KITTI-aligned published figures.
+    WHOLE_TRAJ_ALIGN = '--whole-traj-align' in sys.argv
 
     if USE_SLIDING_WINDOW and not USE_CPP:
         print("ERROR: --sliding-window requires --cpp", file=sys.stderr)
@@ -2000,7 +2004,7 @@ def main():
         estimated_rotations     = np.array([optimized_state.get_rotation(t)    for t in eval_times])
         est_ang_vel             = np.array([optimized_state.get_angular_velocity(t) for t in eval_times])
 
-        # Constant SE3 alignment to MoCap frame.
+        # Constant SE3 alignment to MoCap frame (PRIMARY, causal/deployment metric).
         # R_align rotates the estimate's initial orientation into the MoCap initial orientation.
         # Applied as a single constant transform — preserves trajectory shape, only fixes
         # the unobservable initial yaw (and any small roll/pitch offset).
@@ -2060,6 +2064,11 @@ def main():
         pos_diff        = estimated_positions_aligned - mocap_pos_eval
         pos_errors      = np.linalg.norm(pos_diff, axis=1)
         pos_rmse        = np.sqrt(np.mean(pos_errors**2))
+        # horizontal (xy) / vertical (z) split — on a horizontal-boresight mount the
+        # systematic elevation Doppler bias projects onto z, which forward motion never
+        # excites; reported so the headline position loss can be attributed (paper Sec VI-F)
+        horiz_pos_rmse  = np.sqrt(np.mean(np.sum(pos_diff[:, 0:2]**2, axis=1)))
+        vert_pos_rmse   = np.sqrt(np.mean(pos_diff[:, 2]**2))
         vel_diff        = estimated_velocities_aligned - mocap_velocities
         vel_errors      = np.linalg.norm(vel_diff, axis=1)
         vel_rmse        = np.sqrt(np.mean(vel_errors**2))
@@ -2202,6 +2211,10 @@ def main():
         print(_row("Position RMSE (m)", pos_rmse,
                    live_pos_rmse_plot if _has_live else None))
         print(_row("Position drift (%)", _drift_settled, _drift_live, fmt=".2f", unit="%"))
+        print(f"  {'  horizontal (xy) RMSE (m)':<28} {horiz_pos_rmse:>10.4f}"
+              f"   (drift {100.0*horiz_pos_rmse/_path_len:.2f}%)")
+        print(f"  {'  vertical (z) RMSE (m)':<28} {vert_pos_rmse:>10.4f}"
+              f"   (drift {100.0*vert_pos_rmse/_path_len:.2f}%)")
         print(_row("Velocity RMSE (m/s)", vel_rmse,
                    live_vel_rmse_plot if _has_live else None))
         print(f"  {'Angular vel RMSE (rad/s)':<28} {ang_vel_rmse:>10.4f}")
@@ -2211,6 +2224,41 @@ def main():
         print(f"  Per-axis ori RMSE: roll={np.sqrt(np.mean(euler_diff[:,0]**2)):.3f}  "
               f"pitch={np.sqrt(np.mean(euler_diff[:,1]**2)):.3f}  "
               f"yaw={np.sqrt(np.mean(euler_diff[:,2]**2)):.3f} deg")
+
+        if WHOLE_TRAJ_ALIGN:
+            # EXTRA report: whole-trajectory Umeyama SE(3) (no scale) alignment of the
+            # SETTLED trajectory — the EVO/KITTI default — so baselines can be cross-checked
+            # against externally published ATE. Does not affect the causal metrics above.
+            _wsrc_c = estimated_positions - estimated_positions.mean(axis=0)
+            _wdst_c = mocap_pos_eval - mocap_pos_eval.mean(axis=0)
+            _wU, _, _wVt = np.linalg.svd(_wsrc_c.T @ _wdst_c)
+            _wR = _wVt.T @ _wU.T
+            if np.linalg.det(_wR) < 0:
+                _wVt[-1, :] *= -1
+                _wR = _wVt.T @ _wU.T
+            _wt = mocap_pos_eval.mean(axis=0) - _wR @ estimated_positions.mean(axis=0)
+            _wpos = (_wR @ estimated_positions.T).T + _wt
+            _wpos_diff = _wpos - mocap_pos_eval
+            _wpos_rmse = np.sqrt(np.mean(np.sum(_wpos_diff**2, axis=1)))
+            _wh_rmse = np.sqrt(np.mean(np.sum(_wpos_diff[:, 0:2]**2, axis=1)))
+            _wv_rmse = np.sqrt(np.mean(_wpos_diff[:, 2]**2))
+            _wrot = np.array([_wR @ R for R in estimated_rotations])
+            _wrot_err = np.array([
+                np.degrees(np.arccos(np.clip((np.trace(mocap_rot_eval[i].T @ _wrot[i]) - 1) / 2, -1, 1)))
+                for i in range(len(eval_times))])
+            _wrot_rmse = np.sqrt(np.mean(_wrot_err**2))
+            _weuler = np.degrees(Rotation.from_matrix(_wrot).as_euler('xyz'))
+            _weuler_snap = mocap_euler + ((_weuler - mocap_euler + 180) % 360 - 180)
+            _wediff = _weuler_snap - mocap_euler
+            print(f"  [whole-traj align] pos RMSE {_wpos_rmse:.3f} m "
+                  f"(drift {100.0*_wpos_rmse/_path_len:.2f}%)  "
+                  f"horiz {_wh_rmse:.3f} vert {_wv_rmse:.3f} m | "
+                  f"ori {_wrot_rmse:.2f} deg  roll/pitch "
+                  f"{np.sqrt(np.mean(_wediff[:,0:2]**2)):.2f} "
+                  f"(r{np.sqrt(np.mean(_wediff[:,0]**2)):.2f} "
+                  f"p{np.sqrt(np.mean(_wediff[:,1]**2)):.2f} "
+                  f"y{np.sqrt(np.mean(_wediff[:,2]**2)):.2f})")
+
         print(f"  Acc bias: [{optimized_state.acc_bias[0]:.4f}, {optimized_state.acc_bias[1]:.4f}, "
               f"{optimized_state.acc_bias[2]:.4f}] m/s²")
         print(f"  Gyr bias: [{optimized_state.gyr_bias[0]:.4f}, {optimized_state.gyr_bias[1]:.4f}, "

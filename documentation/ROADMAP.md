@@ -1197,3 +1197,57 @@ ekf_rio (10.14°), while roll/pitch (0.30°) and position (z-driven) are
 unchanged. Heading aiding affects ONLY the yaw column for both systems.
 Velocity-RMSE caveat: ICINS GT velocity is differentiated 3–5 Hz pseudo-GT —
 same for both systems.
+
+### Part 6b — Paper revision v2 (2026-06-13): decomposition + measured gate + ATE
+
+Reviewer pass v2 asked Table V to carry the honest story at a glance. New numbers
+generated; instrumentation added to `baselines/adapters/eval_rio_output.py`
+(`--align {start,whole}`, horiz/vert pos split, per-axis roll/pitch/yaw) and
+`analysis/validate_live_solver.py` (horiz/vert print + `--whole-traj-align` extra
+report block). Runner: `baselines/run_icins_ours.sh` (GLOG noise + the rosbag
+parse-error flood are harmless; the only gotcha was timeout — flight_1/3 at 183–186 s
+windows need ~40 min/flight, use `timeout 3600`).
+
+**OURS per-axis (start-anchored, settled), all 4 flights** [horiz drift% / vert drift% |
+roll° / pitch° / yaw° | whole-traj pos m]:
+- f1: 0.74 / 11.92 | 0.295 / 0.289 / 0.064 | 9.57
+- f2: 1.14 / 14.93 | 0.475 / 0.586 / 0.287 | 2.88
+- f3: 0.50 / 14.69 | 0.278 / 0.226 / 0.062 | 10.86
+- f4: 1.09 / 13.11 | 0.784 / 0.659 / 0.178 | 5.48
+
+Two NARRATIVE CORRECTIONS forced by the data (both made the paper more honest):
+1. **Roll/pitch is COMPARABLE, not a win.** Baseline roll/pitch RMSE (per-axis RMS,
+   yaw excluded) = ekf-rio 0.24/0.57/0.25/0.74, ekf-yrio 0.25/0.59/0.26/0.74, Ours
+   0.29/0.53/0.25/0.72. The big Table V orientation gap (0.52° vs 10.1°) is ALL yaw
+   (our pseudo-magnetometer heading aiding). Old prose "orientation favors our solver…
+   beats yaw-aided ekf-yrio" was full-3DOF; rewritten to "roll/pitch comparable,
+   gap is yaw".
+2. **Horizontal drift 0.5–1.1%** (solver-trajectory, replaces the old ~1.7% WLS proxy
+   and the [+2.5,−0.2,−42.6] m flight_1 vector). Vertical (11.9–14.9%) carries the
+   entire loss. Even more favorable than before.
+
+**Whole-traj (Umeyama, no scale) ATE cross-check (5.4):** ekf-rio 0.87/0.13/0.36/0.30,
+ekf-yrio 0.23/0.10/0.26/0.15, Ours 9.57/2.88/10.86/5.48. Baselines (esp. ekf-yrio
+0.10–0.26 m) land in/near Doer's published full-align range (ekf_rio 0.145–0.316,
+ekf_yrio 0.123–0.314) — confirms the start-anchored gap is the metric + vertical bias,
+NOT a porting artifact. (ekf-rio f1 0.866 m is the lone high one — its real 10° unaided
+yaw drift; Umeyama position-only can't undo internal yaw drift.) NOTE: whole-traj
+*orientation* numbers from the eval are meaningless (position-Umeyama R applied to body
+ori) — only use whole-traj *position*.
+
+**χ²-gate rejection MEASURED (5.3), instrumented `ekf_rio_filter.cpp`
+(`updateRadarEgoVelocity`, accept/reject counter), rebuilt rio-baselines docker, reran
+on our racing bags with `ekf_rio_our_platform.yaml`:**
+- slow_racing: **99.7% rejected** (301/302; γ≈25 vs χ²(3)@95%=7.81) → dead-reckons →
+  **2583 m** (ekf-rio) / **2774 m** (x-rio), ~all vertical (≈½gt²). Instrumentation
+  verified harmless: original slow_racing_ekf_rio.bag reproduces 2582.845 m exactly.
+- fast_racing: **64% rejected** (146/229) → **SURVIVES, degraded to 1.39 m / 3.1% drift
+  / 9.0° ori**. THIS IS NEW: prior Direction A only ever ran slow_racing. The paper's
+  blanket "both diverge on our racing bags" was an overgeneralization — corrected to the
+  regime-dependent measured outcome (radar info admitted ∝ translational excitation).
+
+Paper edits done (sec:baselines prose, Table V caption→ref Table VI, new Table VI
+`tab:baselines-decomp` as table*, diverge→measured paragraph, alignment justification
+in sec:setup, FEJ wording empirical-only, specs+baro precision, Huang
+`huang2024lessismore` neighbor cite arXiv:2402.02200). PDF builds clean, 11 pages
+(was 10). Branch still `baselines`, awaiting merge.

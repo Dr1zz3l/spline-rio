@@ -37,6 +37,21 @@ from rosbags.rosbag1 import Reader  # noqa: E402
 from rosbags.typesys import Stores, get_typestore  # noqa: E402
 
 
+def umeyama_se3(src: np.ndarray, dst: np.ndarray):
+    """Best-fit rigid SE(3) (no scale) mapping src->dst (Umeyama 1991).
+    src, dst are (N,3). Returns (R, t) with dst ~= (R @ src.T).T + t."""
+    src_c = src - src.mean(axis=0)
+    dst_c = dst - dst.mean(axis=0)
+    H = src_c.T @ dst_c
+    U, _, Vt = np.linalg.svd(H)
+    R = Vt.T @ U.T
+    if np.linalg.det(R) < 0:          # reflection fix
+        Vt[-1, :] *= -1
+        R = Vt.T @ U.T
+    t = dst.mean(axis=0) - R @ src.mean(axis=0)
+    return R, t
+
+
 def load_rio_estimate(result_bag: Path, prefix: str):
     ts = get_typestore(Stores.ROS1_NOETIC)
     pose, twist = [], []
@@ -61,6 +76,10 @@ def main():
     ap.add_argument('alias')
     ap.add_argument('result_bag')
     ap.add_argument('--filter-topic', default='/ekf_rio')
+    ap.add_argument('--align', choices=['start', 'whole'], default='start',
+                    help="start: constant SE(3) anchored at first eval sample "
+                         "(causal, deployment metric). whole: Umeyama SE(3) "
+                         "no-scale over the full trajectory (EVO/KITTI default).")
     args = ap.parse_args()
 
     bags = yaml.safe_load((REPO / 'analysis/config/bags.yaml').read_text())
@@ -134,34 +153,64 @@ def main():
     slerp = Slerp(pose[:, 0], Rotation.from_quat(pose[:, 4:8]))
     est_rot = slerp(gt_t)
 
-    # start-anchored SE(3) alignment (identical to our eval)
     R_est = est_rot.as_matrix()
     R_gt = gt_rot.as_matrix()
-    R_align = R_gt[0] @ R_est[0].T
-    t_align = gt_pos[0] - R_align @ est_pos[0]
+    if args.align == 'start':
+        # start-anchored SE(3) alignment (identical to our causal eval)
+        R_align = R_gt[0] @ R_est[0].T
+        t_align = gt_pos[0] - R_align @ est_pos[0]
+    else:
+        # whole-trajectory Umeyama SE(3), no scale (EVO/KITTI default).
+        # Rotation also re-derived from the position fit so the orientation
+        # metric is reported under the same frame as the published ATE.
+        R_align, t_align = umeyama_se3(est_pos, gt_pos)
     est_pos_a = (R_align @ est_pos.T).T + t_align
     est_vel_a = (R_align @ est_vel.T).T
     est_rot_a = np.einsum('ij,njk->nik', R_align, R_est)
 
     al_eul = np.degrees(Rotation.from_matrix(R_align).as_euler('xyz'))
-    print(f'[eval] SE3 alignment R: [{al_eul[0]:.1f}, {al_eul[1]:.1f}, '
+    print(f'[eval] {args.align}-align SE3 R: [{al_eul[0]:.1f}, {al_eul[1]:.1f}, '
           f'{al_eul[2]:.1f}] deg  t: [{t_align[0]:.3f}, {t_align[1]:.3f}, '
           f'{t_align[2]:.3f}] m')
 
-    pos_rmse = float(np.sqrt(np.mean(np.sum((est_pos_a - gt_pos) ** 2, axis=1))))
+    pos_diff = est_pos_a - gt_pos
+    pos_rmse = float(np.sqrt(np.mean(np.sum(pos_diff ** 2, axis=1))))
+    # horizontal (xy) / vertical (z) split — the headline position loss on a
+    # horizontal-boresight mount is almost entirely vertical (see paper Sec VI-F)
+    horiz_rmse = float(np.sqrt(np.mean(np.sum(pos_diff[:, 0:2] ** 2, axis=1))))
+    vert_rmse = float(np.sqrt(np.mean(pos_diff[:, 2] ** 2)))
     vel_rmse = float(np.sqrt(np.mean(np.sum((est_vel_a - gt_vel) ** 2, axis=1))))
     R_err = np.einsum('nji,njk->nik', gt_rot.as_matrix(), est_rot_a)  # gt^T est
     cosang = np.clip((np.einsum('nii->n', R_err) - 1) / 2, -1, 1)
     rot_err = np.degrees(np.arccos(cosang))
     rot_rmse = float(np.sqrt(np.mean(rot_err ** 2)))
+
+    # per-axis roll/pitch/yaw RMSE (branch-snapped Euler unwrap, identical
+    # convention to analysis/validate_live_solver.py so the columns are comparable)
+    mocap_euler = np.degrees(np.unwrap(gt_rot.as_euler('xyz'), axis=0))
+    est_euler_deg = np.degrees(Rotation.from_matrix(est_rot_a).as_euler('xyz'))
+    est_euler = mocap_euler + ((est_euler_deg - mocap_euler + 180) % 360 - 180)
+    euler_diff = est_euler - mocap_euler
+    roll_rmse = float(np.sqrt(np.mean(euler_diff[:, 0] ** 2)))
+    pitch_rmse = float(np.sqrt(np.mean(euler_diff[:, 1] ** 2)))
+    yaw_rmse = float(np.sqrt(np.mean(euler_diff[:, 2] ** 2)))
+    rollpitch_rmse = float(np.sqrt(np.mean(euler_diff[:, 0:2] ** 2)))
+
     path_len = float(np.sum(np.linalg.norm(np.diff(gt_pos, axis=0), axis=1)))
     drift = 100.0 * pos_rmse / path_len
+    horiz_drift = 100.0 * horiz_rmse / path_len
+    vert_drift = 100.0 * vert_rmse / path_len
 
-    print(f'\n=== {args.alias} :: {Path(args.result_bag).stem} (causal/live) ===')
+    print(f'\n=== {args.alias} :: {Path(args.result_bag).stem} '
+          f'(causal/live, {args.align}-align) ===')
     print(f'  Position RMSE : {pos_rmse:.3f} m   (drift {drift:.2f}% of '
           f'{path_len:.1f} m path)')
+    print(f'    horizontal  : {horiz_rmse:.3f} m  (drift {horiz_drift:.2f}%)')
+    print(f'    vertical    : {vert_rmse:.3f} m  (drift {vert_drift:.2f}%)')
     print(f'  Velocity RMSE : {vel_rmse:.3f} m/s')
     print(f'  Orientation RMSE: {rot_rmse:.2f} deg  (max {rot_err.max():.1f})')
+    print(f'    roll/pitch  : {rollpitch_rmse:.2f} deg  '
+          f'(roll {roll_rmse:.2f}, pitch {pitch_rmse:.2f}, yaw {yaw_rmse:.2f})')
     return 0
 
 

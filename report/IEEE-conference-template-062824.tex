@@ -229,7 +229,12 @@ Burnett et al.~\cite{burnett2024gp} use a Gaussian-process motion
 prior for spinning-radar- and lidar-inertial odometry, and
 \v{S}tironja et al.~\cite{stironja2026rio} model the IMU trajectory
 continuously inside an RIO estimator with online spatio-temporal
-calibration.  Our setting differs from all three in sensor and
+calibration.  Single-chip radar-inertial estimation on aerial platforms
+has itself received recent attention --- Huang et al.~\cite{huang2024lessismore}
+exploit radar cross-section and Doppler physics to filter a sparse
+single-chip cloud for an EKF estimator --- but in discrete-time filtering
+form and on conventional, non-tumbling motion.
+Our setting differs from all of these in sensor and
 regime: a \emph{single-chip} radar (10--60 points per frame,
 2-TX elevation array) on a quadrotor in aggressive racing and
 attitude-tumbling flight up to \SI{10}{\radian\per\second} --- a
@@ -263,7 +268,8 @@ changes Doppler resolution by $12\times$ --- we cross-validate against
 this line directly: Sec.~\ref{sec:baselines} runs our system on the
 public ICINS-2021 flight datasets of~\cite{doer2020ekf} and re-evaluates
 their EKF estimators under our causal metrics on the same data, and
-reports the (negative) result of porting their filters to our platform.
+reports the regime-dependent result of porting their filters to our
+platform.
 
 %==================================================================
 \section{System Overview}
@@ -640,11 +646,13 @@ marginalization consistency~\cite{dongsi2012consistency}: FEJ fixes
 the \emph{linearization points} of the prior to preserve the
 observability nullspace, whereas our rule corrects the
 \emph{factor set} entering the Schur complement so that the marginal
-is exactly closed.  We do not employ FEJ; instead the prior is
-re-centered at each window's warm start (curvature retained, gradient
-pull discarded), which in our experiments left no measurable
+is exactly closed \emph{at a fixed linearization point}.  We do not
+employ FEJ; instead the prior is re-centered at each window's warm
+start (curvature retained, gradient pull discarded).  We do not claim
+this re-centering preserves consistency across relinearizations as a
+theoretical guarantee; rather, in our experiments it left no measurable
 inconsistency symptom --- the NEES analysis of
-Sec.~\ref{sec:nees} provides the corresponding evidence.
+Sec.~\ref{sec:nees} provides the corresponding empirical evidence.
 
 \textbf{Live-edge warm start.}
 Control points entering the window each stride would otherwise hold
@@ -699,6 +707,15 @@ differences of the estimated trajectory.
 \emph{Position drift} (\%) is position RMSE normalised by the total
 GT path length --- the standard odometry metric for a
 dead-reckoning system with no loop closure.
+Start-anchored alignment is harsher than the whole-trajectory
+SE(3)/Umeyama fit (the EVO/KITTI default) used by most odometry papers,
+because it cannot retro-fit a constant transform to cancel accumulated
+drift: it fixes the frame once, at the start, exactly as a deployed
+estimator must.  We adopt it precisely for this causal,
+deployment-relevant reading, and apply it identically to every system
+compared.  Where we compare against externally published figures
+(Sec.~\ref{sec:baselines}) we additionally report whole-trajectory-aligned
+numbers so the baselines can be cross-checked against their own papers.
 \emph{Translational RPE} (relative pose error, Fig.~\ref{fig:rpe}) is
 the KITTI-standard per-segment displacement error averaged over all
 sub-segments of a given accumulated GT length.
@@ -959,56 +976,78 @@ deviation documented in the repository.
 \textbf{Our system on their data.}  We run our sliding-window solver,
 with the universal weighting configuration unmodified, on the four
 public ICINS-2021 indoor flight datasets~\cite{doer2021yrio}
-(IWR6843AOP at 10\,Hz, ADIS16448 IMU at 409\,Hz, VINS-based pseudo
-ground truth), using their published extrinsic calibration (locked) and
+(TI IWR6843AOP at 10\,Hz, Analog Devices ADIS16448 IMU at 409\,Hz with
+onboard barometer, loop-closure-and-scale-corrected VINS pseudo ground
+truth), using their published extrinsic calibration (locked) and
 their $\pm 60\degree$ elevation pre-gate.  Their estimators
 (\mbox{ekf-rio}, unaided yaw; \mbox{ekf-yrio}, Manhattan-world radar
 yaw aiding) are re-run from their stock configurations on the same
 bags, and \emph{both} systems are evaluated with the identical causal
 protocol of Sec.~\ref{sec:setup} (live estimates, start-anchored
 alignment, same windows and ground truth).
-Table~\ref{tab:baselines} shows the result.  Orientation favors our
-solver on every flight (0.52--0.93\degree\ live, roll/pitch
-0.23--0.59\degree) --- on three of four flights it beats even the
-yaw-aided ekf-yrio, although heading aiding is asymmetric (our
-pseudo-magnetometer anchors vs.\ their sensor-only Manhattan yaw vs.\
-unaided ekf-rio).  Removing our heading aiding isolates the asymmetry:
-on flight\_1 our unaided yaw drifts to $9.9\degree$ --- the same level
-as unaided ekf-rio ($10.1\degree$) --- while roll/pitch
-($0.30\degree$) and position are unchanged; heading aiding moves only
-the yaw column for either system.  Position reverses the picture: their filters reach
-0.2--1.4\,m (0.3--1.0\% drift) where ours drifts 12--15\%.  The drift
-is almost entirely vertical: integrating our radar-only velocity error
-on flight\_1 attributes $[+2.5, -0.2, -42.6]$\,m to the three axes ---
-horizontal drift is $\sim$1.7\% (competitive), but their radar is
-mounted with a \emph{horizontal} boresight, so the systematic
-elevation bias of single-chip Doppler (Sec.~\ref{sec:setup}) projects
-onto an axis that forward motion never excites, and their filters
-absorb it with a barometer --- a sensor our pipeline does not use.  On
-our own platform the same bias is absorbed by the $27.5\degree$
-pitched mount via extrinsic pitch calibration; on theirs it is
-structurally unobservable to a Doppler-plus-IMU-only estimator.
+Table~\ref{tab:baselines} reports the headline metrics and
+Table~\ref{tab:baselines-decomp} the decomposition that carries the
+honest reading.  The full 3-DoF orientation column favors our solver
+(0.52--1.11\degree\ vs.\ up to $10.1\degree$), but this gap is almost
+entirely \emph{yaw}: our heading is anchored by a pseudo-magnetometer
+--- here the VINS pseudo-GT yaw used as a magnetometer surrogate, in
+place of the MoCap yaw available on our own platform --- whereas
+ekf-yrio uses sensor-only Manhattan-world yaw and ekf-rio is unaided.
+On the heading-\emph{independent} roll and pitch the three systems are
+comparable ($0.25$--$0.74\degree$, Table~\ref{tab:baselines-decomp}),
+so the orientation column is not an attitude win; removing our heading
+aiding confirms this --- on flight\_1 our unaided yaw drifts to
+$9.9\degree$, matching unaided ekf-rio ($10.1\degree$), while roll/pitch
+($0.30\degree$) and position are unchanged.  Position reverses the
+comparison: their filters reach 0.2--1.4\,m (0.3--1.0\% drift) where
+ours drifts 12--15\%.  That loss is almost entirely vertical
+(Table~\ref{tab:baselines-decomp}): our \emph{horizontal} drift is only
+0.5--1.1\% (competitive), but the systematic elevation bias of
+single-chip Doppler (Sec.~\ref{sec:setup}) projects onto the vertical
+axis, which on their \emph{horizontal}-boresight mount forward motion
+never excites, and their filters absorb it with the onboard barometer
+--- a sensor our pipeline does not use.  On our own platform the same
+bias is absorbed by the $27.5\degree$ pitched mount via extrinsic pitch
+calibration; on theirs it is structurally unobservable to a
+Doppler-plus-IMU-only estimator.  Under whole-trajectory Umeyama
+alignment (Table~\ref{tab:baselines-decomp}) the baselines fall to
+0.1--0.9\,m, consistent with their published full-alignment figures and
+confirming that the headline gap is the vertical bias plus the causal
+metric rather than a porting artifact, while our position stays
+vertical-bias-dominated.
 
-\textbf{Their filters on our data.}  The reverse port is a negative
-result: both ekf-rio and x-rio diverge on our racing bags despite
-documented platform tuning.  The mechanism is a stack-level mismatch,
-not a defect of their method: our best-velocity firmware yields only
-$\sim$13 points per frame (their RANSAC/$\sigma$-gates expect
-hundreds), there is no hardware radar trigger, and our racing-frame
-vibration (measured gyro white-noise PSD $2.1\degree/\mathrm{s}/\sqrt{\mathrm{Hz}}$
-in flight) exceeds their process-noise parameter range, so their
-$\chi^2$ innovation gate rejects nearly all radar updates and the
-filter dead-reckons.  We report this as evidence of the design space
-split: their stack is engineered for dense clouds, hardware
-triggering, and a low-vibration carrier; ours for sparse, finely
-quantized Doppler on an aggressive platform.
+\textbf{Their filters on our data.}  The reverse port is
+regime-dependent, and we report the measured outcome rather than a
+verdict.  On the slow-racing flight both ekf-rio and x-rio fail: their
+$\chi^2(3)$ innovation gate rejects $99.7\%$ of the radar ego-velocity
+updates (301 of 302), so the filter reverts to IMU dead-reckoning and
+reaches $2.6$\,km (ekf-rio) / $2.8$\,km (x-rio), almost entirely
+vertical ($\approx\tfrac12 g t^2$).  On the faster flight ekf-rio
+instead survives, degrading to $1.4$\,m ($3.1\%$ drift,
+$9.0\degree$): its larger translational excitation produces radar
+ego-velocities that clear the gate (only $64\%$ rejected), enough to
+constrain the filter.  The amount of radar information admitted thus
+scales with how strongly motion excites the sparse Doppler, and the
+common cause is a stack-level mismatch rather than a defect of their
+method: our best-velocity firmware yields only $\sim$13 points per
+frame (their RANSAC/$\sigma$-gates expect hundreds, and ego-velocity
+estimation fails outright on roughly half of all scans), there is no
+hardware radar trigger, and our racing-frame vibration (measured gyro
+white-noise PSD $2.1\degree/\mathrm{s}/\sqrt{\mathrm{Hz}}$ in flight)
+exceeds their process-noise parameter range, making propagation
+overconfident so the gate then rejects the few updates that survive.
+This is the design-space split: their stack is engineered for dense
+clouds, hardware triggering, and a low-vibration carrier; ours for
+sparse, finely quantized Doppler on an aggressive platform.
 
 \begin{table}[t]
 \caption{Cross-validation on the public ICINS-2021 flight datasets
 \cite{doer2021yrio}.  All systems evaluated with our causal protocol
 (live estimate, start-anchored alignment): position RMSE [m] /
 velocity RMSE [m/s] / orientation RMSE [\degree] / position drift
-[\% of path].  Heading aiding differs by design (see text).}
+[\% of path].  Heading aiding differs by design (see text);
+Table~\ref{tab:baselines-decomp} decomposes these numbers into their
+heading-independent and per-axis structure.}
 \label{tab:baselines}
 \centering
 \footnotesize
@@ -1024,6 +1063,33 @@ Flight (path) & ekf-rio & ekf-yrio & Ours \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+\begin{table*}[t]
+\caption{Decomposition of the Table~\ref{tab:baselines} cross-validation, making the
+honest structure visible at a glance.  \emph{Roll/pitch} is the heading-independent
+attitude RMSE (per-axis RMS, yaw excluded): the three systems are comparable, so the
+large orientation gap in Table~\ref{tab:baselines} is yaw, not attitude.  \emph{Our
+drift} splits our position error into horizontal and vertical: the horizontal component
+is competitive, and the loss is the structurally unobservable vertical elevation bias.
+\emph{Whole-traj.\ ATE} re-evaluates every system under the standard EVO/KITTI Umeyama
+alignment (no scale) for cross-checking against published figures.}
+\label{tab:baselines-decomp}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{lccccccccc}
+\toprule
+ & \multicolumn{3}{c}{Roll/pitch RMSE [\degree]} & \multicolumn{2}{c}{Our drift [\% path]} & \multicolumn{3}{c}{Whole-traj.\ ATE [m]} \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-6}\cmidrule(lr){7-9}
+Flight & ekf-rio & ekf-yrio & Ours & horiz.\ & vert.\ & ekf-rio & ekf-yrio & Ours \\
+\midrule
+1 & 0.24 & 0.25 & 0.29 & \textbf{0.7} & 11.9 & 0.87 & 0.23 & 9.57 \\
+2 & 0.57 & 0.59 & 0.53 & \textbf{1.1} & 14.9 & 0.13 & 0.10 & 2.88 \\
+3 & 0.25 & 0.26 & 0.25 & \textbf{0.5} & 14.7 & 0.36 & 0.26 & 10.86 \\
+4 & 0.74 & 0.74 & 0.72 & \textbf{1.1} & 13.1 & 0.30 & 0.15 & 5.48 \\
+\bottomrule
+\end{tabular}
+\end{table*}
 
 \subsection{Output Covariance Consistency (NEES)}
 \label{sec:nees}
@@ -1393,11 +1459,14 @@ factor-split ablation; (2) ground truth itself degrades during flips
 (MoCap occlusion), bounding what can be measured there; and
 (3) cross-validation against the EKF-RIO family
 (Sec.~\ref{sec:baselines}) shows each stack is strongest on the
-platform it was designed for: our solver wins orientation on their
-public flights but, lacking an altitude sensor, cannot observe the
-vertical Doppler bias of their horizontal-boresight mount (12--15\%
-drift, $\sim$1.7\% horizontal), while their filters diverge on our
-sparse-cloud, high-vibration racing bags.
+platform it was designed for: our solver matches their roll/pitch and
+leads on heading-aided orientation on their public flights but, lacking
+an altitude sensor, cannot observe the vertical Doppler bias of their
+horizontal-boresight mount (12--15\% total drift, only 0.5--1.1\%
+horizontal), while their radar-update gate, starved by our sparse
+clouds and racing-frame vibration, rejects up to 99.7\% of updates and
+their filters dead-reckon on our slow-racing bag (degrading, not
+diverging, on the faster one).
 
 %==================================================================
 \bibliographystyle{IEEEtran}
