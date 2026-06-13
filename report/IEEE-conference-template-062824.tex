@@ -403,9 +403,11 @@ $\vR_{bw} = \vR_{wb}^{\top}$.  The residual
 $r_k = v_{D,\text{meas}} - v_{D,\text{pred}}$ uses Huber
 loss with $\delta = 1.0$\,m/s, chosen to accommodate the
 $\pm0.5$--\SI{0.65}{\metre\per\second} systematic z-velocity bias from
-limited elevation diversity (2\,TX antennas); this kernel is adequate on
-our platform (Sec.~\ref{sec:results}), and its portability to other
-mount geometries is examined in Sec.~\ref{sec:baselines}.  The
+limited elevation diversity (2\,TX antennas); this kernel admits a small
+residual of this bias, adequate at our short flight durations
+(Sec.~\ref{sec:results}) but not eliminated --- its dynamics- and
+duration-limited validity, and the RANSAC alternative that removes it,
+are examined in Sec.~\ref{sec:baselines}.  The
 \SI{0.049}{\metre\per\second} Doppler resolution sets a lower bound but
 does not drive the choice.
 
@@ -1025,16 +1027,28 @@ $0.15$\,m/s inlier threshold) closes the order-of-magnitude gap on all
 four flights, reaching the same order as the baselines ($0.5$--$1.9$\,m,
 $0.7$--$1.3\%$ drift, velocity RMSE $\sim$$0.07$\,m/s).  The single-chip
 elevation bias is therefore real but not fundamental: it is an
-outlier-rejection gap that the baselines close with RANSAC.  On our own
-platform the Huber front-end is adequate --- our reported results
-(Sec.~\ref{sec:results}) are $0.28$--$0.5$\,m --- so it is what we
-report; the gap arises on a \emph{horizontal}-boresight mount, plausibly
-because there the radar's poorly observed elevation direction aligns
-with world-vertical and the unrejected returns leak straight into it.
-RANSAC closes this portability gap.
-Integrating RANSAC as the default front-end --- with the
-dynamics-adaptive weighting law re-validated against it across all
-regimes --- is future work.  Under
+outlier-rejection gap that the baselines close with RANSAC.  This leak
+is \emph{outlier-driven} rather than mount-specific: the same per-frame
+measurement on our own platform scales with dynamics, from $-0.019$\,m/s
+in slow racing to $-0.054$\,m/s in fast racing on the identical
+$27.5\degree$ mount --- the latter at the ICINS level --- as aggressive
+motion admits more elevation-biased returns through the Huber kernel.
+Mount geometry redistributes \emph{which} axis the bias lands on
+(concentrated in world-vertical on a horizontal boresight; split across
+axes under our pitched, maneuvering flight) but does not remove it.
+What keeps our reported drift sub-metre is \emph{flight duration}: our
+flights are $18$--$26$\,s, over which a $0.05$\,m/s bias integrates to
+under a metre, whereas over the ICINS $90$--$190$\,s flights the same
+bias reaches $\sim$$10$\,m.  The bias is thus present in our own racing
+results too --- short lab flights do not fully expose it, and it would
+dominate position on sustained flight.  This is the component of our
+position drift --- which is by construction, as we provide a
+velocity-and-orientation estimate for fusion (Sec.~\ref{sec:conclusion})
+--- that a RANSAC front-end would remove at the source.  We retain the
+Huber front-end here, adequate at these flight durations, and treat a
+RANSAC front-end --- whose integration requires re-validating the
+dynamics-adaptive weighting law across all regimes --- as future work.
+Under
 whole-trajectory Umeyama alignment (Table~\ref{tab:baselines-decomp})
 the baselines fall to 0.1--0.9\,m, consistent with their published
 full-alignment figures (the baselines are faithfully reproduced) and
@@ -1502,9 +1516,13 @@ adding the same rejection cuts our vertical drift to $0.5$--$1.9$\,m ---
 while their radar-update gate, starved by our sparse clouds and
 racing-frame vibration, rejects up to 99.7\% of updates and their
 filters dead-reckon on our slow-racing bag (degrading, not diverging, on
-the faster one).  A RANSAC radar front-end closes this portability gap;
-integrating it as the default --- with the dynamics-adaptive weighting
-law re-validated against it --- is future work.
+the faster one).  This front-end bias is not foreign-mount-specific: it
+scales with dynamics on our own platform too and is kept sub-metre only
+by our short ($18$--$26$\,s) flights, so it under-reports the position
+drift that sustained flight would accrue.  A RANSAC front-end removes it
+at the source; adopting it as the default --- pending re-validation of
+the dynamics-adaptive weighting law across all regimes --- is future
+work.
 
 %==================================================================
 \bibliographystyle{IEEEtran}

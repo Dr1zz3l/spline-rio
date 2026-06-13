@@ -188,3 +188,38 @@ VI-F/IV-B hedge ("plausibly because on a horizontal-boresight mount the elevatio
 aligns with world-vertical … our pitched mount") is the WEAKEST-supported of the three; the
 measurement says the honest reason is **short flight duration** (+ partial outlier-rate, modest
 fusion). A duration-based framing would be more defensible than the mount-geometry one.
+
+---
+
+## 6. Paper updated with the duration finding (3rd review note) — done
+
+Author decision: update the paper with the measured finding now (do NOT switch to RANSAC
+default this submission). Edits (PDF now 12 pages):
+- **VI-F**: replaced the mount-geometry hedge with the measured story, led by the
+  **same-mount dynamics scaling** (slow −0.019 → fast −0.054 m/s on the identical 27.5°
+  mount → leak is outlier-driven, not mount-driven). Added: geometry *redistributes* which
+  axis the bias lands on (ICINS x +0.002/z −0.064 concentrated; fast_racing x +0.096/z −0.054
+  split) but does not eliminate it; **duration** is why our drift stays sub-metre (18–26 s
+  vs ICINS 90–190 s; 0.05 m/s × 186 s ≈ 10 m). Added the **protective self-characterization**
+  sentence: the same bias is present in our own racing results, under-exposed by short lab
+  flights, would dominate position on sustained flight — the by-construction position-drift
+  component a RANSAC front-end removes at source.
+- **IV-B bridge**: "portability to other mount geometries" → "admits a small residual …
+  adequate at our short flight durations but not eliminated; dynamics-/duration-limited
+  validity examined in VI-F."
+- **Conclusion (3)**: deferral reframed onto duration + re-validation (not "Huber is fine on
+  our mount"): the bias scales with dynamics on our own platform, kept sub-metre only by
+  short flights; RANSAC removes it at source; default-switch pending weighting-law
+  re-validation is future work.
+
+**Reviewer-C caveat applied (fusion leg dropped).** The §5 "fusion suppresses 2–3×" sub-point
+is weakly supported — it compared an RMSE to an integrated-displacement (∫), which is not
+apples-to-apples (linear-growth RMSE ≈ 0.58× final; and on ICINS actual 16.9 m already
+EXCEEDS the ∫ 11.8 m, the tell that the metrics aren't matched). The paper claim therefore
+rests on the two solid legs only — (i) per-frame bias is ICINS-level on our own mount and
+scales with dynamics, (ii) it integrates to sub-metre only because flights are short. Fusion
+is not claimed in the paper.
+
+RANSAC-default still deferred (submittable-now > better-but-incomplete). If the paper reaches
+final and time allows, the considered move is to re-run all benchmarks (racing, backflips,
+ablations, NEES, Pareto, timing) with RANSAC as the default front-end and update the numbers.
