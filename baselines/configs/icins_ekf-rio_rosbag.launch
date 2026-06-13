@@ -16,6 +16,9 @@
     <arg name="bag_duration" default="-1.0"/>
     <arg name="sleep_ms" default="5"/>
     <arg name="filter_node_name" default="rio"/>
+    <!-- baro/altimeter fusion toggle (default matches their stock config: enabled).
+         Set altimeter_update:=false for the barometer-ablation test (paper Sec VI-F). -->
+    <arg name="altimeter_update" default="true"/>
 
     <node name="$(arg filter_node_name)" pkg="$(arg pkg)" type="rosbag_node" output="screen" launch-prefix="bash -c 'sleep 4; $0 $@' ">
         <rosparam file="$(arg config)" command="load" ns=""/>
@@ -26,7 +29,7 @@
         <param name="sleep_ms" value="$(arg sleep_ms)" type="double"/>
         <param name="publisher_rate" value="100" type="double"/>
         <param name="republish_ground_truth" value="false" type="bool"/>
-        <param name="altimeter_update" value="true" type="bool"/>
+        <param name="altimeter_update" value="$(arg altimeter_update)" type="bool"/>
         <!-- same gyro z bias init as their official icins evaluation launch -->
         <param name="b_0_w_z_deg" value="-0.1" type="double"/>
     </node>
