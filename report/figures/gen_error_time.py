@@ -32,12 +32,14 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 TAG = 'mocap-init_mocap-heading'
 
 matplotlib.rcParams.update({
-    'font.size':       12,
-    'axes.labelsize':  12,
-    'axes.titlesize':  12,
-    'xtick.labelsize': 10,
-    'ytick.labelsize': 10,
-    'legend.fontsize': 10,
+    # authored ~13in, displayed full text width ~7.16in (figure*, ~0.55x);
+    # fonts sized for ~10pt on page
+    'font.size':       18,
+    'axes.labelsize':  18,
+    'axes.titlesize':  17,
+    'xtick.labelsize': 15,
+    'ytick.labelsize': 15,
+    'legend.fontsize': 15,
     'lines.linewidth': 1.8,
     'figure.dpi':      150,
 })

@@ -65,12 +65,13 @@ C = {
 }
 
 matplotlib.rcParams.update({
-    'font.size':       11,
-    'axes.labelsize':  11,
-    'axes.titlesize':  11,
-    'xtick.labelsize': 9,
-    'ytick.labelsize': 9,
-    'legend.fontsize': 9,
+    # authored ~11in, displayed ~3.45in (~0.31x); fonts sized for ~9-10pt on page
+    'font.size':       28,
+    'axes.labelsize':  28,
+    'axes.titlesize':  27,
+    'xtick.labelsize': 23,
+    'ytick.labelsize': 23,
+    'legend.fontsize': 22,
     'lines.linewidth': 2.0,
     'figure.dpi':      150,
 })

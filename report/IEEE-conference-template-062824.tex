@@ -267,7 +267,7 @@ Rather than comparing numbers across papers --- our own quantization
 ablation (Sec.~\ref{sec:setup}) shows firmware configuration alone
 changes Doppler resolution by $12\times$ --- we cross-validate against
 this line directly: Sec.~\ref{sec:baselines} runs our system on the
-public ICINS-2021 flight datasets of~\cite{doer2020ekf} and re-evaluates
+public ICINS-2021 flight datasets of~\cite{doer2021yrio} and re-evaluates
 their EKF estimators under our causal metrics on the same data, and
 reports the regime-dependent result of porting their filters to our
 platform.
@@ -489,7 +489,9 @@ Yaw is unobservable from Doppler alone (all yaw-equivalent
 trajectories predict identical radial velocities under pure
 rotation about gravity).  We supply a heading reference from a magnetometer (standard on
 most platforms; here simulated by MoCap yaw).  The residual $r_\psi = \psi_\text{est} - \psi_\text{ref}$
-is added at $\sim$100\,Hz, $\lambda_\psi = 0.6$.
+is added at $\sim$100\,Hz, with $\lambda_\psi = 0.6$ by default and
+raised to $10$ on the heading-critical bags (slow racing, backflips;
+Table~\ref{tab:sw} footnote).
 
 \subsection{Regularization}
 \label{sec:reg}
@@ -869,16 +871,16 @@ window.
   \label{fig:traj_fast}
 \end{figure}
 
-\begin{figure}[t]
+\begin{figure*}[t]
   \centering
-  \includegraphics[width=\columnwidth]{figures/error_over_time.pdf}
+  \includegraphics[width=\textwidth]{figures/error_over_time.pdf}
   \caption{Position, velocity, and orientation error vs.\ time for slow
     racing (top) and fast racing (bottom).  Batch estimate (red dashed)
     and SW live edge (orange dotted).  Fast racing position error
     accumulates monotonically with trajectory length; velocity and
     orientation errors spike at high-speed, high-dynamics sections.}
   \label{fig:error_time}
-\end{figure}
+\end{figure*}
 
 \subsection{Relative Pose Error and Position Drift}
 \label{sec:rpe}

@@ -42,12 +42,14 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Paper font sizes
 matplotlib.rcParams.update({
-    'font.size':        13,
-    'axes.labelsize':   13,
-    'axes.titlesize':   13,
-    'xtick.labelsize':  11,
-    'ytick.labelsize':  11,
-    'legend.fontsize':  11,
+    # Figure is authored at ~9in then displayed at ~3.45in (\columnwidth),
+    # a ~0.38x shrink; source fonts are sized so on-page text is ~9-10pt.
+    'font.size':        24,
+    'axes.labelsize':   24,
+    'axes.titlesize':   23,
+    'xtick.labelsize':  20,
+    'ytick.labelsize':  20,
+    'legend.fontsize':  19,
     'lines.linewidth':  2.0,
     'figure.dpi':       150,
 })
@@ -103,7 +105,7 @@ for bag_key, mocap_tag in BAGS:
         ax.set_aspect('equal')
 
     bag_label = bag_key.replace('_best_velocity', '').replace('_', ' ')
-    fig.suptitle(f'{bag_label}', fontsize=14, fontweight='bold')
+    fig.suptitle(f'{bag_label}', fontsize=26, fontweight='bold')
     fig.tight_layout()
 
     out = OUT_DIR / f'traj_{bag_key}.pdf'

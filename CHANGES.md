@@ -223,3 +223,37 @@ is not claimed in the paper.
 RANSAC-default still deferred (submittable-now > better-but-incomplete). If the paper reaches
 final and time allows, the considered move is to re-run all benchmarks (racing, backflips,
 ablations, NEES, Pareto, timing) with RANSAC as the default front-end and update the numbers.
+
+---
+
+## 7. Full-paper read & audit (2026-06-13)
+
+Read the entire paper end-to-end and fixed what was found (length left for later, per request).
+
+**Content fixes:**
+- **Citation error (L270):** the intro called the ICINS-2021 datasets "of [doer2020ekf]" (the
+  2020 MFI/EKF paper); the datasets belong to the 2021 yaw-aided paper and the baselines section
+  itself cites `doer2021yrio` for them. Fixed → `doer2021yrio`.
+- **Heading-weight disclosure (IV-B):** methodology stated a bald `λ_ψ=0.6`, but the headline
+  slow-racing live result (Table III) and backflips use `λ_heading=10` (bags.yaml; the Table III
+  footnote already lists "the heading weight" as per-regime). Tightened to "0.6 by default, raised
+  to 10 on the heading-critical bags (slow racing, backflips)".
+
+**Figures (text too small):** root cause — figures authored at 9–13 in then shrunk to the 3.45 in
+column (~0.27–0.38×), so 11–13 pt fonts rendered at 3–5 pt. Fixed by raising source fonts in the
+four `report/figures/gen_*.py` scripts (load cached `.npz`; no solver re-run) so on-page text is
+~9–10 pt, and making the 6-panel `error_over_time` a full-width `figure*`. Regenerated all six
+figure PDFs; verified legible by rendering. (Trajectory/RPE/prior-scale/error-time all readable now.)
+
+**Tables:** verified **zero overfull boxes** — no table actually overflows the column. The dense
+Table V (4 numbers/cell) is tight but fits; could be promoted to a full-width `table*` for air if
+desired (not done — it fits).
+
+**Flagged, NOT changed (author's call):**
+- 27.5° vs "physical 30°" mount: L283/L780 say physical 30° tilt and self-cal → 27.1–27.6°, while
+  VII-B says "27.5° is simply the correct mount angle". Mild tension (CAD/eyeball 30° vs data-fit
+  extrinsic-pitch 27.5°); internally explained but a sharp reader may notice. Left as the author's
+  calibration narrative.
+
+PDF 12 pages, clean, all citations resolve. Sections not flagged by reviewers were read and found
+consistent with the evolved cross-validation story.

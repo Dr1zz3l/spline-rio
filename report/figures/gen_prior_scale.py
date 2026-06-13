@@ -17,12 +17,13 @@ OUT_DIR = Path(__file__).parent
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 matplotlib.rcParams.update({
-    'font.size':       12,
-    'axes.labelsize':  12,
-    'axes.titlesize':  12,
-    'xtick.labelsize': 10,
-    'ytick.labelsize': 10,
-    'legend.fontsize': 10,
+    # authored ~9in, displayed ~3.45in (~0.38x); fonts sized for ~9-10pt on page
+    'font.size':       24,
+    'axes.labelsize':  24,
+    'axes.titlesize':  23,
+    'xtick.labelsize': 20,
+    'ytick.labelsize': 20,
+    'legend.fontsize': 19,
     'lines.linewidth': 2.0,
     'figure.dpi':      150,
 })
