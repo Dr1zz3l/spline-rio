@@ -136,3 +136,55 @@ future pass.
 - `documentation/ROADMAP.md` — Part 6c (this investigation).
 - `CHANGES.md` — this file.
 - (`baselines/results/ours_icins/*ransac*` run logs are gitignored artifacts.)
+
+---
+
+## 5. Own-bag vertical-bias diagnostic — geometry vs duration vs fusion (measurement only)
+
+Follow-up to resolve WHY our own platform avoids the ICINS vertical leak. Generalised
+`icins_zbias_probe.py` to run correctly on our own bags: applies the radar→GT time offset
+(`radar_total_offset = imu_mocap_offset − radar_imu_offset`, ≈ −120 ms on our bags vs 0 on
+ICINS — this was the bug behind the earlier spurious horizontal bias), per-bag extrinsics +
+flip set, GT-aided Doppler unwrap, GT-velocity low-pass. **No pipeline constants, solver, or
+paper edits.**
+
+**Validation gates — both pass.** (1) Positive control: ICINS flight_1 reproduces the committed
+B1 (plain −0.283, Huber −0.064, RANSAC +0.002 m/s vertical). (2) Own-bag sanity: after the
+offset fix, slow_racing horizontal bias is ~0 (was −0.16..−0.20); fast_racing RANSAC x/y ≈ 0
+(−0.017/−0.045), confirming conventions are correct (its Huber x +0.096 is real outlier leakage,
+not a convention bug).
+
+**Per-frame vertical ego-velocity bias [m/s] (rotated to world via GT attitude):**
+
+| bag | window | plain WLS | Huber δ=1.0 | RANSAC | dead-reckon z-drift (∫) | actual solver vert RMSE |
+|-----|--------|-----------|-------------|--------|-------------------------|--------------------------|
+| ICINS flight_1 | 183 s | −0.283 | −0.064 | +0.002 | −11.8 m | ~16.9 m |
+| slow_racing | 22 s | −0.029 | **−0.019** | −0.002 | −0.4 m | 0.198 m |
+| fast_racing | 14 s | −0.051 | **−0.054** | −0.008 | −0.8 m | 0.167 m |
+
+(circle, the extrinsics-flip-set code-path test, ran sanely — flip handling works — but is a
+short different-day bag and is NOT used for any mechanism conclusion. backflips excluded per
+scope: its flip-regime `b`/intra-frame distortion is a different mechanism.)
+
+**VERDICT: DURATION-dominated, NOT mount-geometry.**
+- fast_racing's per-frame Huber vertical bias (−0.054 m/s) is **essentially ICINS-level**
+  (−0.064) — **on our pitched mount.** So the mount does NOT make the elevation bias vanish;
+  the "pitched-mount geometry absorbs it" reading is not supported by the data.
+- The reason our reported results avoid the ICINS-scale drift is mainly **flight duration**:
+  our flights are 14–22 s vs ICINS 87–186 s (~8×). Projecting fast_racing's bias to ICINS
+  duration: −0.054 × 186 ≈ −10 m — i.e. ICINS-scale. If we flew aggressive long flights on our
+  own mount, we would drift like ICINS.
+- **Partial geometry / outlier-rate:** slow_racing's bias (−0.019) is smaller than ICINS, but
+  this tracks motion aggressiveness (outlier rate: benign motion → fewer corrupted returns),
+  not mount geometry per se (same mount as fast_racing, which is 3× higher).
+- **Modest fusion:** fast_racing actual vertical (0.167 m) is below the dead-reckon RMS (~0.46 m)
+  → ~2–3× solver suppression on short windows; slow_racing shows little (0.198 vs ~0.23 m).
+  Fusion helps on short flights but is overwhelmed over ICINS-length flights.
+- RANSAC drives the bias to ~0 on every bag (slow −0.002, fast −0.008), so it remains the robust
+  fix independent of mount/duration.
+
+**Implication for the paper framing (for the author to decide — NO edit made):** the current
+VI-F/IV-B hedge ("plausibly because on a horizontal-boresight mount the elevation direction
+aligns with world-vertical … our pitched mount") is the WEAKEST-supported of the three; the
+measurement says the honest reason is **short flight duration** (+ partial outlier-rate, modest
+fusion). A duration-based framing would be more defensible than the mount-geometry one.

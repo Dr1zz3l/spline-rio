@@ -1280,3 +1280,17 @@ dynamics-adaptive weighting law across all regimes (future work). Paper edits: S
 Sec VI-F mechanism paragraph (reframed), Table VI caption + RANSAC note row (whole-traj
 0.46/0.24/0.76/0.46 m), Conclusion limitation (3). reve inlier 0.15 confirmed stock.
 PDF 11 pages, clean. See CHANGES.md for full numbers + sources.
+
+### Part 6d — Own-bag vertical-bias diagnostic: DURATION, not mount-geometry (2026-06-13)
+
+Resolved (measurement only, no paper edit) why our own platform avoids the ICINS vertical leak.
+Fixed `icins_zbias_probe.py` for own bags (radar→GT offset −120ms via imu_mocap−radar_imu; per-bag
+extrinsics+flip; GT-aided unwrap; GT-vel lowpass). Gates pass: ICINS reproduces committed B1;
+own-bag horizontal bias ~0 after offset fix. Per-frame Huber vertical bias: slow_racing −0.019,
+fast_racing **−0.054** (≈ ICINS −0.064!), ICINS_f1 −0.064 m/s. Actual solver vertical: slow 0.198,
+fast 0.167 m. VERDICT: **DURATION-dominated, NOT geometry** — fast_racing has an ICINS-level
+per-frame vertical bias ON OUR PITCHED MOUNT, so the mount does not absorb it; we avoid ICINS-scale
+drift mainly because flights are 14–22s vs 87–186s (−0.054×186s ≈ −10m ≈ ICINS-scale). Partial
+outlier-rate effect (slow has fewer outliers→smaller bias); modest fusion (fast 0.167 < dead-reckon
+~0.46m RMS). RANSAC →~0 on all bags. IMPLICATION (author decides): the VI-F/IV-B mount-geometry
+hedge is the weakest-supported; a duration framing is more defensible. See CHANGES.md §5.
