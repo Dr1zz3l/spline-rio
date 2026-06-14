@@ -264,7 +264,7 @@ Trommer~\cite{doer2020ekf} and extensions to multiple
 radars~\cite{huang2024multiradar} and 4D-radar-aided inertial
 navigation define the state of practice.
 Rather than comparing numbers across papers --- our own quantization
-ablation (Sec.~\ref{sec:setup}) shows firmware configuration alone
+ablation (Sec.~\ref{sec:heldout}) shows firmware configuration alone
 changes Doppler resolution by $12\times$ --- we cross-validate against
 this line directly: Sec.~\ref{sec:baselines} runs our system on the
 public ICINS-2021 flight datasets of~\cite{doer2021yrio} and re-evaluates
@@ -386,7 +386,9 @@ differentiation.
 A constant 6-DoF IMU bias $[\vb_a, \vb_g]$ is estimated jointly.
 The extrinsic pitch $\delta_\text{pitch}$ (1 DoF) is optimized
 with a soft prior; roll and yaw are fixed (unobservable from
-Doppler).
+Doppler).  It is optimized in batch for self-calibration and locked at
+the calibrated 27.5\degree\ for the sliding window
+(Sec.~\ref{sec:backflips}).
 
 \subsection{Measurement Models}
 \label{sec:models}
@@ -426,8 +428,8 @@ unchanged.  It runs once at frame load, not per window, so it does not
 enter the per-window timing budget (Sec.~\ref{sec:results}).
 Sec.~\ref{sec:baselines} quantifies what it removes --- on the public
 ICINS flights it closes an order-of-magnitude vertical-drift gap, and on
-our own flights it improves aggressive-racing live position by $22\%$ ---
-and it is enabled by default for every result in this paper.
+our own flights it improves aggressive-racing live position by $22\%$ ($0.50\to0.39$\,m
+live) --- and it is enabled by default for every result in this paper.
 
 \textbf{Dynamics-adaptive measurement weighting.}
 The central practical finding of this work is that a single
@@ -841,12 +843,12 @@ Bag & Mode & Vel (m/s) & Ori (\degree) & Pos (m) & Drift (\%) & $t_{\mathrm{win}
 \end{tabular}
 \end{table}
 
-Live-edge orientation degrades 0.3--0.4\degree\ relative to settled;
+Live-edge orientation degrades 0.4--0.5\degree\ relative to settled;
 this is expected because subsequent windows refine previous estimates.
 With the consistent prior, settled velocity is smooth across stride
 boundaries (the earlier inconsistent prior produced position jumps
 that inflated the settled velocity derivative).
-Per-window solve times are 0.37--0.86\,s against a 0.3\,s stride on a
+Per-window solve times are 0.35--0.70\,s against a 0.3\,s stride on a
 laptop CPU --- fast racing runs in real time at a 0.4\,s stride.
 The dominant cost reductions were: the consistent prior removing
 the marginalization re-linearization ($\sim$0.6\,s), coarsening
@@ -992,7 +994,7 @@ comparable ($0.25$--$0.74\degree$, Table~\ref{tab:baselines-decomp}),
 so the orientation column is not an attitude win; removing our heading
 aiding confirms this --- on flight\_1 our unaided yaw drifts to
 $9.9\degree$, matching unaided ekf-rio ($10.1\degree$), while roll/pitch
-($0.30\degree$) and position are unchanged.
+and position are essentially unchanged.
 
 This position parity is what the default RANSAC prefilter
 (Sec.~\ref{sec:models}) buys, and it is the clearest single
@@ -1164,27 +1166,29 @@ Configuration & Pos (m) & Ori (\degree) \\
 \quad Min-$\alpha$, $\lambda_\alpha{=}1.0$ & 2.069 & 83.8 \\
 \midrule
 \multicolumn{3}{l}{\textit{SW window dur.\ (slow\_racing SW, settled / live edge)}} \\
-\quad 1.5\,s & 0.488 / 0.675 & 2.14 / 2.47 \\
-\quad \textbf{3.0\,s (default)} & \textbf{0.225 / 0.338} & \textbf{1.57 / 2.08} \\
-\quad 5.0\,s & 0.167 / 0.371 & 1.31 / 2.03 \\
+\quad 1.5\,s & 0.284 / 0.292 & 1.40 / 1.90 \\
+\quad \textbf{3.0\,s (default)} & \textbf{0.286 / 0.303} & \textbf{1.49 / 1.88} \\
+\quad 5.0\,s & 0.307 / 0.336 & 1.43 / 1.92 \\
 \midrule
 \multicolumn{3}{l}{\textit{Marginalization (fast\_racing SW, settled)}\textsuperscript{\ddag}} \\
-\quad None (boundary prior only) & 1.391 & 3.36 \\
-\quad \textbf{Schur complement (default)} & \textbf{0.726} & \textbf{3.19} \\
+\quad None (boundary prior only) & 0.412 & 2.66 \\
+\quad \textbf{Schur complement} & \textbf{0.285} & \textbf{2.31} \\
 \midrule
 \multicolumn{3}{l}{\textit{Extrinsic optimization (slow\_racing batch)}\textsuperscript{\S}} \\
 \quad \textbf{Pitch $\delta$ optimized (default)} & \textbf{0.169} & \textbf{1.02} \\
 \quad Pitch $\delta$ locked & 0.157 & 1.02 \\
 \bottomrule
 \multicolumn{3}{@{}p{\columnwidth}@{}}{\scriptsize
-  Absolute figures predate the default RANSAC front-end
-  (Sec.~\ref{sec:models}), which shifts the slow\_racing batch default to
-  0.198\,m/1.01\degree\ and leaves every ordering here intact.
+  Batch rows (IMU-rate, lever-arm, ori-reg, extrinsic) isolate one
+  design choice at a fixed pre-RANSAC operating point; the RANSAC default
+  shifts batch absolutes (e.g.\ slow batch 0.169$\to$0.198\,m) without
+  changing orderings.  The SW rows (window duration, marginalization)
+  are under the RANSAC default.
   \textsuperscript{\dag}Lever arm disabled for isolation; see Lever-arm rows
   for the current default (0.169\,m/1.02\degree).
-  \textsuperscript{\ddag}Marginalization compared at \texttt{fast\_racing} where
-  scale$=2{\times}10^{-4}$ is meaningful; slow\_racing uses scale$=10^{-7}$
-  (near-zero), so both variants give equivalent settled results.
+  \textsuperscript{\ddag}Marginalization shown for \texttt{fast\_racing}; on
+  slow\_racing the near-zero optimal prior makes Schur and boundary-only
+  nearly equivalent.
   \textsuperscript{\S}C++ solver supports only 1-DOF pitch offset (roll/yaw
   unobservable from Doppler; free 3-angle optimization tested in Python
   solver showed 6--8\degree\ orientation runaway --- see
@@ -1199,14 +1203,15 @@ Lever-arm correction helps racing ($8$--$11\%$ position) but has
 negligible effect on backflips: at $\Delta t_o{=}0.8$\,ms the dense
 spline absorbs the $|\bm{\omega}{\times}\mathbf{t}_{bs}|\approx1$\,m/s
 term through orientation DOF.
-Schur marginalization reduces settled position by 48\% for fast racing
-(1.391\,m $\to$ 0.726\,m); for slow racing the optimal prior scale is
+Schur marginalization reduces fast-racing settled position by 31\%
+(0.412\,m $\to$ 0.285\,m); for slow racing the optimal prior scale is
 $10^{-7}$ (near-zero), so both variants give equivalent results ---
 the benefit is captured in Table~\ref{tab:prior_scale} instead.
-Window duration: 5\,s gives best settled position (0.167\,m) but
-slightly worse live edge than 3\,s (0.371 vs.\ 0.338\,m); 3\,s is the
-practical optimum for a deployed system (lower latency, better live
-accuracy).  Pitch-only extrinsic optimization is the default;
+Window duration has little effect on slow racing (live 0.29--0.34\,m
+across 1.5--5\,s); on fast racing a 3\,s window modestly improves the
+live edge over 2\,s ($0.44\to0.39$\,m, $2.9\to2.8\degree$), so 3\,s is
+the default --- balancing latency against accuracy.
+Pitch-only extrinsic optimization is the default;
 locking pitch to nominal is slightly better for slow racing (0.157 vs.\
 0.169\,m) but the optimizer correctly self-calibrates on fast/backflips bags.
 
@@ -1257,7 +1262,8 @@ is worth $\sim$3\degree\ of orientation at zero position cost ---
 plus the flip-regime Doppler correction $b{=}{-}1.5$\,m/s.
 Together these reach \textbf{1.68\,m\,/\,4.8\degree\ settled and
 1.55\,m\,/\,6.3\degree\ live at $\sim$0.6\,s per window}
-(Table~\ref{tab:sw}).  The default RANSAC prefilter (Sec.~\ref{sec:models})
+(Table~\ref{tab:sw}; Fig.~\ref{fig:traj_backflips}).  The default RANSAC
+prefilter (Sec.~\ref{sec:models})
 is neutral here --- backflip frames are already sparse and mostly fall
 below its five-return floor, so they bypass it --- and the small change
 from the Huber front-end ($1.51\to1.55$\,m live) is within run-to-run
@@ -1385,7 +1391,7 @@ Slow racing is best served by a near-zero prior ($10^{-7}$): with
 gentle dynamics, each 3\,s window is self-sufficient and additional
 inter-window coupling is harmful.  Fast racing needs the prior
 ($2{\times}10^{-4}$) for inter-window position continuity ---
-without it (scale$=10^{-7}$) fast racing position degrades from
+without it (scale$=10^{-7}$) fast racing live position degrades from
 0.825\,m to 1.279\,m.
 For slow racing, scale$=10^{-6}$ yields a local \emph{orientation}
 maximum (2.21\degree; worse than both 2$\times$10$^{-4}$ at 2.16\degree\
