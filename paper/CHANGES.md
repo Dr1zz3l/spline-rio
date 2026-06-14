@@ -21,9 +21,21 @@ slow/backflips neutral, config unchanged → universality preserved). Applied to
   numbers refreshed (kept 46–75%, no starvation; old-fw backflips ori 10.7→8.1/9.1°).
 - Table VII footnote: absolute figures predate RANSAC, orderings intact.
 
-**Page count: still 11** (float-bound; removing Table II freed text the floats don't
-vacate). Reaching 8 still needs float reduction — see "Remaining overflow" below. Both
-papers build clean, 0 undefined refs. Re-benchmark logs in `baselines/results/ransac_default/`.
+**Page count after the RANSAC rewrite: 11** (float-bound). A subsequent **float-reduction
+pass** (below) brought `paper/` to **10**.  Both papers build clean, 0 undefined refs.
+Re-benchmark logs in `baselines/results/ransac_default/`.
+
+**Float-reduction pass (paper/ only, → 10 pp).** Applied the reviewer's prioritized menu:
+dropped the radar-contribution table (also audit item 1), Fig. RPE (`fig:rpe`, prose keeps
+the 1.12%/0.43%/3.2% numbers), Table I datasets (→ one sentence), Table VIII prior-scale
+(`tab:prior_scale`, VII-C prose keeps 0.825→1.279 + the 2.21° local max + the
+predates-RANSAC caveat), the sliding-window schematic (`fig:sw_diagram`, unreferenced;
+Eq. + IV-E carry it), and the error-timeseries figure (`fig:error_time`; RMSE in Table II,
+trajectories in Fig. 3).  **Floor at 10 pp:** remaining floats are 3 figures (pipeline,
+racing-traj, backflips-traj) + 4 tables (SW, baselines, decomp, ablations) + 24 refs
+(~1.2 pp). All three final pages are full. **Reaching 8 requires cutting protected
+content** (a trajectory figure, Table IV/V, the ablations table, or the reference list) —
+stopped and reported per instruction rather than cut protected material.
 
 **Audit pass (post-rewrite, same day) — pre-RANSAC absolutes that survived in prose:**
 - **Dropped the radar-contribution table** (IMU-only vs RIO) → one sentence: it quoted the

@@ -566,68 +566,6 @@ $\lambda_{\text{bnd}} = 1000$ for position and velocity.
 \subsection{Sliding Window with Schur Complement Marginalization}
 \label{sec:sw}
 
-\begin{figure}[t]
-\centering
-\scalebox{0.97}{%
-\begin{tikzpicture}[
-  font=\small,
-  cp/.style={circle, draw, minimum size=6pt, inner sep=0pt},
-  ]
-  % --- shaded zone backgrounds (draw first, CPs on top) ---
-  \fill[red!12]   (1.5,-0.22) rectangle (2.7, 0.22);
-  \fill[green!12] (2.7,-0.22) rectangle (4.5, 0.22);
-
-  % --- timeline ---
-  \draw[->, thick] (-0.2,0) -- (8.4,0) node[right]{$t$};
-
-  % --- gray CPs ---
-  \foreach \x in {0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0,
-                  4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5}
-    \node[cp, fill=gray!30] at (\x, 0) {};
-
-  % --- red (marginalized) CPs ---
-  \foreach \x in {1.5, 2.0, 2.5}
-    \node[cp, fill=red!55] at (\x, 0) {};
-
-  % --- green (boundary) CPs ---
-  \foreach \x in {3.0, 3.5, 4.0, 4.5}
-    \node[cp, fill=green!55!black] at (\x, 0) {};
-
-  % === ABOVE the timeline: window span brackets ===
-
-  % Window w bracket: ticks at y=0.32, horizontal bar at y=0.55, label at y=0.75
-  \draw[blue!75!black, thick]
-    (1.5,0.32) -- (1.5,0.55) -- (4.5,0.55) -- (4.5,0.32);
-  \node[blue!75!black] at (3.0, 0.80) {window $w$ \ (3\,s)};
-
-  % Window w+1 bracket: ticks at y=0.95, bar at y=1.18, label at y=1.38
-  \draw[blue!45, thick, dashed]
-    (2.7,0.95) -- (2.7,1.18) -- (5.7,1.18) -- (5.7,0.95);
-  \node[blue!45] at (4.2, 1.43) {window $w{+}1$};
-
-  % === BELOW the timeline: zone labels ===
-  % Red anchored east (text grows left); green anchored west (text grows right)
-  % → labels always point away from the shared boundary at x=2.7
-
-  \node[red!75!black, anchor=east] at (2.5, -0.65) {stride (0.3\,s)};
-  \node[red!75!black, anchor=east, font=\footnotesize] at (2.5, -1.00) {marginalized};
-
-  \node[green!55!black, anchor=west] at (2.9, -0.65) {boundary state};
-  \node[green!55!black, anchor=west, font=\footnotesize] at (2.9, -1.00) {30-dim prior};
-
-  % Prior propagation: boundary CPs feed the next window
-  \draw[-{Latex[length=2mm]}, green!55!black, thick]
-    (4.2, -1.30) to[out=0, in=180] (5.5, -1.30);
-  \node[green!55!black, font=\footnotesize, anchor=west] at (5.55, -1.30)
-    {prior $\to w{+}1$};
-
-\end{tikzpicture}%
-}% end scalebox
-\caption{Sliding window: red CPs (stride zone) are marginalized
-into a 30-dim Gaussian prior on the green boundary CPs.}
-\label{fig:sw_diagram}
-\end{figure}
-
 The fixed-lag smoother advances a 3\,s window in 0.3\,s strides.
 After each Ceres LM solve, the \emph{stride zone} CPs and orientation
 knots are marginalized:
@@ -701,26 +639,13 @@ the marginalization step costs $\sim$10\,ms per window.
 \section{Experimental Setup}
 \label{sec:setup}
 
-All experiments use the rosbag datasets collected in a Vicon MoCap
-lab.  Table~\ref{tab:datasets} summarizes the three bags used for
-evaluation.
-
-\begin{table}[t]
-\centering
-\caption{Dataset Summary}
-\label{tab:datasets}
-\small
-\begin{tabular}{@{}lcccc@{}}
-\toprule
-Bag & Dur.\ (s) & $v_{\max}$ (m/s) & $|\omega|_{\max}$ (rad/s) & Frames \\
-\midrule
-Slow racing & 25.8 & 3.65 & 2.62 & 258 \\
-Fast racing & 18.0 & 5.66 & 9.14 & 179 \\
-Backflips\textsuperscript{*} & 18.1 & $\sim$4.3 (95\%) & $\sim$10.9 (95\%) & 181 \\
-\bottomrule
-\multicolumn{5}{l}{\textsuperscript{*}95th percentile; MoCap tracking artifacts dominate peaks.}
-\end{tabular}
-\end{table}
+All experiments use rosbag datasets collected in a Vicon MoCap lab.
+Three flights are used for evaluation: \emph{slow racing}
+(25.8\,s, $v_{\max}{=}3.7$\,m/s, $|\omega|_{\max}{=}2.6$\,rad/s,
+258 radar frames), \emph{fast racing}
+(18.0\,s, 5.7\,m/s, 9.1\,rad/s, 179 frames), and \emph{backflips}
+(18.1\,s, $\sim$4.3\,m/s and $\sim$10.9\,rad/s at the 95th percentile
+where MoCap artifacts dominate the peaks, 181 frames).
 
 \textbf{IMU rate:} $\sim$993\,Hz (full rate, no downsampling for C++ solver).
 \textbf{Evaluation:} Start-anchored rigid alignment to MoCap ground
@@ -744,7 +669,7 @@ deployment-relevant reading, and apply it identically to every system
 compared.  Where we compare against externally published figures
 (Sec.~\ref{sec:baselines}) we additionally report whole-trajectory-aligned
 numbers so the baselines can be cross-checked against their own papers.
-\emph{Translational RPE} (relative pose error, Fig.~\ref{fig:rpe}) is
+\emph{Translational RPE} (relative pose error, Sec.~\ref{sec:rpe}) is
 the KITTI-standard per-segment displacement error averaged over all
 sub-segments of a given accumulated GT length.
 Because the start-anchored alignment offsets cancel within every
@@ -788,15 +713,14 @@ whether initialized at 25.5\degree\ or 30\degree, so the estimate is
 data-driven, not init-dependent.  We lock pitch at 27.5\degree\ for the
 sliding-window runs (Sec.~\ref{sec:backflips}); the batch estimate is
 shown for reference (dashed red) in the trajectory overlays
-(Fig.~\ref{fig:traj}) and RPE curves (Fig.~\ref{fig:rpe}).
+(Fig.~\ref{fig:traj}) and the RPE analysis (Sec.~\ref{sec:rpe}).
 
 \subsection{Sliding Window: Settled vs.\ Live}
 \label{sec:sw_results}
 
 Table~\ref{tab:sw} reports sliding window results
 (3\,s window, 0.3\,s stride, Schur marginalization).
-Fig.~\ref{fig:traj} shows trajectory overlays for both bags;
-Fig.~\ref{fig:error_time} shows the corresponding error timeseries.
+Fig.~\ref{fig:traj} shows trajectory overlays for both bags.
 
 \begin{table}[t]
 \centering
@@ -869,22 +793,13 @@ window.
   \label{fig:traj}
 \end{figure}
 
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=\columnwidth]{figures/error_over_time.pdf}
-  \caption{Position and orientation error vs.\ time for slow racing (top)
-    and fast racing (bottom).  Batch estimate (red dashed) and SW live
-    edge (orange dotted).  Fast-racing position error accumulates
-    monotonically; orientation errors spike at high-dynamics sections.}
-  \label{fig:error_time}
-\end{figure}
 
 \subsection{Relative Pose Error and Position Drift}
 \label{sec:rpe}
 
-Fig.~\ref{fig:rpe} shows the KITTI-style translational RPE as a
-function of segment length for racing bags (batch and SW live) and
-backflips (batch only).  At longer segments ($\geq 20$\,m) the global
+The KITTI-style translational RPE, as a function of segment length for
+racing bags (batch and SW live) and backflips (batch only), shows that
+at longer segments ($\geq 20$\,m) the global
 B-spline smoother reduces error sharply: slow racing batch reaches
 \SI{1.12}{\percent} at 20\,m and \SI{0.43}{\percent} at 40\,m; fast
 racing stabilises at $\approx$\SI{3.2}{\percent} beyond 20\,m.  At
@@ -897,17 +812,6 @@ Global drift (\%) reflects the full-trajectory benefit of the batch
 optimizer and is the headline deployment metric; RPE captures
 per-segment local accuracy for a complementary view.
 
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=\columnwidth]{figures/rpe_drift.pdf}
-  \caption{KITTI-style translational RPE (end-point displacement error
-    as \% of segment length) vs.\ accumulated GT distance.  Left:
-    racing bags --- batch (solid) and SW live edge (dashed).  Right:
-    backflips batch.  Errors decrease at longer segments because the
-    global optimizer integrates more sensor data; at short segments
-    the 11\,Hz radar provides limited constraints.}
-  \label{fig:rpe}
-\end{figure}
 
 \subsection{Radar Contribution}
 Radar is essential.  Disabling it (\texttt{-{}-no-radar}) collapses the
@@ -1165,7 +1069,8 @@ term through orientation DOF.
 Schur marginalization reduces settled position by 48\% for fast racing
 (1.391\,m $\to$ 0.726\,m); for slow racing the optimal prior scale is
 $10^{-7}$ (near-zero), so both variants give equivalent results ---
-the benefit is captured in Table~\ref{tab:prior_scale} instead.
+the benefit is captured in the prior-scale sweep
+(Sec.~\ref{sec:prior_scale}) instead.
 Window duration: 5\,s gives best settled position (0.167\,m) but
 slightly worse live edge than 3\,s (0.371 vs.\ 0.338\,m); 3\,s is the
 practical optimum for a deployed system (lower latency, better live
@@ -1299,47 +1204,21 @@ intermediate region.  We document this because the symptom pattern ---
 no universal prior weight, non-monotone sensitivity, robust losses on
 the prior acting backwards --- is a useful \emph{diagnostic for
 marginalization inconsistency} in sliding-window estimators generally.
-Table~\ref{tab:prior_scale} shows the sweep measured with the
-inconsistent prior.
-
-\begin{table}[t]
-\centering
-\caption{Prior Scale Sensitivity (SW, live-edge RMSE)}
-\label{tab:prior_scale}
-\small
-\setlength{\tabcolsep}{4pt}
-\begin{tabular}{@{}lcccc@{}}
-\toprule
-\texttt{scale} & \multicolumn{2}{c}{Slow racing} & \multicolumn{2}{c}{Fast racing} \\
- & Pos (m) & Ori (\degree) & Pos (m) & Ori (\degree) \\
-\midrule
-$2{\times}10^{-4}$                       & 0.543 & 2.16 & \textbf{0.825} & \textbf{3.64} \\
-$10^{-5}$                                & ---   & ---  & 0.942 & 3.58 \\
-$10^{-6}$                                & 0.442 & 2.21$^*$ & 0.951 & 3.57 \\
-$\bm{10^{-7}}$ \textbf{(slow default)}  & \textbf{0.338} & \textbf{2.08} & 1.279 & 3.57 \\
-$10^{-8}$                                & 0.336 & 2.08 & 1.344 & 3.57 \\
-\bottomrule
-\multicolumn{5}{l}{$^*$Orientation local maximum: 2.21\degree\ $>$ 2.16\degree\ (2e-4) and
-  2.08\degree\ (1e-7).}\\
-\multicolumn{5}{l}{---: scale not evaluated for this bag.}\\
-\multicolumn{5}{@{}p{\columnwidth}@{}}{\scriptsize Measured under the
-  inconsistent-prior diagnostic configuration (predates the RANSAC
-  default); the sensitivity \emph{pattern}, not the absolutes, is the
-  result.}
-\end{tabular}
-\end{table}
-
-Slow racing is best served by a near-zero prior ($10^{-7}$): with
+The sweep is measured under this inconsistent-prior diagnostic
+configuration (which predates the RANSAC default); the sensitivity
+\emph{pattern}, not the absolute values, is the result.
+Slow racing is best served by a near-zero prior
+(scale\,$10^{-7}$: 0.338\,m\,/\,2.08\degree\ live): with
 gentle dynamics, each 3\,s window is self-sufficient and additional
-inter-window coupling is harmful.  Fast racing needs the prior
-($2{\times}10^{-4}$) for inter-window position continuity ---
-without it (scale$=10^{-7}$) fast racing position degrades from
-0.825\,m to 1.279\,m.
-For slow racing, scale$=10^{-6}$ yields a local \emph{orientation}
-maximum (2.21\degree; worse than both 2$\times$10$^{-4}$ at 2.16\degree\
-and $10^{-7}$ at 2.08\degree), while position improves monotonically
-with decreasing scale.  This partial-constraint effect illustrates why
-no single scale is universally optimal.
+inter-window coupling is harmful.  Fast racing instead needs the prior
+($2{\times}10^{-4}$: 0.825\,m) for inter-window position continuity ---
+without it (scale\,$10^{-7}$) fast-racing position degrades to
+1.279\,m.  And for slow racing an intermediate scale\,$10^{-6}$ yields a
+local \emph{orientation} maximum (2.21\degree; worse than both
+$2{\times}10^{-4}$ at 2.16\degree\ and $10^{-7}$ at 2.08\degree) while
+position improves monotonically with decreasing scale --- a
+non-monotone, regime-dependent sensitivity with no universally optimal
+value, the diagnostic symptom itself.
 
 The information asymmetry in the inconsistent $S$ (orientation
 eigenvalues $\sim$$5.5{\times}10^{14}$, position $\sim$$10^4$) meant
