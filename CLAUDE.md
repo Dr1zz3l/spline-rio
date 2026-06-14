@@ -267,11 +267,25 @@ Per-bag config auto-selected via `bags.yaml` solver_overrides:
 | fast_racing | 0.726m | 3.19° | **0.829m** | 0.487 m/s | **3.65°** | 2e-4 (default) |
 | backflips¹ | 2.56m | 10.87° | 3.33m | — | 9.33° | 0 (Phase 3 config) |
 
-**2026-06-12 update** (consistency fixes, `documentation/ROADMAP.md` Part 1 results — scale=1.0 universal):
+**2026-06-14 update — RANSAC prefilter is now the DEFAULT front-end** (`solver.yaml`
+`radar_ransac_threshold: 0.15`; disable with `--no-radar-ransac`). reve-style 3D-LSQ
+RANSAC, seeded `default_rng(0)` (bit-identical reproduction), runs once at frame load
+(NOT per window → no timing impact), frames <5 returns bypass. It hard-rejects
+elevation-biased single-chip returns before the solve. Verdict (RANSAC vs Huber):
+fast_racing live pos −22% (0.50→0.39m), vel 0.41→0.32, ori 3.24→2.84°; slow/backflips
+neutral (within +3%); ICINS whole-traj ATE order-of-magnitude (9.6→0.46, 2.9→0.24,
+10.9→0.76, 5.5→0.46m); held-out + old-firmware kept-% 46–75% (no starvation), old-fw
+backflips ori 10.7→8.1°/9.1°. Config UNCHANGED (universality preserved). Both papers
+(report/ master + paper/) rewritten to RANSAC-default; duration/portability hedge +
+batch Table II removed. Numbers below are the RANSAC-default headline:
 
-**UNIVERSAL weighting config results (2026-06-12, gates 4/8 — see commands above).**
-Primary metrics per deployment framing: live vel + live ori + drift-% (no absolute
-position sensor exists; position = integral of velocity):
+| Bag | Per-bag extras | Live vel | Live ori | Live pos (drift) | Settled pos/ori | dt/win |
+|-----|--------|---------|---------|------------------|-----------------|--------|
+| fast_racing | grids .04/.016 + locked p27.5 | **0.32** | 2.84° | **0.39m** (0.86%) | **0.285/2.31°** | **0.35s** |
+| slow_racing (live) | iter12 + λh10 | **0.46** | **1.88°** | 0.30m (0.63%) | 0.286/1.49° | 0.70s |
+| backflips | tether.5 + b−1.5 + p27.5 + lgb0 | **2.35** | **6.26°** | **1.55m** (2.87%) | **1.68/4.82°** | ~0.6s |
+
+Pre-RANSAC (Huber-only) baseline, 2026-06-12, gates 4/8 — for reference:
 
 | Bag | Per-bag extras | Live vel | Live ori | Live pos (drift) | Settled pos/ori | dt/win |
 |-----|--------|---------|---------|------------------|-----------------|--------|

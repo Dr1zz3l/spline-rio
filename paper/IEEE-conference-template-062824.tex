@@ -204,21 +204,19 @@ batch/sliding-window optimizer.
 
 \textbf{Continuous-time trajectory estimation.}
 Furgale et al.~\cite{furgale2013unified} introduced uniform B-splines
-for continuous-time visual-inertial calibration.  Anderson and
+for continuous-time visual-inertial calibration; Anderson and
 Barfoot~\cite{anderson2015steam} generalized this with GP-based
-``STEAM'' trajectories.  The basalt
-VIO~\cite{usenko2020basalt} uses cumulative B-splines on Lie groups
-for stereo-inertial odometry. We adapt the basalt-style cumulative
-SO(3) B-spline to radar-inertial fusion.
+``STEAM'' trajectories, and basalt VIO~\cite{usenko2020basalt} uses
+cumulative B-splines on Lie groups for stereo-inertial odometry.  We
+adapt the basalt-style cumulative SO(3) B-spline to radar-inertial fusion.
 
 \textbf{Marginalization in sliding-window estimators.}
-OKVIS~\cite{leutenegger2015keyframe} and
-VINS-Mono~\cite{qin2018vins} pioneered Schur complement
-marginalization for visual-inertial systems, propagating information
-from dropped keyframes as a dense Gaussian prior. We apply the same
-principle to continuous-time B-spline control points and document
-the practical challenges of prior scaling when information asymmetry
-spans ten orders of magnitude.
+OKVIS~\cite{leutenegger2015keyframe} and VINS-Mono~\cite{qin2018vins}
+pioneered Schur complement marginalization for visual-inertial systems,
+propagating dropped-keyframe information as a dense Gaussian prior; we
+apply the same principle to continuous-time B-spline control points and
+document the prior-scaling challenges when information asymmetry spans
+ten orders of magnitude.
 
 \textbf{Closest related work.}
 Continuous-time radar-inertial odometry was introduced by
@@ -284,9 +282,13 @@ truth evaluation.  The radar is mounted upside-down with a nominal
 $30\degree$ downward tilt (CAD); the mount is 3D-printed and
 hand-assembled, so the as-built angle is uncertain by a few degrees and
 is recovered by online extrinsic calibration (Sec.~\ref{sec:results}).
-The nominal extrinsic rotation is $[180\degree, 25.5\degree, 0\degree]$
-(roll, pitch, yaw), translation $[0.08, 0.02, -0.01]$\,m in the body
-frame.  The radar operates at $\sim$11\,Hz with 0.049\,m/s Doppler
+The sensor-to-body extrinsic rotation is parameterised as $Z$--$Y$--$X$
+Euler angles $[\text{roll},\text{pitch},\text{yaw}] =
+[180\degree, 25.5\degree, 0\degree]$ (nominal), translation
+$[0.08, 0.02, -0.01]$\,m.  The radar boresight lies along the body
+forward axis, so the Euler pitch is numerically the physical boresight
+downtilt; the $25.5\degree$ nominal is an off-CAD initialisation that
+the calibration overrides.  The radar operates at $\sim$11\,Hz with 0.049\,m/s Doppler
 resolution (best-velocity firmware configuration).  Raw IMU rate
 is $\sim$993\,Hz; both modalities are used at full rate.
 
@@ -422,11 +424,11 @@ optimization.  The prefilter is seeded
 (\texttt{numpy.default\_rng(0)}), so the full pipeline reproduces
 bit-identically; frames with fewer than five returns bypass it
 unchanged.  It runs once at frame load, not per window, so it does not
-enter the per-window timing budget (Sec.~\ref{sec:results}).
-Sec.~\ref{sec:baselines} quantifies what it removes --- on the public
-ICINS flights it closes an order-of-magnitude vertical-drift gap, and on
-our own flights it improves aggressive-racing live position by $22\%$ ---
-and it is enabled by default for every result in this paper.
+enter the per-window timing budget.  Sec.~\ref{sec:baselines} quantifies
+what it removes --- on the public ICINS flights it closes an
+order-of-magnitude vertical-drift gap, and on our own flights it
+improves aggressive-racing live position by $22\%$ --- and it is enabled
+by default for every result in this paper.
 
 \textbf{Dynamics-adaptive measurement weighting.}
 The central practical finding of this work is that a single
@@ -781,21 +783,18 @@ With the extrinsic pitch left free, it self-calibrates from the
 3D-printed, hand-assembled fixture leaves a few degrees short of the
 30\degree\ CAD nominal.  Racing bags converge to the same pitch estimate
 whether initialized at 25.5\degree\ or 30\degree, so the estimate is
-data-driven, not init-dependent --- an independent check on the
-extrinsic calibration.  We lock pitch at 27.5\degree\ for the
-sliding-window runs (Sec.~\ref{sec:backflips}).  The batch estimate is
+data-driven, not init-dependent.  We lock pitch at 27.5\degree\ for the
+sliding-window runs (Sec.~\ref{sec:backflips}); the batch estimate is
 shown for reference (dashed red) in the trajectory overlays
-(Figs.~\ref{fig:traj_slow},~\ref{fig:traj_fast}) and the RPE curves
-(Fig.~\ref{fig:rpe}).
+(Fig.~\ref{fig:traj}) and RPE curves (Fig.~\ref{fig:rpe}).
 
 \subsection{Sliding Window: Settled vs.\ Live}
 \label{sec:sw_results}
 
 Table~\ref{tab:sw} reports sliding window results
 (3\,s window, 0.3\,s stride, Schur marginalization).
-Figures~\ref{fig:traj_slow} and~\ref{fig:traj_fast} show
-trajectory overlays for both bags; Fig.~\ref{fig:error_time} shows
-the corresponding error timeseries.
+Fig.~\ref{fig:traj} shows trajectory overlays for both bags;
+Fig.~\ref{fig:error_time} shows the corresponding error timeseries.
 
 \begin{table}[t]
 \centering
@@ -859,33 +858,24 @@ window.
 \begin{figure}[t]
   \centering
   \includegraphics[width=\columnwidth]{figures/traj_slow_racing_best_velocity.pdf}
-  \caption{slow\_racing: MoCap ground truth (solid blue), batch
-    estimate (dashed red), SW live edge (dotted orange).  X--Y and
-    Y--Z projections; start marked~$\blacksquare$.}
-  \label{fig:traj_slow}
+  \includegraphics[width=\columnwidth]{figures/traj_fast_racing_best_velocity.pdf}
+  \caption{Trajectory overlays (X--Y and Y--Z projections,
+    start~$\blacksquare$): slow racing (top) and fast racing (bottom).
+    MoCap ground truth (solid blue), batch estimate (dashed red), SW
+    live edge (dotted orange).  Larger fast-racing deviations reflect
+    higher dynamics ($\omega_{\max}=9.1$\,rad/s).}
+  \label{fig:traj}
 \end{figure}
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=\columnwidth]{figures/traj_fast_racing_best_velocity.pdf}
-  \caption{fast\_racing: MoCap ground truth (solid blue), batch
-    estimate (dashed red), SW live edge (dotted orange).  X--Y and
-    Y--Z projections; start marked~$\blacksquare$.  Larger deviations
-    reflect higher dynamics ($\omega_{\max} = 9.1$\,rad/s) compared
-    to slow racing.}
-  \label{fig:traj_fast}
-\end{figure}
-
-\begin{figure*}[t]
-  \centering
-  \includegraphics[width=\textwidth]{figures/error_over_time.pdf}
-  \caption{Position, velocity, and orientation error vs.\ time for slow
-    racing (top) and fast racing (bottom).  Batch estimate (red dashed)
-    and SW live edge (orange dotted).  Fast racing position error
-    accumulates monotonically with trajectory length; velocity and
-    orientation errors spike at high-speed, high-dynamics sections.}
+  \includegraphics[width=\columnwidth]{figures/error_over_time.pdf}
+  \caption{Position and orientation error vs.\ time for slow racing (top)
+    and fast racing (bottom).  Batch estimate (red dashed) and SW live
+    edge (orange dotted).  Fast-racing position error accumulates
+    monotonically; orientation errors spike at high-dynamics sections.}
   \label{fig:error_time}
-\end{figure*}
+\end{figure}
 
 \subsection{Relative Pose Error and Position Drift}
 \label{sec:rpe}
@@ -946,40 +936,29 @@ Bag & Sensor & Vel (m/s) & Ori (\degree) & Pos (m) & Drift (\%) \\
 \end{tabular}
 \end{table}
 
-Radar reduces live-edge velocity error by 72--81\% and position drift
-by 87--89\% (from 6.4\% and 15.3\% to 0.70\% and 1.85\% of distance
-traveled).  IMU-only position drifts rapidly through double
-integration of accelerometer noise; radar Doppler provides direct
-velocity constraints that bound this drift.  Orientation improvement
-is more modest (47--72\%) because the gyroscope already constrains
-orientation strongly at 1\,kHz.
+Radar cuts live-edge velocity error 72--81\% and position drift 87--89\%
+($6.4/15.3\% \to 0.70/1.85\%$): IMU-only position diverges through
+double-integrated accelerometer noise, which the direct Doppler velocity
+constraints bound.  Orientation gains are smaller (47--72\%), the 1\,kHz
+gyroscope already constraining it.
 
 \subsection{Held-Out Validation}
 \label{sec:heldout}
-All tuning in this paper used three bags (slow racing, fast racing,
-backflips).  To test generalization, the final configuration was run
-\emph{unmodified} on flights never used for any decision.
-On the held-out flights recorded with the same sensor configuration,
-accuracy matches or beats the tuning bags: a second, independent
-fast-racing flight reaches 0.37\,m\,/\,2.81\degree\ live
-(vs.\ 0.39\,m\,/\,2.84\degree\ on the tuning bag), and a circular
-trajectory reaches 0.88\,m\,/\,4.01\degree\ live.
-Five additional stress-tier bags from an earlier recording day use an
-older radar firmware with $12\times$ coarser Doppler quantization
-(0.604 vs.\ 0.049\,m/s), partially unusable accelerometer axes, and
-per-day time offsets; the default RANSAC prefilter keeps
-$46$--$75\%$ of returns even at this quantization (no starvation), and
-the system degrades gracefully there
-(1.5--7\,m position depending on maneuver), with the
-\emph{old-firmware backflips} orientation reaching
-8.1\degree\ settled\,/\,9.1\degree\ live --- better than the
-14.8\degree\ of its previous, individually tuned best --- under the
-untuned universal configuration.  The rate-adaptive weighting thus
-transfers across both firmware and day.
-A data-health screening (radar frame-rate continuity, IMU/MoCap
-coverage) precedes all held-out evaluation, since several early bags
-contain radar UART dropouts; all evaluation windows lie on healthy
-spans.
+All tuning used three bags (slow/fast racing, backflips); the final
+configuration was then run \emph{unmodified} on flights never used for
+any decision.  A second, independent fast-racing flight reaches
+0.37\,m\,/\,2.81\degree\ live (vs.\ 0.39\,m\,/\,2.84\degree\ on the
+tuning bag) and a circular trajectory 0.88\,m\,/\,4.01\degree.  Five
+stress-tier bags from an earlier day --- older firmware with $12\times$
+coarser Doppler quantization, partially unusable accelerometer axes,
+per-day time offsets --- degrade gracefully (1.5--7\,m, the default
+RANSAC prefilter keeping $46$--$75\%$ of returns even at this
+quantization), and notably the old-firmware backflips orientation
+reaches 8.1\degree\ settled\,/\,9.1\degree\ live --- better than its
+individually-tuned 14.8\degree\ --- under the untuned
+universal configuration, so the rate-adaptive weighting transfers across
+firmware and day.  A data-health screen (frame-rate continuity, IMU/MoCap
+coverage) precedes all held-out evaluation.
 
 \subsection{External Cross-Validation Against EKF Baselines}
 \label{sec:baselines}
@@ -1006,10 +985,9 @@ solver reaches the same order as the baselines (0.5--1.9\,m,
 0.6--1.3\% drift), with velocity RMSE 0.07--0.08\,m/s matching theirs.
 The full 3-DoF orientation column favors our solver
 (0.51--1.13\degree\ vs.\ up to $10.1\degree$), but this gap is almost
-entirely \emph{yaw}: our heading is anchored by a pseudo-magnetometer
---- here the VINS pseudo-GT yaw used as a magnetometer surrogate, in
-place of the MoCap yaw available on our own platform --- whereas
-ekf-yrio uses sensor-only Manhattan-world yaw and ekf-rio is unaided.
+entirely \emph{yaw}: our heading uses the VINS pseudo-GT yaw as a
+magnetometer surrogate, ekf-yrio uses sensor-only Manhattan-world yaw,
+and ekf-rio is unaided.
 On the heading-\emph{independent} roll and pitch the three systems are
 comparable ($0.25$--$0.74\degree$, Table~\ref{tab:baselines-decomp}),
 so the orientation column is not an attitude win; removing our heading
@@ -1018,61 +996,45 @@ $9.9\degree$, matching unaided ekf-rio ($10.1\degree$), while roll/pitch
 ($0.30\degree$) and position are unchanged.
 
 This position parity is what the default RANSAC prefilter
-(Sec.~\ref{sec:models}) buys, and it is the clearest single
-demonstration of its effect.  A single-chip 2-TX array has limited
-elevation diversity, and a minority of returns carry an
-elevation-correlated Doppler bias.  Doer's \mbox{reve} rejects these
-with 3D RANSAC (inlier $0.15$\,m/s); a Huber-robust least squares only
-down-weights them.  Measured against the ground-truth attitude, the
-per-frame vertical ego-velocity bias is $-0.06$ to $-0.16$\,m/s under a
-Huber-only front-end but at most $0.10$\,m/s in magnitude under RANSAC.
-With the prefilter \emph{disabled}, our vertical channel accumulates a
-large systematic error (whole-trajectory ATE $9.6$\,m on flight\_1,
-$12$--$15\%$ vertical drift) that the baselines do not exhibit --- their
-vertical drift stays $\sim$0.2--0.3\,m; the RANSAC prefilter removes it
-at the source on all four flights, cutting whole-trajectory ATE to
-$0.24$--$0.76$\,m (Table~\ref{tab:baselines-decomp}) and bringing
-position to baseline parity.  We could not attribute the baselines'
-vertical accuracy to altitude aiding: an ablation disabling the
-barometer in ekf-yrio changes its vertical drift by $\le$0.04\,m (within
-run-to-run variation; their stock $\sigma_\mathrm{altimeter}{=}5$\,m
-makes the baro near-negligible), so the baselines too obtain accurate
-vertical estimates from radar and IMU alone --- by the same
-outlier-rejection mechanism.  The single-chip elevation bias is
-therefore real but not fundamental: it is an outlier-rejection gap,
-closed by the same RANSAC stage the baselines use.  Under
-whole-trajectory Umeyama alignment (Table~\ref{tab:baselines-decomp})
-all three systems agree to $\le$1\,m, consistent with the baselines'
-published full-alignment figures (they are faithfully reproduced) and
-confirming that our default front-end matches them.
+(Sec.~\ref{sec:models}) buys, and is its clearest single demonstration.
+A single-chip 2-TX array has limited elevation diversity, and a minority
+of returns carry an elevation-correlated Doppler bias.  Doer's
+\mbox{reve} rejects these with 3D RANSAC (inlier $0.15$\,m/s); a
+Huber-robust least squares only down-weights them.  Measured against the
+ground-truth attitude, the per-frame vertical ego-velocity bias is
+$-0.06$ to $-0.16$\,m/s under a Huber-only front-end but at most
+$0.10$\,m/s under RANSAC.  With the prefilter \emph{disabled}, our
+vertical channel accumulates a large systematic error
+(whole-trajectory ATE $9.6$\,m on flight\_1, $12$--$15\%$ vertical
+drift) that the baselines do not exhibit ($\sim$0.2--0.3\,m); the RANSAC
+prefilter --- our default --- removes it at the source on all four
+flights, cutting whole-trajectory ATE to $0.24$--$0.76$\,m
+(Table~\ref{tab:baselines-decomp}) and bringing position to baseline
+parity.  We could not attribute the baselines' vertical accuracy to
+altitude aiding: an ablation disabling the barometer in ekf-yrio changes
+its vertical drift by $\le$0.04\,m (their stock
+$\sigma_\mathrm{altimeter}{=}5$\,m makes the baro near-negligible), so
+they too obtain accurate vertical from radar and IMU alone --- by the
+same outlier-rejection mechanism.  The single-chip elevation bias is
+therefore real but not fundamental: an outlier-rejection gap, closed by
+the same RANSAC stage the baselines use.  Under whole-trajectory Umeyama
+alignment (Table~\ref{tab:baselines-decomp}) all three systems agree to
+$\le$1\,m, consistent with the baselines' published full-alignment
+figures (they are faithfully reproduced) and confirming that our default
+front-end matches them.
 
 \textbf{Their filters on our data.}  The reverse port is
-regime-dependent, and we report the measured outcome rather than a
-verdict.  Here we port ekf-rio and its multi-radar generalization
-x-rio~\cite{doer2021xrio} (run single-radar); ekf-yrio, the yaw-aided
-single-radar variant Doer benchmarks the ICINS flights with, was the
-forward-port comparator above.  On the slow-racing flight both ekf-rio
-and x-rio fail: their
-$\chi^2(3)$ innovation gate rejects $99.7\%$ of the radar ego-velocity
-updates (301 of 302), so the filter reverts to IMU dead-reckoning and
-runs essentially unconstrained ($>2$\,km of error for both, almost
-entirely vertical, $\approx\tfrac12 g t^2$).  On the faster flight ekf-rio
-instead survives, degrading to $1.4$\,m ($3.1\%$ drift,
-$9.0\degree$): its larger translational excitation produces radar
-ego-velocities that clear the gate (only $64\%$ rejected), enough to
-constrain the filter.  The amount of radar information admitted thus
-scales with how strongly motion excites the sparse Doppler, and the
-common cause is a stack-level mismatch rather than a defect of their
-method: our best-velocity firmware yields only $\sim$13 points per
-frame (their RANSAC/$\sigma$-gates expect hundreds, and ego-velocity
-estimation fails outright on roughly half of all scans), there is no
-hardware radar trigger, and our racing-frame vibration (measured gyro
-white-noise PSD $2.1\degree/\mathrm{s}/\sqrt{\mathrm{Hz}}$ in flight)
-exceeds their process-noise parameter range, making propagation
-overconfident so the gate then rejects the few updates that survive.
-This is the design-space split: their stack is engineered for dense
-clouds, hardware triggering, and a low-vibration carrier; ours for
-sparse, finely quantized Doppler on an aggressive platform.
+regime-dependent.  Porting ekf-rio and its multi-radar generalization
+x-rio~\cite{doer2021xrio} (run single-radar) to our bags, both fail on
+slow racing --- their $\chi^2(3)$ innovation gate rejects $99.7\%$ of
+the radar ego-velocity updates and the filter dead-reckons to $>2$\,km
+--- but ekf-rio survives the faster flight ($1.4$\,m, only $64\%$
+rejected), the admitted radar information scaling with how strongly
+motion excites the sparse Doppler.  This is a design-space split, not a
+defect of their method: their stack is engineered for dense clouds, a
+hardware radar trigger, and a low-vibration carrier, whereas our sparse
+($\sim$13-point), finely quantized clouds on a high-vibration racing
+platform fall outside its gating and process-noise assumptions.
 
 \begin{table}[t]
 \caption{Cross-validation on the public ICINS-2021 flight datasets
@@ -1256,8 +1218,8 @@ The batch solver handles backflips only with $\Delta t_o {=} 0.8$\,ms
 (10$\times$ denser than racing, 22{,}630 knots over 18\,s) and
 locked extrinsics (free pitch drifts to $+18\degree$ due to dense
 under-constrained orientation DOF).  At this density the batch
-orientation is \emph{bistable} (detailed below): under small
-timestamp perturbations it oscillates between ${\sim}8\degree$ and
+orientation is \emph{bistable} (detailed below): under small timestamp
+perturbations it oscillates between ${\sim}8\degree$ and
 ${\sim}25\degree$ regimes, so we do not report a single batch figure and
 take the sliding-window result as the trustworthy one.
 
@@ -1289,36 +1251,26 @@ constraints (1.26 DoF/constraint); the per-window Jacobian is
 rank-deficient and the solver freezes near its initialization.
 At 8\,ms the window is well-conditioned (62.5\,Hz model bandwidth
 comfortably covers the 10--20\,Hz flip dynamics).
-We further caution that at $\Delta t_o{=}0.8$\,ms the \emph{batch}
-problem is bistable: repeated solves under small perturbations
-(e.g.\ a few ms of radar-timestamp shift) oscillate between
-$\sim$8\degree\ and $\sim$25\degree\ orientation regimes, and the
-final cost \emph{anti-correlates} with accuracy --- the
-underconstrained problem overfits with the wrong global orientation.
-Single-run comparisons at this density are not trustworthy.
+At $\Delta t_o{=}0.8$\,ms the batch problem is also bistable: small
+perturbations (a few ms of radar-timestamp shift) flip it between
+$\sim$8\degree\ and $\sim$25\degree\ orientation regimes with final cost
+\emph{anti-correlating} with accuracy, so single-run comparisons at this
+density are not trustworthy.
 
 \emph{Attributing the z-axis failure --- and what $b$ really is.}
-A visual trajectory check (numeric RMSE conceals it) showed the SW
-estimate sinking in altitude.  Disabling the position anchor exposes
-the raw behaviour: a near-constant $-0.57$\,m/s world-$z$ drift
-($-8$\,m over the flight).  Sweeping the per-point correction
-$v_{\mathrm{corr}} = v - b\,u_{s,z}$ produces a linear family of
-$z$-error curves and large negative $b$ flattens the drift, so we
-initially interpreted $b$ as the antenna-fixed elevation bias of the
-2-TX array.  A joint calibration experiment \emph{disproves} this
-interpretation: (i)~with extrinsic pitch \emph{locked} at its
-plateau value, level-flight racing degrades catastrophically under
-any explicit $b$ (fast-racing position
-0.50\,$\to$\,3.3\,$\to$\,6.7\,m for $b{=}0,-0.5,-1.0$) --- a true
-antenna-fixed bias would be tolerated, since nothing else can absorb
-it; and (ii)~on backflips the optimum keeps growing monotonically
-past the WLS-measured static bias of $-0.5$\,m/s (through $-1.5$
-to $-2.0$), into physically implausible territory.
-We conclude $b$ is a \emph{flight-regime error proxy} --- it absorbs
-an attitude-correlated Doppler systematic during flips (most likely
-intra-frame motion distortion) that happens to project like an
-elevation term --- and we cap it at $b{=}{-}1.5$ rather than chase
-the monotone trend without a mechanism.
+With the position anchor disabled the SW estimate shows a near-constant
+$-0.57$\,m/s world-$z$ drift; sweeping
+$v_{\mathrm{corr}} = v - b\,u_{s,z}$ flattens it, suggesting $b$ is the
+antenna-fixed elevation bias of the 2-TX array.  A joint calibration
+experiment \emph{disproves} this: (i)~with extrinsic pitch locked,
+level-flight racing degrades catastrophically under any explicit $b$
+(fast-racing position 0.50\,$\to$\,3.3\,$\to$\,6.7\,m for
+$b{=}0,-0.5,-1.0$), which a true antenna bias would tolerate; and
+(ii)~on backflips the optimum grows monotonically past the WLS-measured
+$-0.5$\,m/s static bias into implausible territory.  We therefore read
+$b$ as a \emph{flight-regime error proxy} --- absorbing an
+attitude-correlated Doppler systematic during flips (likely intra-frame
+motion distortion) --- and cap it at $b{=}{-}1.5$.
 Relatedly, a $3{\times}3$ grid over (locked pitch, $b$) shows
 extrinsic pitch is a \emph{plateau} (26.5--28.5\degree\
 indistinguishable on backflips), and locking pitch at 27.5\degree\
@@ -1357,21 +1309,16 @@ we leave to future work.
 Marginalization}
 \label{sec:prior_scale}
 
-Our initial marginalization implementation selected all residuals
-touching marginalized \emph{or} boundary variables --- which, through
-the shared bias block, baked every IMU factor of the window into the
-Schur complement, conditioned on interior states, and double-counted
-factors re-added in the next window (Sec.~\ref{sec:sw}).  The
-resulting overconfident prior had to be deflated by a hand-tuned
-scale, and the required scale varied by orders of magnitude across
-flight regimes with a harmful intermediate region.  We document this
-behaviour because the symptom pattern --- no universal prior weight,
-non-monotone sensitivity, robust losses on the prior acting backwards
---- is a useful \emph{diagnostic for marginalization inconsistency} in
-sliding-window estimators generally.
+The naive factor selection of Sec.~\ref{sec:sw} (all residuals touching
+marginalized \emph{or} boundary variables) yields an overconfident prior
+that must be deflated by a hand-tuned scale, and the required scale
+varies by orders of magnitude across flight regimes with a harmful
+intermediate region.  We document this because the symptom pattern ---
+no universal prior weight, non-monotone sensitivity, robust losses on
+the prior acting backwards --- is a useful \emph{diagnostic for
+marginalization inconsistency} in sliding-window estimators generally.
 Table~\ref{tab:prior_scale} shows the sweep measured with the
-inconsistent prior; Fig.~\ref{fig:prior_scale}
-plots the orientation sweep.
+inconsistent prior.
 
 \begin{table}[t]
 \centering
@@ -1426,19 +1373,6 @@ position improves from 0.727\,m (tuned inconsistent prior) to
 0.701\,m (unscaled consistent prior), and stride-boundary position
 jumps in the settled trajectory disappear (settled velocity RMSE
 0.89\,$\to$\,0.21\,m/s on slow racing).
-
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=\columnwidth]{figures/prior_scale_sensitivity.pdf}
-  \caption{Live-edge orientation (left) and position (right, dual
-    y-axes) RMSE vs.\ \texttt{marg\_prior\_scale}.  Orientation
-    (left): slow racing shows a local maximum at $10^{-6}$;
-    fast racing orientation is insensitive to scale.
-    Position (right): slow racing worsens monotonically with
-    increasing scale while fast racing improves sharply ---
-    the two bags require opposite scale regimes.}
-  \label{fig:prior_scale}
-\end{figure}
 
 \subsection{Other Negative Results}
 \label{sec:negative}

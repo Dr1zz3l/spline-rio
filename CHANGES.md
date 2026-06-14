@@ -1,3 +1,25 @@
+# CHANGES — RANSAC default front-end + full re-benchmark (2026-06-14)
+
+Scope: the RANSAC ego-velocity prefilter (Sec. VI-F follow-through) was made the **sole
+default** radar front-end after a full re-tune + re-benchmark across every radar-dependent
+metric. `solver.yaml radar_ransac_threshold: 0.15` (disable `--no-radar-ransac`); seeded,
+frame-load, frames <5 bypass — see [[project_ransac_default]] / `memory`.
+
+**Verdict (adopted per user rule):** fast_racing live pos −22% (0.50→0.39m), vel 0.41→0.32,
+ori 3.24→2.84°; slow/backflips neutral (≤+3%); ICINS whole-traj ATE order-of-magnitude
+(9.6→0.46 / 2.9→0.24 / 10.9→0.76 / 5.5→0.46m); held-out + old-fw kept 46–75% (no
+starvation); old-fw backflips ori 10.7→8.1/9.1°. **Config unchanged → universality preserved.**
+
+**Both papers rewritten** (report/ master + paper/): new Sec. III-B RANSAC paragraph;
+**batch Table II removed** (demoted to prose ceiling + pitch self-cal); Table III/V/VI +
+abstract + conclusion renumbered to RANSAC; VI-F → clean baseline *match* (duration/portability
+hedge + future-work framing deleted); backflips batch reframed as bistable, figure → SW-only;
+NEES/held-out/old-fw refreshed. Figures regenerated from RANSAC `--save-arrays` npz. report/
+12pp, paper/ 11pp (float-bound), both build clean, 0 undefined refs. Re-benchmark logs:
+`baselines/results/ransac_default/` + `baselines/results/ours_icins/*_ransac.log`.
+
+---
+
 # CHANGES — vertical-drift investigation pass (2026-06-13)
 
 Scope: changes made **after** the barometer-refutation revision (commit `7fbd9a1`).

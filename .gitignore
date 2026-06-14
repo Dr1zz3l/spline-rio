@@ -71,3 +71,11 @@ baselines/catkin_simple/
 baselines/catkin_ws/
 baselines/datasets/
 baselines/results/
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.bbl
+paper/*.blg
+paper/*.fls
+paper/*.fdb_latexmk
+paper/IEEEtran_HOWTO.pdf

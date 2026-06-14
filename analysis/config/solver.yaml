@@ -6,6 +6,9 @@ dt_ori: 0.008              # Knot spacing for orientation spline (seconds)
 # Radar
 huber_delta: 1           # Huber threshold (m/s); must be >= 0.63 m/s Doppler bin size
 min_range: 0.2             # Minimum range filter (m)
+radar_ransac_threshold: 0.15  # reve-style 3D-LSQ RANSAC front-end inlier thresh (m/s); >0 = ON (default).
+                              # Hard-rejects elevation-biased single-chip returns before the solve.
+                              # Disable with --no-radar-ransac (or --set radar_ransac_threshold=0).
 
 # IMU weights
 lambda_accel: 0.01

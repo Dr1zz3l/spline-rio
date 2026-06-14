@@ -1294,3 +1294,32 @@ drift mainly because flights are 14–22s vs 87–186s (−0.054×186s ≈ −10
 outlier-rate effect (slow has fewer outliers→smaller bias); modest fusion (fast 0.167 < dead-reckon
 ~0.46m RMS). RANSAC →~0 on all bags. IMPLICATION (author decides): the VI-F/IV-B mount-geometry
 hedge is the weakest-supported; a duration framing is more defensible. See CHANGES.md §5.
+
+## Part 7 — RANSAC made the SOLE default front-end + full re-benchmark (2026-06-14)
+
+Direction-B follow-through on Part 6c. The reve-style 3D-LSQ RANSAC prefilter
+(inlier 0.15 m/s, seeded `default_rng(0)`, frame-load not per-window, frames <5 bypass)
+was promoted from "future work" to **default** via `solver.yaml radar_ransac_threshold:
+0.15` + a config gate in `validate_live_solver.py` (`--no-radar-ransac` backs it out).
+
+**Re-tune (G1):** the UNIV weighting config stayed optimal under RANSAC — no knob moved,
+so the universality claim survives. **Sparsity (G0):** every ≥5-pt frame keeps ≥5 inliers;
+old-firmware (0.6 m/s quant) keeps 46–75%, no starvation.
+
+**Verdict — adopt RANSAC everywhere (user rule: RANSAC-only unless significantly worse
+somewhere):**
+- fast_racing SW live: pos 0.50→0.39m (−22%), vel 0.41→0.32, ori 3.24→2.84°, drift 1.12→0.86%
+- slow_racing SW live: 0.30/0.46/1.88° (ori was 1.97°) — neutral-to-better
+- backflips SW live: 1.55/2.35/6.26° — neutral (≤+3%)
+- ICINS whole-traj ATE: 9.57→0.46, 2.88→0.24, 10.86→0.76, 5.48→0.46m (order-of-magnitude)
+- ICINS causal: f1 0.92/0.08/0.51°, f2 0.51/0.08/0.94°, f3 1.92/0.07/0.52°, f4 0.92/0.07/1.13°
+- held-out fast2 0.37/2.81°, circle 0.88/4.01°; old-fw backflips ori 10.7→8.1/9.1°
+- old-fw position modestly worse (1.6–6.7m vs prior "0.5–5m") — secondary stress tier, honest
+- pitch self-cal 27.0/27.2°; NEES unchanged; backflips BATCH bistable 18–25° (Huber 8.4° = lucky draw)
+
+**Paper update (both report/ master + paper/):** new Sec. III-B RANSAC paragraph; **batch
+Table II removed** (→ prose ceiling + pitch self-cal); VI-F → clean baseline *match*
+(duration/portability hedge + future-work framing deleted); Tables III/V/VI + abstract +
+conclusion → RANSAC; backflips batch reframed bistable, figure SW-only. Figures regenerated.
+report/ 12pp, paper/ 11pp (float-bound — paper/ →8pp still needs float cuts). Logs:
+`baselines/results/ransac_default/` + `ours_icins/*_ransac.log`. Memory: project_ransac_default.

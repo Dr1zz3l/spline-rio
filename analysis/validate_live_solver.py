@@ -1870,13 +1870,14 @@ def main():
     else:
         solver_radar_frames = radar_frames
 
-    # Optional reve-style RANSAC outlier rejection on the radar front-end
-    # (--radar-ransac [thresh]).  Mirrors Doer's radar_ego_velocity_estimator
-    # (3D LSQ RANSAC, inlier_thresh 0.15 m/s): hard-rejects the minority of
-    # elevation-biased single-chip returns that a Huber kernel only down-weights.
-    # See diagnostics/icins_zbias_probe.py for the front-end bias measurement.
+    # reve-style RANSAC outlier rejection on the radar front-end.  DEFAULT-ON via
+    # solver.yaml `radar_ransac_threshold` (>0).  Mirrors Doer's radar_ego_velocity_estimator
+    # (3D LSQ RANSAC, inlier_thresh 0.15 m/s): hard-rejects the minority of elevation-biased
+    # single-chip returns that a Huber kernel only down-weights.  Override threshold with
+    # `--radar-ransac X`; disable with `--no-radar-ransac` (or --set radar_ransac_threshold=0).
+    # Deterministic (seed=0).  See diagnostics/icins_zbias_probe.py for the bias measurement.
+    _thr = float(_SOLVER_CFG.get('radar_ransac_threshold', 0.0) or 0.0)
     if '--radar-ransac' in sys.argv:
-        import dataclasses as _dc
         _ri = sys.argv.index('--radar-ransac')
         _thr = 0.15
         if _ri + 1 < len(sys.argv):
@@ -1884,6 +1885,10 @@ def main():
                 _thr = float(sys.argv[_ri + 1])
             except ValueError:
                 pass
+    if '--no-radar-ransac' in sys.argv:
+        _thr = 0.0
+    if _thr > 0:
+        import dataclasses as _dc
         _rng = np.random.default_rng(0)
 
         def _ransac_mask(P, v, thresh, iters=150):
