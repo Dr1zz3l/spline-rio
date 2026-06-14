@@ -406,7 +406,8 @@ radar sensor to body frame (extrinsic $[\text{roll}{=}180\degree,\,
 \text{pitch}{=}25.5\degree,\,\text{yaw}{=}0\degree]$), and
 $\vR_{bw} = \vR_{wb}^{\top}$.  The residual
 $r_k = v_{D,\text{meas}} - v_{D,\text{pred}}$ uses Huber
-loss with $\delta = 1.0$\,m/s; the
+loss with $\delta = 1.0$\,m/s --- robust, as defense-in-depth, to any
+residual Doppler noise on the surviving inlier returns; the
 \SI{0.049}{\metre\per\second} Doppler resolution sets a lower bound but
 does not drive the choice.
 
@@ -547,7 +548,8 @@ $\vR(t+\Delta t) = \vR(t)\,\Exp\!\bigl((\vz_g - \vb_g)\Delta t\bigr)$.
 
 \textbf{P2: Position.}
 Per radar frame, weighted least squares estimates the 3D ego-velocity
-$\vv_{\text{wls}}$ from all Doppler measurements.  Doppler alias
+$\vv_{\text{wls}}$ from the RANSAC inlier returns
+(Sec.~\ref{sec:models}).  Doppler alias
 unwrapping uses IMU-integrated world-frame velocity to select the
 correct alias before the main solver runs (20.9\% of points aliased
 in fast racing, 1.7\% in slow racing).
@@ -918,41 +920,16 @@ per-segment local accuracy for a complementary view.
 \end{figure}
 
 \subsection{Radar Contribution}
-Table~\ref{tab:ablation_radar} isolates the radar contribution by
-running the same sliding window with \texttt{-{}-no-radar}.
-
-\begin{table}[t]
-\centering
-\caption{IMU-Only vs.\ Full RIO (Live Leading-Edge RMSE)}
-\label{tab:ablation_radar}
-\small
-\setlength{\tabcolsep}{3.5pt}
-\begin{tabular}{@{}llcccc@{}}
-\toprule
-Bag & Sensor & Vel (m/s) & Ori (\degree) & Pos (m) & Drift (\%) \\
-\midrule
-\multirow{2}{*}{Slow racing}
-  & IMU only & 2.014 & 7.55 & 3.061 & 6.36 \\
-  & \textbf{RIO} & \textbf{0.388} & \textbf{2.08} & \textbf{0.337} & \textbf{0.70} \\
-\midrule
-\multirow{2}{*}{Fast racing}
-  & IMU only & 1.718 & 6.83 & 6.870 & 15.30 \\
-  & \textbf{RIO} & \textbf{0.487} & \textbf{3.64} & \textbf{0.829} & \textbf{1.85} \\
-\bottomrule
-\multicolumn{6}{@{}p{\columnwidth}@{}}{\scriptsize
-  Measured with the pre-revision configuration (inconsistent prior,
-  per-bag scale); the isolation of the radar contribution is
-  unaffected.  Current live-edge figures are in Table~\ref{tab:sw}.}
-\end{tabular}
-\end{table}
-
-Radar reduces live-edge velocity error by 72--81\% and position drift
-by 87--89\% (from 6.4\% and 15.3\% to 0.70\% and 1.85\% of distance
-traveled).  IMU-only position drifts rapidly through double
-integration of accelerometer noise; radar Doppler provides direct
-velocity constraints that bound this drift.  Orientation improvement
-is more modest (47--72\%) because the gyroscope already constrains
-orientation strongly at 1\,kHz.
+Radar is essential.  Disabling it (\texttt{-{}-no-radar}) collapses the
+live-edge estimate to IMU dead-reckoning: position drifts 6.4\% (slow)
+and 15.3\% (fast) of distance and velocity RMSE rises to 2.0 and
+1.7\,m/s as double-integrated accelerometer noise accumulates unbounded.
+The direct Doppler velocity constraints bound this to the
+Table~\ref{tab:sw} figures (0.6--0.9\% drift, 0.32--0.46\,m/s velocity)
+--- roughly an order-of-magnitude reduction in both.  Orientation
+improves more modestly, from 7.6\degree/6.8\degree\ (IMU-only) to
+1.9\degree/2.8\degree, because the 1\,kHz gyroscope already constrains
+it strongly.
 
 \subsection{Held-Out Validation}
 \label{sec:heldout}
@@ -1125,7 +1102,7 @@ Flight & ekf-rio & ekf-yrio & Ours & horiz.\ & vert.\ & ekf-rio & ekf-yrio & Our
 4 & 0.74 & 0.74 & 0.74 & 0.26 & 1.15 & 0.30 & 0.15 & 0.46 \\
 \bottomrule
 \addlinespace[2pt]
-\multicolumn{9}{l}{\footnotesize Prefilter \emph{disabled} (Huber-only front-end): our vertical drift $12$--$15\%$; whole-traj.\ ATE $9.57/2.88/10.86/5.48$\,m (flights~1--4) --- the elevation-bias leak the default prefilter removes.}\\
+\multicolumn{9}{l}{\footnotesize Prefilter \emph{disabled} (Huber-only): our vertical drift $12$--$15\%$; whole-traj.\ ATE $9.57/2.88/10.86/5.48$\,m (flights~1--4).}\\
 \end{tabular}
 \end{table*}
 
@@ -1280,7 +1257,11 @@ is worth $\sim$3\degree\ of orientation at zero position cost ---
 plus the flip-regime Doppler correction $b{=}{-}1.5$\,m/s.
 Together these reach \textbf{1.68\,m\,/\,4.8\degree\ settled and
 1.55\,m\,/\,6.3\degree\ live at $\sim$0.6\,s per window}
-(Table~\ref{tab:sw}).
+(Table~\ref{tab:sw}).  The default RANSAC prefilter (Sec.~\ref{sec:models})
+is neutral here --- backflip frames are already sparse and mostly fall
+below its five-return floor, so they bypass it --- and the small change
+from the Huber front-end ($1.51\to1.55$\,m live) is within run-to-run
+noise.
 
 \emph{Why $\Delta t_o{=}8$\,ms in the window.}
 At the batch density $\Delta t_o{=}0.8$\,ms a 3\,s window has
@@ -1308,8 +1289,8 @@ initially interpreted $b$ as the antenna-fixed elevation bias of the
 2-TX array.  A joint calibration experiment \emph{disproves} this
 interpretation: (i)~with extrinsic pitch \emph{locked} at its
 plateau value, level-flight racing degrades catastrophically under
-any explicit $b$ (fast-racing position
-0.50\,$\to$\,3.3\,$\to$\,6.7\,m for $b{=}0,-0.5,-1.0$) --- a true
+any explicit $b$ (fast-racing live position
+0.39\,$\to$\,3.2\,$\to$\,6.6\,m for $b{=}0,-0.5,-1.0$) --- a true
 antenna-fixed bias would be tolerated, since nothing else can absorb
 it; and (ii)~on backflips the optimum keeps growing monotonically
 past the WLS-measured static bias of $-0.5$\,m/s (through $-1.5$
@@ -1392,7 +1373,11 @@ $10^{-8}$                                & 0.336 & 2.08 & 1.344 & 3.57 \\
 \bottomrule
 \multicolumn{5}{l}{$^*$Orientation local maximum: 2.21\degree\ $>$ 2.16\degree\ (2e-4) and
   2.08\degree\ (1e-7).}\\
-\multicolumn{5}{l}{---: scale not evaluated for this bag.}
+\multicolumn{5}{l}{---: scale not evaluated for this bag.}\\
+\multicolumn{5}{@{}p{\columnwidth}@{}}{\scriptsize Measured under the
+  inconsistent-prior diagnostic configuration (predates the RANSAC
+  default); the sensitivity \emph{pattern}, not the absolutes, is the
+  result.}
 \end{tabular}
 \end{table}
 

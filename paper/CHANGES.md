@@ -25,6 +25,25 @@ slow/backflips neutral, config unchanged → universality preserved). Applied to
 vacate). Reaching 8 still needs float reduction — see "Remaining overflow" below. Both
 papers build clean, 0 undefined refs. Re-benchmark logs in `baselines/results/ransac_default/`.
 
+**Audit pass (post-rewrite, same day) — pre-RANSAC absolutes that survived in prose:**
+- **Dropped the radar-contribution table** (IMU-only vs RIO) → one sentence: it quoted the
+  old Huber/pre-revision RIO endpoints (0.70/1.85% drift) that contradicted the headline.
+  Now states IMU-only anchors (6.4/15.3% drift, 2.0/1.7 m/s) → the Table III figures
+  (0.6–0.9%, 0.32–0.46 m/s), order-of-magnitude. Removes a float too.
+- **VII-B b-sweep re-run under RANSAC:** 0.50→3.3→6.7 (Huber) replaced with measured
+  0.39→3.2→6.6 m (b=0,−0.5,−1.0); b=0 now matches the headline.
+- **Table V decomp footnote** was overrunning the table* width and clipping mid-word; shortened
+  (dropped the trailing clause now in the caption). Renders fully.
+- **P2 description:** "from all Doppler measurements" → "from the RANSAC inlier returns"
+  (prefilter runs before P2 per Fig. 1).
+- **Huber δ=1.0 rationale** restored (defense-in-depth on the surviving inliers) after the
+  z-bias clause was cut.
+- **Backflips:** added a clause that RANSAC is neutral there (sparse frames bypass the
+  five-return floor; 1.51→1.55 m is run-to-run noise, not a regression).
+- **Prior-scale table:** added a caveat that its absolutes are the inconsistent-prior
+  diagnostic (predate RANSAC); the sensitivity pattern is the result. (`tab:ablations`
+  already carried the analogous footnote.)
+
 ---
 
 # paper/ — two-version split + 8-page cut (2026-06-13)
