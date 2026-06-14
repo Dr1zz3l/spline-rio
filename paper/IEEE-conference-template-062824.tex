@@ -120,12 +120,6 @@ $\sim$1\,kHz) motivates a continuous-time representation where the
 trajectory is a smooth function evaluated at any sensor timestamp
 without interpolation approximation.
 
-Continuous-time estimation with B-splines was introduced for
-visual-inertial calibration~\cite{furgale2013unified}.
-For orientation, the cumulative SO(3) B-spline
-formulation~\cite{sommer2020efficient,hug2022continuous} provides an
-exact on-manifold representation without re-linearization.
-
 \textbf{Research question.}
 This work asks, end to end: \emph{can a single-chip mmWave radar,
 fused with an IMU, provide usable 6-DOF state estimation --- and if
@@ -146,32 +140,28 @@ negative results.
 We contribute:
 \begin{itemize}
   \item \emph{Single-chip radar under aggressive and tumbling flight},
-        with a characterization of where and how the radar measurement
-        model breaks in this regime: rate-dependent intra-frame
-        smearing, and the finding that the apparent elevation bias
-        under tumbling is a flight-regime error proxy rather than a
-        physical antenna constant.  Existing RIO evaluations cover
-        ground vehicles or gentle UAV flight; backflips at
-        \SI{10}{\radian\per\second} on a single-chip sensor are, to
-        our knowledge, unexplored.
-  \item A \emph{consistency-analyzed} fixed-lag smoother: a
-        factor-set selection rule that exploits B-spline local support
-        to make the Schur marginal exactly closed --- a mechanism
-        distinct from and complementary to FEJ --- eliminating
-        prior-weight tuning; with warm-start alignment and direct
-        marginal evaluation, 0.35--0.70\,s per window on a laptop
-        (real time for aggressive racing at a 0.4\,s stride).
-  \item One measurement-weighting configuration covering hover to
+        characterizing how the radar measurement model breaks in this
+        regime: rate-dependent intra-frame smearing, and the finding
+        that the apparent elevation bias under tumbling is a
+        flight-regime error proxy, not a physical antenna constant.
+        Backflips at \SI{10}{\radian\per\second} on a single-chip
+        sensor are, to our knowledge, unexplored.
+  \item A \emph{consistency-analyzed} fixed-lag smoother: a factor-set
+        selection rule exploiting B-spline local support to make the
+        Schur marginal exactly closed --- distinct from and
+        complementary to FEJ --- eliminating prior-weight tuning, at
+        0.35--0.70\,s per window on a laptop (real time for aggressive
+        racing).
+  \item One measurement-weighting configuration from hover to
         \SI{10}{\radian\per\second}, with the velocity--orientation
-        trade made explicit as a measured Pareto curve and accuracy
-        validated on \emph{held-out flights} never used for tuning.
-  \item Honest negative results and validation: a diagnostic symptom
-        pattern for marginalization inconsistency; a
-        representation-level study that \emph{disproves} the
-        adaptive-knot-density hypothesis for this regime before
-        implementation; ground-truth quality limits during aggressive
-        maneuvers; and a NEES check showing the reported orientation
-        covariance is consistent on racing flights.
+        trade as a measured Pareto curve and accuracy validated on
+        \emph{held-out flights} never used for tuning.
+  \item Honest negative results: a diagnostic symptom pattern for
+        marginalization inconsistency; a representation-level study
+        that \emph{disproves} the adaptive-knot-density hypothesis for
+        this regime; ground-truth limits during aggressive maneuvers;
+        and a NEES check confirming the reported orientation covariance
+        is consistent on racing flights.
 \end{itemize}
 The complete system --- physically correct Doppler model with lever
 arm, sensor-only initialization, full hyperparameter disclosure,
@@ -697,21 +687,16 @@ Bag & Mode & Vel (m/s) & Ori (\degree) & Pos (m) & Drift (\%) & $t_{\mathrm{win}
   & \textbf{Live edge} & \textbf{2.35} & \textbf{6.26} & \textbf{1.554} & \textbf{2.87} & \\
 \bottomrule
 \multicolumn{7}{@{}p{\columnwidth}@{}}{\scriptsize
-  All bags use the unscaled consistent marginalization prior
-  (Sec.~\ref{sec:sw}) and the \emph{same} dynamics-adaptive weighting
-  law (Sec.~\ref{sec:models}).  Per-regime parameters are limited to
-  spline grids ($\Delta t_p{=}5/40/10$\,ms), the heading weight, and
-  for backflips the position-init anchor
-  ($\lambda_{\mathrm{pos\text{-}init}}{=}0.5$) and flip-regime Doppler
-  correction $b{=}{-}1.5$\,m/s (Sec.~\ref{sec:backflips}).  Extrinsic
-  pitch locked at 27.5\degree\ for all bags.
-  $^\ast$Settled velocity on backflips is a retrospective-evaluation
-  artifact (stride-boundary resampling); the live column is the
-  deployment-relevant figure.
-  Drift\,\%: path lengths 48.1\,m / 44.9\,m / 54.1\,m.
-  Iteration-capped configurations reproduce bit-identically across
-  repeated runs; full-convergence configurations vary by $<$2\%
-  (multithreaded reduction order).}
+  All bags use the unscaled consistent prior (Sec.~\ref{sec:sw}) and the
+  \emph{same} weighting law (Sec.~\ref{sec:models}); per-regime
+  parameters are limited to spline grids ($\Delta t_p{=}5/40/10$\,ms),
+  the heading weight, and for backflips the position-init anchor
+  ($\lambda_{\mathrm{pos\text{-}init}}{=}0.5$) and Doppler correction
+  $b{=}{-}1.5$\,m/s.  Extrinsic pitch locked at 27.5\degree.
+  $^\ast$Backflips settled velocity is a retrospective-eval artifact
+  (stride-boundary resampling); the live column is deployment-relevant.
+  Drift\,\%: paths 48.1/44.9/54.1\,m.  Iteration-capped runs reproduce
+  bit-identically; full-convergence runs vary $<$2\% (thread order).}
 \end{tabular}
 \end{table}
 
@@ -739,11 +724,9 @@ window.
     (top) and Y--Z (bottom) projections; start~$\blacksquare$.  Larger
     fast-racing deviations reflect higher dynamics
     ($\omega_{\max}=9.1$\,rad/s).  The backflips batch estimate is
-    omitted (bistable at $\Delta t_o{=}0.8$\,ms,
-    Sec.~\ref{sec:backflips}); there the residual ${\sim}6\degree$ live
-    orientation error through flips attenuates the loop circles in the
-    X--Y view, while the overall donut sweep and altitude (Y--Z) are
-    followed.}
+    omitted (bistable, Sec.~\ref{sec:backflips}); its residual
+    ${\sim}6\degree$ live orientation error attenuates the loop circles
+    while the donut sweep and altitude are followed.}
   \label{fig:traj}
 \end{figure*}
 
@@ -876,13 +859,13 @@ platform fall outside its gating and process-noise assumptions.
 \caption{Cross-validation on the public ICINS-2021 flight
 datasets~\cite{doer2021yrio}, all systems under our causal protocol
 (live estimate, start-anchored alignment).
-\textbf{(a)}~Headline metrics; heading aiding differs by design (see text).
-\textbf{(b)}~Decomposition: \emph{roll/pitch} is the heading-independent
-attitude RMSE (yaw excluded) --- the three systems are comparable, so the
-orientation gap in (a) is yaw, not attitude; \emph{our drift} splits our
-position into horizontal/vertical (both sub-1.3\% with the default RANSAC
-prefilter, Sec.~\ref{sec:models}); \emph{whole-traj.\ ATE} uses EVO/KITTI
-Umeyama alignment (no scale) for cross-checking against published figures.}
+\textbf{(a)}~Headline metrics (heading aiding differs by design, see text).
+\textbf{(b)}~Decomposition: \emph{roll/pitch} (heading-independent, yaw
+excluded) is comparable across systems, so the orientation gap in (a) is
+yaw, not attitude; \emph{our drift} splits position into
+horizontal/vertical (both sub-1.3\% under the default RANSAC prefilter);
+\emph{whole-traj.\ ATE} uses EVO/KITTI Umeyama alignment for cross-checking
+against published figures.}
 \label{tab:baselines}
 \centering
 \footnotesize

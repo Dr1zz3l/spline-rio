@@ -120,12 +120,6 @@ $\sim$1\,kHz) motivates a continuous-time representation where the
 trajectory is a smooth function evaluated at any sensor timestamp
 without interpolation approximation.
 
-Continuous-time estimation with B-splines was introduced for
-visual-inertial calibration~\cite{furgale2013unified}.
-For orientation, the cumulative SO(3) B-spline
-formulation~\cite{sommer2020efficient,hug2022continuous} provides an
-exact on-manifold representation without re-linearization.
-
 \textbf{Research question.}
 This work asks, end to end: \emph{can a single-chip mmWave radar,
 fused with an IMU, provide usable 6-DOF state estimation --- and if
@@ -146,32 +140,28 @@ negative results.
 We contribute:
 \begin{itemize}
   \item \emph{Single-chip radar under aggressive and tumbling flight},
-        with a characterization of where and how the radar measurement
-        model breaks in this regime: rate-dependent intra-frame
-        smearing, and the finding that the apparent elevation bias
-        under tumbling is a flight-regime error proxy rather than a
-        physical antenna constant.  Existing RIO evaluations cover
-        ground vehicles or gentle UAV flight; backflips at
-        \SI{10}{\radian\per\second} on a single-chip sensor are, to
-        our knowledge, unexplored.
-  \item A \emph{consistency-analyzed} fixed-lag smoother: a
-        factor-set selection rule that exploits B-spline local support
-        to make the Schur marginal exactly closed --- a mechanism
-        distinct from and complementary to FEJ --- eliminating
-        prior-weight tuning; with warm-start alignment and direct
-        marginal evaluation, 0.35--0.70\,s per window on a laptop
-        (real time for aggressive racing at a 0.4\,s stride).
-  \item One measurement-weighting configuration covering hover to
+        characterizing how the radar measurement model breaks in this
+        regime: rate-dependent intra-frame smearing, and the finding
+        that the apparent elevation bias under tumbling is a
+        flight-regime error proxy, not a physical antenna constant.
+        Backflips at \SI{10}{\radian\per\second} on a single-chip
+        sensor are, to our knowledge, unexplored.
+  \item A \emph{consistency-analyzed} fixed-lag smoother: a factor-set
+        selection rule exploiting B-spline local support to make the
+        Schur marginal exactly closed --- distinct from and
+        complementary to FEJ --- eliminating prior-weight tuning, at
+        0.35--0.70\,s per window on a laptop (real time for aggressive
+        racing).
+  \item One measurement-weighting configuration from hover to
         \SI{10}{\radian\per\second}, with the velocity--orientation
-        trade made explicit as a measured Pareto curve and accuracy
-        validated on \emph{held-out flights} never used for tuning.
-  \item Honest negative results and validation: a diagnostic symptom
-        pattern for marginalization inconsistency; a
-        representation-level study that \emph{disproves} the
-        adaptive-knot-density hypothesis for this regime before
-        implementation; ground-truth quality limits during aggressive
-        maneuvers; and a NEES check showing the reported orientation
-        covariance is consistent on racing flights.
+        trade as a measured Pareto curve and accuracy validated on
+        \emph{held-out flights} never used for tuning.
+  \item Honest negative results: a diagnostic symptom pattern for
+        marginalization inconsistency; a representation-level study
+        that \emph{disproves} the adaptive-knot-density hypothesis for
+        this regime; ground-truth limits during aggressive maneuvers;
+        and a NEES check confirming the reported orientation covariance
+        is consistent on racing flights.
 \end{itemize}
 The complete system --- physically correct Doppler model with lever
 arm, sensor-only initialization, full hyperparameter disclosure,
