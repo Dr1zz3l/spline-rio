@@ -73,23 +73,20 @@ bias.
 A Markov-blanket factor-selection rule makes the marginalization a
 true marginal, eliminating prior-weight tuning across flight regimes.
 A single \emph{dynamics-adaptive measurement weighting law} ---
-rate-adaptive gyroscope trust
-$\lambda_g(1{+}(|\vom|/\omega_0)^4)$, rate-dependent radar and
+rate-adaptive gyroscope trust, rate-dependent radar and
 accelerometer noise inflation, and per-point SNR weighting ---
 covers hover to \SI{10}{\radian\per\second} tumbling with one
 configuration, validated on held-out flights never used for tuning.
-At the \emph{live leading edge} (the estimate a deployed system would
-emit), velocity and orientation RMSE are
-\SI{0.46}{\metre\per\second}/\SI{1.9}{\degree}
-on gentle racing and \SI{0.32}{\metre\per\second}/\SI{2.8}{\degree} on
-aggressive racing at 0.35--0.70\,s per window on a laptop; position
-drifts \SI{0.6}{\percent} and \SI{0.9}{\percent} of distance.
-Backflips --- attitude-tumbling flight that exposes radar systematics
-invisible in level flight --- reach
-\SI{2.9}{\percent}\,/\,\SI{6.3}{\degree} live.
-The estimator's output covariance is NEES-consistent for orientation
-on racing flights (inflation $0.7$--$0.9\times$), supporting its use
-as a calibrated factor source.
+At the \emph{live leading edge} --- the estimate a deployed system
+would emit --- velocity and orientation RMSE stay below
+\SI{0.5}{\metre\per\second} and \SI{3}{\degree} across
+gentle-to-aggressive racing, in real time on a laptop, with position
+drift under \SI{1}{\percent} of distance traveled; attitude-tumbling
+backflips, which expose radar systematics invisible in level flight,
+degrade gracefully to \SI{2.9}{\percent}\,/\,\SI{6.3}{\degree}.
+The output orientation covariance is near-calibrated
+(NEES-consistent on racing flights), supporting use as a factor source
+in a larger fusion graph.
 We further document negative results, including a diagnostic symptom
 pattern for marginalization inconsistency, a representation-level
 analysis that disproves the adaptive-knot-density hypothesis for this
