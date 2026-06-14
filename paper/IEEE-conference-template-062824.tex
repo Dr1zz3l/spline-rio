@@ -121,8 +121,7 @@ trajectory is a smooth function evaluated at any sensor timestamp
 without interpolation approximation.
 
 Continuous-time estimation with B-splines was introduced for
-visual-inertial calibration~\cite{furgale2013unified} and later
-applied to various sensor fusion problems~\cite{anderson2015steam}.
+visual-inertial calibration~\cite{furgale2013unified}.
 For orientation, the cumulative SO(3) B-spline
 formulation~\cite{sommer2020efficient,hug2022continuous} provides an
 exact on-manifold representation without re-linearization.
@@ -201,10 +200,9 @@ batch/sliding-window optimizer.
 
 \textbf{Continuous-time trajectory estimation.}
 Furgale et al.~\cite{furgale2013unified} introduced uniform B-splines
-for continuous-time visual-inertial calibration; Anderson and
-Barfoot~\cite{anderson2015steam} generalized this with GP-based
-``STEAM'' trajectories, and basalt VIO~\cite{usenko2020basalt} uses
-cumulative B-splines on Lie groups for stereo-inertial odometry.  We
+for continuous-time visual-inertial calibration, and basalt
+VIO~\cite{usenko2020basalt} uses cumulative B-splines on Lie groups for
+stereo-inertial odometry.  We
 adapt the basalt-style cumulative SO(3) B-spline to radar-inertial fusion.
 
 \textbf{Marginalization in sliding-window estimators.}
@@ -245,7 +243,7 @@ Mourikis~\cite{dongsi2012consistency} analyze which retained states
 may legitimately connect to marginalized ones, and first-estimates
 Jacobian (FEJ) methods fix linearization points to preserve the
 observability nullspace.  In continuous time,
-Ctrl-VIO~\cite{lv2022ctrlvio}, CLIC~\cite{lv2023clic}, and
+CLIC~\cite{lv2023clic} and
 LIO-MARS~\cite{quenzel2025liomars} marginalize spline knots leaving
 the window, and Hug et al.~\cite{hug2022continuous} apply Schur
 marginalization to visual-inertial splines.  Our contribution to this
@@ -255,8 +253,7 @@ marginal exactly closed (no double counting, no conditioning on
 interior states), and a documented symptom pattern by which the
 inconsistent variant can be recognized (Sec.~\ref{sec:prior_scale}).
 In the discrete-time UAV line, Doer and
-Trommer~\cite{doer2020ekf} and extensions to multiple
-radars~\cite{huang2024multiradar} and 4D-radar-aided inertial
+Trommer~\cite{doer2020ekf} and 4D-radar-aided inertial
 navigation define the state of practice.
 Rather than comparing numbers across papers --- our own quantization
 ablation (Sec.~\ref{sec:heldout}) shows firmware configuration alone
@@ -325,7 +322,7 @@ formulation~\cite{sommer2020efficient}:
 \end{equation}
 where $k$ is the active knot index for time $t$,
 $\vOm_j \in \so$ are incremental rotation control points
-(using the $\Exp$/$\Log$ map convention of~\cite{sola2018micro}),
+(standard $\Exp$/$\Log$ map convention),
 $\tilde{B}_j(t)$ are cumulative cubic basis functions, and
 $\vR_{\mathrm{base}}$ is the left anchor rotation.  Knot spacing
 is $\Delta t_o = 8$\,ms.  Body-frame angular velocity $\vom_b(t)$

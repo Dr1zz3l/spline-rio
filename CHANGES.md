@@ -32,6 +32,20 @@ front-end swap + table renumber. Verified each against both dirs; fixed all vali
   rounds up to 10. A printed 9 needs a protected decision (consolidate the two ICINS tables into
   one `table*`, or trim references) — out of the approved non-protected scope.
 
+### paper/ further reduction attempts (paper/ only unless noted)
+- **Merged the two ICINS tables** (headline + decomposition) into one full-width `table*`
+  with panels (a)/(b), one caption/label; cross-refs repointed. Cleaner, but did not drop a page.
+- **Tightened the abstract** (BOTH dirs): dropped the inline weighting-law formula and collapsed
+  the headline number-dump to bounds (vel <0.5 m/s, ori <3°, drift <1% on racing; backflips
+  2.9%/6.3%); NEES → "near-calibrated". Less quantitative.
+- **Trimmed 4 references** 24→20 (BOTH dirs): `sola2018micro` (notation courtesy cite),
+  `lv2022ctrlvio` (redundant with CLIC, same authors), `huang2024multiradar` (multi-radar tangent),
+  `anderson2015steam` (GP/STEAM, an unused approach). IEEEtran auto-drops uncited entries.
+- **Outcome: paper still prints 10 pages.** Reference trim freed ~0.9k chars (page 10: 6469→5591),
+  but eliminating page 10 needs ~4.8k chars (~0.6 page). It is a genuine 10-page document; a
+  printed 9/8 requires dropping a protected float (a trajectory figure or the ablations table) or
+  moving content to an appendix.
+
 Both build clean, 0 undefined refs (report 12pp, paper 10pp). Re-run logs:
 `baselines/results/ransac_default/{fast_nomarg,fast_win20}_ransac.log`.
 Prior changelog cleared this date; full history in git.
