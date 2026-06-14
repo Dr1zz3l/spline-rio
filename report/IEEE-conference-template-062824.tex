@@ -758,13 +758,13 @@ per-window wall time.
 \section{Results}
 \label{sec:results}
 
-\subsection{Batch Solver: Offline Ceiling and Extrinsic Self-Calibration}
-We use the full-trajectory C++ batch solve as an offline accuracy
-ceiling and as the extrinsic self-calibration stage; the live
-sliding-window system (Sec.~\ref{sec:sw_results}) is the deployment
-result and trails this ceiling by the cost of causality.  Offline, the
-batch solver reaches \SI{0.20}{\metre}\,/\,\SI{1.0}{\degree} on slow
-racing and \SI{0.73}{\metre}\,/\,\SI{2.5}{\degree} on fast racing.
+\subsection{Batch Solver and Extrinsic Self-Calibration}
+We use the full-trajectory C++ batch solve as the extrinsic
+self-calibration stage; offline it reaches
+\SI{0.20}{\metre}\,/\,\SI{1.0}{\degree} on slow racing and
+\SI{0.73}{\metre}\,/\,\SI{2.5}{\degree} on fast (the dense racing
+$\Delta t_p$ over-fits fast racing, where the coarser sliding window
+does better).
 With the extrinsic pitch left free, it self-calibrates from the
 25.5\degree\ nominal to 27.0\degree\ (slow racing) and 27.2\degree\
 (fast racing) --- recovering the as-built mount angle, which the

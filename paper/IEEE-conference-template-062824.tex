@@ -633,21 +633,16 @@ per-window wall time.
 \section{Results}
 \label{sec:results}
 
-\subsection{Batch Solver: Offline Ceiling and Extrinsic Self-Calibration}
-We use the full-trajectory C++ batch solve as an offline accuracy
-ceiling and as the extrinsic self-calibration stage; the live
-sliding-window system (Sec.~\ref{sec:sw_results}) is the deployment
-result and trails this ceiling by the cost of causality.  Offline, the
-batch solver reaches \SI{0.20}{\metre}\,/\,\SI{1.0}{\degree} on slow
-racing and \SI{0.73}{\metre}\,/\,\SI{2.5}{\degree} on fast racing.
-With the extrinsic pitch left free, it self-calibrates from the
-25.5\degree\ nominal to 27.0\degree\ (slow racing) and 27.2\degree\
-(fast racing) --- recovering the as-built mount angle, which the
-3D-printed, hand-assembled fixture leaves a few degrees short of the
-30\degree\ CAD nominal.  Racing bags converge to the same pitch estimate
-whether initialized at 25.5\degree\ or 30\degree, so the estimate is
-data-driven, not init-dependent.  We lock pitch at 27.5\degree\ for the
-sliding-window runs (Sec.~\ref{sec:backflips}).
+\subsection{Extrinsic Self-Calibration}
+The radar-to-body pitch is calibrated once, offline, by a
+full-trajectory batch solve with the pitch left free: it converges to
+27.0\degree\ (slow racing) and 27.2\degree\ (fast), the same estimate
+whether initialized at 25.5\degree\ or 30\degree\ --- data-driven, not
+init-dependent --- recovering the as-built mount angle a few degrees
+short of the 30\degree\ CAD nominal (3D-printed, hand-assembled
+fixture).  We freeze pitch at 27.5\degree\ for all sliding-window runs;
+the windowed solve cannot observe a 1-DOF extrinsic itself
+(Sec.~\ref{sec:backflips}).
 
 \subsection{Sliding Window: Settled vs.\ Live}
 \label{sec:sw_results}
