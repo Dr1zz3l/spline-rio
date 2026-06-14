@@ -46,6 +46,19 @@ front-end swap + table renumber. Verified each against both dirs; fixed all vali
   printed 9/8 requires dropping a protected float (a trajectory figure or the ablations table) or
   moving content to an appendix.
 
+### Extrinsic pitch: freeze slow at 27.5° + correct the locking rationale (both dirs)
+Experiment (free pitch in SW): the windowed solve does NOT recover the true 27.5° — it
+drifts init-dependently (29.5° from 25.5° init, 34.7° / 40° from 30°) because a 1-DOF
+extrinsic is unobservable per window; only the full-trajectory batch recovers 27.5°
+(init-independent). RMSE is plateau-neutral to pitch (fast locked 0.389 vs free→40° 0.391).
+- Slow headline was silently running \emph{free} pitch (→29.5°); re-ran it **locked at 27.5°**
+  (live 0.45/1.94°/0.304; settled 0.39/1.54°/0.287) so all bags are now genuinely locked and
+  the "locked for all bags" footnote is true. Table III + abstract-range + conclusion + radar-
+  contrib vel-range + CLAUDE.md updated; figure regenerated from the locked run.
+- Replaced the stale "locking improves fast racing by −21%" claim (a pre-RANSAC artifact;
+  fresh data is RMSE-neutral) with the real mechanism: freeze because SW can't observe the
+  extrinsic and drifts; batch recovers 27.5° init-independently.
+
 Both build clean, 0 undefined refs (report 12pp, paper 10pp). Re-run logs:
 `baselines/results/ransac_default/{fast_nomarg,fast_win20}_ransac.log`.
 Prior changelog cleared this date; full history in git.

@@ -668,8 +668,8 @@ Fig.~\ref{fig:traj} shows trajectory overlays for all three flights.
 Bag & Mode & Vel (m/s) & Ori (\degree) & Pos (m) & Drift (\%) & $t_{\mathrm{win}}$ (s) \\
 \midrule
 \multirow{2}{*}{Slow racing}
-  & Settled & 0.41 & 1.49 & 0.286 & 0.60 & \multirow{2}{*}{0.70} \\
-  & \textbf{Live edge} & \textbf{0.46} & \textbf{1.88} & \textbf{0.303} & \textbf{0.63} & \\
+  & Settled & 0.39 & 1.54 & 0.287 & 0.60 & \multirow{2}{*}{0.70} \\
+  & \textbf{Live edge} & \textbf{0.45} & \textbf{1.94} & \textbf{0.304} & \textbf{0.63} & \\
 \midrule
 \multirow{2}{*}{Fast racing}
   & Settled & 0.24 & 2.31 & 0.285 & 0.63 & \multirow{2}{*}{0.35} \\
@@ -729,7 +729,7 @@ live-edge estimate to IMU dead-reckoning: position drifts 6.4\% (slow)
 and 15.3\% (fast) of distance and velocity RMSE rises to 2.0 and
 1.7\,m/s as double-integrated accelerometer noise accumulates unbounded.
 The direct Doppler velocity constraints bound this to the
-Table~\ref{tab:sw} figures (0.6--0.9\% drift, 0.32--0.46\,m/s velocity)
+Table~\ref{tab:sw} figures (0.6--0.9\% drift, 0.32--0.45\,m/s velocity)
 --- roughly an order-of-magnitude reduction in both.  Orientation
 improves more modestly, from 7.6\degree/6.8\degree\ (IMU-only) to
 1.9\degree/2.8\degree, the 1\,kHz gyroscope already constraining it.
@@ -1048,15 +1048,19 @@ $-0.5$\,m/s static bias into implausible territory.  We therefore read
 $b$ as a \emph{flight-regime error proxy} --- absorbing an
 attitude-correlated Doppler systematic during flips (likely intra-frame
 motion distortion) --- and cap it at $b{=}{-}1.5$.
-Relatedly, a $3{\times}3$ grid over (locked pitch, $b$) shows
-extrinsic pitch is a \emph{plateau} (26.5--28.5\degree\
-indistinguishable on backflips), and locking pitch at 27.5\degree\
-\emph{improves} fast racing over online pitch self-calibration
-(live position $-21\%$); the earlier ``self-calibrated $+2\degree$
-absorbs the elevation bias'' reading is retired ---
-27.5\degree\ is simply the correct as-built mount angle (a few degrees
-short of the $30\degree$ CAD nominal; the 3D-printed, loosely-fastened
-fixture accounts for the difference).
+Relatedly, extrinsic pitch is a \emph{plateau}: over a $3{\times}3$ grid
+over (locked pitch, $b$) the RMSE is indistinguishable across
+26.5--28.5\degree\ on backflips, and locking at 27.5\degree\ versus
+online sliding-window self-calibration is RMSE-neutral on racing.  We
+freeze it rather than estimate it online because the windowed solve
+cannot observe a 1-DOF extrinsic --- free pitch drifts to physically
+wrong, init-dependent values (e.g.\ 40\degree\ on fast racing from a
+30\degree\ start), whereas the full-trajectory batch calibration
+recovers 27.5\degree\ init-independently.  The earlier
+``self-calibrated $+2\degree$ absorbs the elevation bias'' reading is
+retired --- 27.5\degree\ is simply the correct as-built mount angle (a
+few degrees short of the $30\degree$ CAD nominal; the 3D-printed,
+loosely-fastened fixture accounts for the difference).
 
 \emph{Remaining gap.}
 The residual $\sim$6\degree\ live orientation error during flips
@@ -1147,7 +1151,7 @@ orientation by 6--8\degree.  The C++ design avoids this by construction.
 \emph{Can a single-chip mmWave radar plus IMU provide usable 6-DOF
 state estimation?}  Yes --- as a \emph{velocity and orientation}
 source: at the live leading edge,
-\SI{0.46}{\metre\per\second}/\SI{1.9}{\degree} on gentle racing,
+\SI{0.45}{\metre\per\second}/\SI{1.9}{\degree} on gentle racing,
 \SI{0.32}{\metre\per\second}/\SI{2.8}{\degree} on aggressive racing
 (0.35--0.70\,s per window on a laptop), confirmed on held-out flights
 and with NEES-consistent orientation covariance.

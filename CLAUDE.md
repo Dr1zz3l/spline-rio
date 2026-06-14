@@ -282,7 +282,7 @@ batch Table II removed. Numbers below are the RANSAC-default headline:
 | Bag | Per-bag extras | Live vel | Live ori | Live pos (drift) | Settled pos/ori | dt/win |
 |-----|--------|---------|---------|------------------|-----------------|--------|
 | fast_racing | grids .04/.016 + locked p27.5 | **0.32** | 2.84° | **0.39m** (0.86%) | **0.285/2.31°** | **0.35s** |
-| slow_racing (live) | iter12 + λh10 | **0.46** | **1.88°** | 0.30m (0.63%) | 0.286/1.49° | 0.70s |
+| slow_racing (live) | iter12 + λh10 + locked p27.5 | **0.45** | **1.94°** | 0.30m (0.63%) | 0.287/1.54° | 0.70s |
 | backflips | tether.5 + b−1.5 + p27.5 + lgb0 | **2.35** | **6.26°** | **1.55m** (2.87%) | **1.68/4.82°** | ~0.6s |
 
 Pre-RANSAC (Huber-only) baseline, 2026-06-12, gates 4/8 — for reference:
