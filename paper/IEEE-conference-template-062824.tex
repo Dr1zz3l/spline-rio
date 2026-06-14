@@ -610,11 +610,6 @@ deployment-relevant reading, and apply it identically to every system
 compared.  Where we compare against externally published figures
 (Sec.~\ref{sec:baselines}) we additionally report whole-trajectory-aligned
 numbers so the baselines can be cross-checked against their own papers.
-\emph{Translational RPE} (relative pose error, Sec.~\ref{sec:rpe}) is
-the KITTI-standard per-segment displacement error averaged over all
-sub-segments of a given accumulated GT length.
-Because the start-anchored alignment offsets cancel within every
-relative displacement, RPE is alignment-independent.
 For sliding window, \emph{live (leading-edge)} RMSE is computed by
 snapshotting the estimate at $[t_\text{end}{-}\text{stride},\, t_\text{end}]$
 of each window at 50\,Hz before any subsequent refinement.  The
@@ -652,9 +647,7 @@ With the extrinsic pitch left free, it self-calibrates from the
 30\degree\ CAD nominal.  Racing bags converge to the same pitch estimate
 whether initialized at 25.5\degree\ or 30\degree, so the estimate is
 data-driven, not init-dependent.  We lock pitch at 27.5\degree\ for the
-sliding-window runs (Sec.~\ref{sec:backflips}); the batch estimate is
-shown for reference (dashed) in the trajectory overlays
-(Fig.~\ref{fig:traj}) and the RPE analysis (Sec.~\ref{sec:rpe}).
+sliding-window runs (Sec.~\ref{sec:backflips}).
 
 \subsection{Sliding Window: Settled vs.\ Live}
 \label{sec:sw_results}
@@ -720,34 +713,14 @@ window.
 \begin{figure*}[t]
   \centering
   \includegraphics[width=\textwidth]{figures/traj_combined.pdf}
-  \caption{Trajectory overlays for all three flights (columns), X--Y
-    (top) and Y--Z (bottom) projections; start~$\blacksquare$.  Larger
-    fast-racing deviations reflect higher dynamics
-    ($\omega_{\max}=9.1$\,rad/s).  The backflips batch estimate is
-    omitted (bistable, Sec.~\ref{sec:backflips}); its residual
-    ${\sim}6\degree$ live orientation error attenuates the loop circles
-    while the donut sweep and altitude are followed.}
+  \caption{Trajectory overlays for all three flights (columns): MoCap
+    ground truth vs.\ the SW live edge, X--Y (top) and Y--Z (bottom)
+    projections; start~$\blacksquare$.  Larger fast-racing deviations
+    reflect higher dynamics ($\omega_{\max}=9.1$\,rad/s); on backflips
+    the residual ${\sim}6\degree$ live orientation error attenuates the
+    loop circles while the donut sweep and altitude are followed.}
   \label{fig:traj}
 \end{figure*}
-
-
-\subsection{Relative Pose Error and Position Drift}
-\label{sec:rpe}
-
-The KITTI-style translational RPE, as a function of segment length for
-racing bags (batch and SW live) and backflips (batch only), shows that
-at longer segments ($\geq 20$\,m) the global
-B-spline smoother reduces error sharply: slow racing batch reaches
-\SI{1.12}{\percent} at 20\,m and \SI{0.43}{\percent} at 40\,m; fast
-racing stabilises at $\approx$\SI{3.2}{\percent} beyond 20\,m.  At
-short segments ($\leq$10\,m) errors are larger (3--7\% for racing)
-because the 11\,Hz radar provides only a handful of Doppler
-measurements per segment and the global optimizer cannot smooth over
-sub-second intervals.  This is a fundamental constraint of the
-11\,Hz radar rate, not a spline smoothing artifact.
-Global drift (\%) reflects the full-trajectory benefit of the batch
-optimizer and is the headline deployment metric; RPE captures
-per-segment local accuracy for a complementary view.
 
 
 \subsection{Radar Contribution}

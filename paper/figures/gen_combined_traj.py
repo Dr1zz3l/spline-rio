@@ -22,11 +22,11 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from pathlib import Path
 
-# (bag_key, column title, show batch estimate)
+# (bag_key, column title)
 BAGS = [
-    ('slow_racing_best_velocity', 'slow racing', True),
-    ('fast_racing_best_velocity', 'fast racing', True),
-    ('backflips_best_velocity',   'backflips',   False),  # batch is bistable -> omit
+    ('slow_racing_best_velocity', 'slow racing'),
+    ('fast_racing_best_velocity', 'fast racing'),
+    ('backflips_best_velocity',   'backflips'),
 ]
 MOCAP_TAG  = 'mocap-init_mocap-heading'
 PLOTS_ROOT = Path(__file__).parent.parent.parent / 'plots'
@@ -45,11 +45,10 @@ matplotlib.rcParams.update({
     'figure.dpi':      150,
 })
 
-# High-contrast, colourblind-safe (Okabe-Ito); the dotted SW live edge
-# (headline) is now a strong green instead of low-contrast orange.
-C_MOCAP = '#0072B2'   # blue   (ground truth, solid)
-C_BATCH = '#D55E00'   # vermillion (batch, dashed)
-C_LIVE  = '#009E73'   # green  (SW live edge, dotted)
+# Two-line, high-contrast, colourblind-safe (Okabe-Ito): ground truth vs
+# the SW live edge (the deployed estimate).  Batch is no longer drawn.
+C_MOCAP = '#0072B2'   # blue       (ground truth, solid)
+C_LIVE  = '#D55E00'   # vermillion (SW live edge, dashed)
 
 # rows: (x-index, y-index, xlabel, ylabel)
 PROJ = [(0, 1, 'X (m)', 'Y (m)'),
@@ -57,19 +56,18 @@ PROJ = [(0, 1, 'X (m)', 'Y (m)'),
 
 fig, axes = plt.subplots(2, 3, figsize=(7.2, 4.15))
 
-for col, (bag, title, show_batch) in enumerate(BAGS):
+for col, (bag, title) in enumerate(BAGS):
     bag_dir   = PLOTS_ROOT / bag / 'live_solver'
     b = np.load(bag_dir / f'traj_arrays_{bag}_{MOCAP_TAG}_batch.npz')
     s = np.load(bag_dir / f'traj_arrays_{bag}_{MOCAP_TAG}_sw.npz')
-    gt, settled, live = b['mocap'], b['settled'], s['live']
+    gt, live = b['mocap'], s['live']
 
     for row, (xi, yi, xl, yl) in enumerate(PROJ):
         ax = axes[row, col]
-        ax.plot(gt[:, xi], gt[:, yi], color=C_MOCAP, lw=1.4, ls='-', zorder=3)
-        if show_batch:
-            ax.plot(settled[:, xi], settled[:, yi], color=C_BATCH, lw=1.1, ls='--', zorder=2)
-        ax.plot(live[:, xi], live[:, yi], color=C_LIVE, lw=1.1, ls=':', alpha=0.9, zorder=4)
-        ax.plot(gt[0, xi], gt[0, yi], 'bs', markersize=4.5, zorder=5)
+        ax.plot(gt[:, xi], gt[:, yi], color=C_MOCAP, lw=1.5, ls='-', zorder=3)
+        ax.plot(live[:, xi], live[:, yi], color=C_LIVE, lw=1.5, ls='--', zorder=4)
+        ax.plot(gt[0, xi], gt[0, yi], color=C_MOCAP, marker='s', markersize=4.5,
+                ls='none', zorder=5)
         ax.set_xlabel(xl, labelpad=1)
         ax.set_ylabel(yl, labelpad=1)
         ax.grid(True, alpha=0.3)
@@ -79,15 +77,13 @@ for col, (bag, title, show_batch) in enumerate(BAGS):
             ax.set_title(title, fontweight='bold', pad=3)
 
 # single shared legend at the bottom
-handles = [Line2D([0], [0], color=C_MOCAP, lw=1.6, ls='-'),
-           Line2D([0], [0], color=C_BATCH, lw=1.6, ls='--'),
-           Line2D([0], [0], color=C_LIVE,  lw=1.6, ls=':'),
-           Line2D([0], [0], color='b', marker='s', ls='none', markersize=5)]
-labels  = ['MoCap ground truth', 'Batch estimate (racing only)',
-           'SW live edge', 'start']
-fig.legend(handles, labels, loc='lower center', ncol=4,
+handles = [Line2D([0], [0], color=C_MOCAP, lw=1.8, ls='-'),
+           Line2D([0], [0], color=C_LIVE,  lw=1.8, ls='--'),
+           Line2D([0], [0], color=C_MOCAP, marker='s', ls='none', markersize=5)]
+labels  = ['MoCap ground truth', 'SW live edge', 'start']
+fig.legend(handles, labels, loc='lower center', ncol=3,
            frameon=False, bbox_to_anchor=(0.5, -0.01),
-           columnspacing=1.6, handlelength=2.0)
+           columnspacing=1.8, handlelength=2.2)
 
 fig.tight_layout(rect=[0, 0.055, 1, 1], w_pad=1.2, h_pad=0.8)
 
