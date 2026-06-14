@@ -663,7 +663,7 @@ With the extrinsic pitch left free, it self-calibrates from the
 whether initialized at 25.5\degree\ or 30\degree, so the estimate is
 data-driven, not init-dependent.  We lock pitch at 27.5\degree\ for the
 sliding-window runs (Sec.~\ref{sec:backflips}); the batch estimate is
-shown for reference (dashed red) in the trajectory overlays
+shown for reference (dashed) in the trajectory overlays
 (Fig.~\ref{fig:traj}) and the RPE analysis (Sec.~\ref{sec:rpe}).
 
 \subsection{Sliding Window: Settled vs.\ Live}
@@ -671,7 +671,7 @@ shown for reference (dashed red) in the trajectory overlays
 
 Table~\ref{tab:sw} reports sliding window results
 (3\,s window, 0.3\,s stride, Schur marginalization).
-Fig.~\ref{fig:traj} shows trajectory overlays for both bags.
+Fig.~\ref{fig:traj} shows trajectory overlays for all three flights.
 
 \begin{table}[t]
 \centering
@@ -732,17 +732,20 @@ no warm-start alignment) slow racing reaches
 0.314\,m\,/\,1.12\degree\ settled (yaw 0.56\degree) at 2.1\,s per
 window.
 
-\begin{figure}[t]
+\begin{figure*}[t]
   \centering
-  \includegraphics[width=\columnwidth]{figures/traj_slow_racing_best_velocity.pdf}
-  \includegraphics[width=\columnwidth]{figures/traj_fast_racing_best_velocity.pdf}
-  \caption{Trajectory overlays (X--Y and Y--Z projections,
-    start~$\blacksquare$): slow racing (top) and fast racing (bottom).
-    MoCap ground truth (solid blue), batch estimate (dashed red), SW
-    live edge (dotted orange).  Larger fast-racing deviations reflect
-    higher dynamics ($\omega_{\max}=9.1$\,rad/s).}
+  \includegraphics[width=\textwidth]{figures/traj_combined.pdf}
+  \caption{Trajectory overlays for all three flights (columns), X--Y
+    (top) and Y--Z (bottom) projections; start~$\blacksquare$.  Larger
+    fast-racing deviations reflect higher dynamics
+    ($\omega_{\max}=9.1$\,rad/s).  The backflips batch estimate is
+    omitted (bistable at $\Delta t_o{=}0.8$\,ms,
+    Sec.~\ref{sec:backflips}); there the residual ${\sim}6\degree$ live
+    orientation error through flips attenuates the loop circles in the
+    X--Y view, while the overall donut sweep and altitude (Y--Z) are
+    followed.}
   \label{fig:traj}
-\end{figure}
+\end{figure*}
 
 
 \subsection{Relative Pose Error and Position Drift}
@@ -1055,7 +1058,7 @@ is worth $\sim$3\degree\ of orientation at zero position cost ---
 plus the flip-regime Doppler correction $b{=}{-}1.5$\,m/s.
 Together these reach \textbf{1.68\,m\,/\,4.8\degree\ settled and
 1.55\,m\,/\,6.3\degree\ live at $\sim$0.6\,s per window}
-(Table~\ref{tab:sw}; Fig.~\ref{fig:traj_backflips}).  The default RANSAC
+(Table~\ref{tab:sw}; Fig.~\ref{fig:traj}).  The default RANSAC
 prefilter (Sec.~\ref{sec:models})
 is neutral here --- backflip frames are already sparse and mostly fall
 below its five-return floor, so they bypass it --- and the small change
@@ -1107,21 +1110,6 @@ intra-frame motion smearing; we expect adaptive (non-uniform) knot
 placement and per-chirp timestamps to be the relevant levers, which
 we leave to future work.
 
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=\columnwidth]{figures/traj_backflips_best_velocity.pdf}
-  \caption{backflips: MoCap ground truth (solid blue) and SW live edge
-    (dotted orange; consistent prior, soft gate, elevation-bias
-    correction, default RANSAC front-end).  The batch estimate is
-    omitted --- at $\Delta t_o{=}0.8$\,ms it is bistable
-    (Sec.~\ref{sec:backflips}) and the SW live edge is the trustworthy
-    result.  X--Y and Y--Z projections; the vertical backflip maneuvers
-    are visible in the Y--Z plane.  Start marked~$\blacksquare$.
-    The estimate follows the overall donut sweep and altitude; the
-    residual $\sim$6\degree\ live orientation error through flips
-    attenuates the individual loop circles relative to ground truth.}
-  \label{fig:traj_backflips}
-\end{figure}
 
 \subsection{Prior Scale Sensitivity as a Symptom of Inconsistent
 Marginalization}
