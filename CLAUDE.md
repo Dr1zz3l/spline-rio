@@ -150,7 +150,7 @@ python analysis/codegen/derive_jacobians_symforce.py   # Overwrites analysis/cod
 | `lib/imu_preintegration.py` | Forster TRO-2017 on-manifold preintegration (--preintegrate flag) |
 | `codegen/generated_jacobians.py` | SymForce-generated residuals + Jacobians for radar, accel, gyro factors |
 | `lib/rosbag_loader/loader.py` | Unified API to load 7 ROS topics into typed dataclasses |
-| `config/extrinsics.yaml` | Extrinsics: [180, 25.5, 0] deg, translation [0.08, 0.02, -0.01] m |
+| `config/extrinsics.yaml` | Extrinsics: [180, **25.5** (init), 0] deg — SW runs lock **27.5°**; translation [0.08, 0.02, -0.01] m |
 | `config/bags.yaml` | Bag aliases → paths, flipped bag set, per-bag timing windows + solver_overrides |
 | `config/solver.yaml` | Python solver hyperparameters (default) |
 | `config/solver_cpp.yaml` | C++ solver overrides loaded on `--cpp` |
@@ -198,8 +198,11 @@ Regularization: position: minimum-snap (∫||P⁴(t)||² dt);  orientation: angu
 
 ### Coordinate Frames & Calibration
 
-Extrinsic calibration lives in `config/extrinsics.yaml` (single source of truth):
-- **Rotation**: `[roll=180°, pitch=25.5°, yaw=0°]` — solver-calibrated pitch (physical mount 30°, converges to ~27–28°)
+Extrinsic calibration lives in `config/extrinsics.yaml` (pitch 25.5° is now only the
+**batch self-cal init**; deployed runs lock **27.5°** via `--set-ext`):
+- **Rotation**: `[roll=180°, pitch=27.5° frozen, yaw=0°]` — as-built value. Batch self-cal
+  recovers 27.0/27.2° init-independently; frozen at 27.5° for SW (the SW can't observe a
+  1-DOF extrinsic — free pitch drifts to 29.5/34.7/40°). `extrinsics.yaml` keeps 25.5° as init.
 - **Translation**: `[0.08, +0.02, -0.01]` m in body frame
 - Body frame: x=forward, y=left, z=up
 
@@ -248,6 +251,9 @@ works without the flip. The other flipped bags (`circle_fwd`, `loopings`, `backf
 ## Current Results
 
 ### C++ batch (--mocap-yaw --cpp)
+
+> **Pre-RANSAC, Huber front-end — superseded by the RANSAC-default headline below
+> (2026-06-14). Kept for reference; the deployment metric is the SW live edge.**
 
 Per-bag config auto-selected via `bags.yaml` solver_overrides:
 - racing bags: `dt_pos=0.005s, dt_ori=0.008s`

@@ -37,17 +37,17 @@ All frames are right-handed.
 
 ### 1.1 Extrinsic Calibration
 
-The radar is mounted **upside-down** (180° roll) with a ~30° downward tilt.
-All solver computations use (single source of truth: `analysis/config/extrinsics.yaml`):
+The radar is mounted **upside-down** (180° roll) with a downward tilt (30° CAD
+nominal; the 3D-printed, hand-assembled fixture is a few degrees short).
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | Roll  | 180° | upside-down mounting |
-| Pitch | 25.5° | solver-calibrated from 30° physical mount; batch racing bags converge to 27–28° |
+| Pitch | **27.5° (frozen)** | as-built value. Batch self-calibration recovers **27.0°/27.2°** init-independently (from either 25.5° or 30° init); frozen at 27.5° for all sliding-window runs — the SW cannot observe a 1-DOF extrinsic (free pitch drifts init-dependently to 29.5/34.7/40°). `extrinsics.yaml` keeps 25.5° only as the batch self-cal *init*; deployed runs lock 27.5° via `--set-ext`. (2026-06-15 update; old docs said 25.5°.) |
 | Yaw   | 0° | unobservable from Doppler; locked |
 | Translation `t_bs` | `[0.08, +0.02, −0.01]` m | 8 cm fwd, 2 cm left, 1 cm down in body frame |
 
-`R_bs`: rotation from Sensor frame to Body frame (i.e., `R_bs = Rx(180°)·Ry(25.5°)`).
+`R_bs`: rotation from Sensor frame to Body frame (i.e., `R_bs = Rx(180°)·Ry(27.5°)`).
 `t_bs`: translation from body origin to radar antenna center, expressed in body frame.
 
 **Extrinsic observability**: only the pitch angle is observable from Doppler

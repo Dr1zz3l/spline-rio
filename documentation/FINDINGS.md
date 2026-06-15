@@ -19,16 +19,22 @@ User confirmed: radar mounted **upside-down** (180° roll) looking forward, 3D-p
 
 Physical mount: `[180, +30, 0]` (roll, pitch, yaw) = `Rx(180°)·Ry(+30°)`.
 
-**Solver-calibrated value:** pitch self-calibrates to **25.5°** (single source of
-truth: `analysis/config/extrinsics.yaml`).  Racing bags consistently converge to
-27–28° from either 25.5° or 30° init when extrinsic pitch is optimized.
-For current solver use, always load from `extrinsics.yaml`.
+**As-built calibrated value (2026-06-15): 27.5°, frozen.** The full-trajectory
+**batch** solve self-calibrates pitch to **27.0°/27.2°** (slow/fast racing),
+*init-independently* (same estimate from 25.5° or 30° init) — recovering the as-built
+mount angle, a few degrees under the 30° CAD nominal.  This is **frozen at 27.5°** for
+all sliding-window runs: the SW cannot observe a 1-DOF extrinsic per 3 s window (free
+pitch drifts init-dependently to 29.5/34.7/40°), and RMSE is plateau-neutral to pitch.
+`extrinsics.yaml` still holds **25.5°** as the *batch self-cal init only* — it was an
+earlier, too-low config value, now understood to be wrong; deployed runs lock 27.5° via
+`--set-ext`. (Earlier versions of this doc reported 25.5° as the answer.)
 
 The previous value of `[0, +30, 0]` was incorrect — it did not account for the upside-down mounting. The 180° roll was discovered through radar boresight analysis.
 
 ### Extrinsic Accuracy
-- **Pitch (25.5° config / ~30° physical):** 3D-printed mount introduces ±2° uncertainty;
-  solver online pitch optimization absorbs this.  Only pitch is observable from Doppler;
+- **Pitch (27.5° as-built / 30° CAD nominal):** 3D-printed mount introduces ±2° uncertainty;
+  **batch** pitch self-calibration recovers 27.0/27.2° and it is then frozen at 27.5° (the
+  SW does not self-calibrate — it drifts). Only pitch is observable from Doppler;
   roll and yaw are locked (`optimize_pitch_only: true`).
 - **Translation ([0.08, 0.02, -0.01]):** 8 cm forward, 2 cm left, 1 cm down in body frame. Updated from eyeballed 7 cm forward estimate.
 - **Impact of errors:** A 2° pitch error causes ~0.05 m/s systematic Doppler error.
@@ -36,10 +42,10 @@ The previous value of `[0, +30, 0]` was incorrect — it did not account for the
   `RadarDopplerFunctor` in Phase 4b.
 
 ### Current Status
-**Use `analysis/config/extrinsics.yaml` as single source of truth.**
-Solver-calibrated pitch 25.5° is the baseline; the batch optimizer moves it to
-27–28° when extrinsic optimization is enabled.  For flipped bags, additionally
-apply `Rz(180°)` (see Section 11).
+**Deployed extrinsic pitch is frozen at 27.5°** (the as-built value; batch self-cal
+recovers 27.0/27.2° init-independently). `extrinsics.yaml` retains 25.5° only as the
+batch self-cal init; racing/backflips runs lock 27.5° via `--set-ext`. For flipped bags,
+additionally apply `Rz(180°)` (see Section 11).
 
 ---
 
