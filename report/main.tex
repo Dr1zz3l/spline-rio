@@ -266,7 +266,9 @@ accelerometer and forward-integrates gyroscope measurements;
 \textbf{P2} estimates per-frame ego-velocity with WLS and integrates
 to a position trajectory;
 \textbf{P3} builds sensor-only boundary priors at $t=0$.
-MoCap data is loaded only for final RMSE evaluation.
+MoCap supplies only the yaw heading prior (a magnetometer surrogate,
+Sec.~\ref{sec:models}) and the final RMSE evaluation; P1--P3 and the
+position/attitude estimate use no external pose reference.
 
 \begin{figure}[t]
 \centering
@@ -315,7 +317,8 @@ MoCap data is loaded only for final RMSE evaluation.
 the optimizer). Dashed: raw sensor data fed as measurement factors.
 Radar returns first pass a RANSAC ego-velocity prefilter
 (Sec.~\ref{sec:models}) that rejects elevation-biased outliers before
-both P2 and the solver. MoCap used only for RMSE evaluation.}
+both P2 and the solver. MoCap supplies only the yaw heading prior
+(magnetometer surrogate) and RMSE evaluation.}
 \label{fig:pipeline}
 \end{figure}
 
@@ -919,7 +922,12 @@ transfers across both firmware and day.
 A data-health screening (radar frame-rate continuity, IMU/MoCap
 coverage) precedes all held-out evaluation, since several early bags
 contain radar UART dropouts; all evaluation windows lie on healthy
-spans.
+spans.  Each flight condition is a single representative recording: the
+evaluation's breadth comes from these held-out flights, the
+cross-platform validation of Sec.~\ref{sec:baselines}, and the
+deterministic, bit-identical re-runs of Sec.~\ref{sec:sw_results}
+(which preclude run selection) --- not from repeated trials of one
+recording.
 
 \subsection{External Cross-Validation Against EKF Baselines}
 \label{sec:baselines}

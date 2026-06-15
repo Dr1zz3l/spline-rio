@@ -286,8 +286,10 @@ to a position trajectory;
 \textbf{P3} builds sensor-only boundary priors at $t=0$.
 Radar returns first pass the RANSAC ego-velocity prefilter
 (Sec.~\ref{sec:models}) before P2 and the solver; raw IMU and radar are
-also fed directly as measurement factors. MoCap data is loaded only for
-final RMSE evaluation.
+also fed directly as measurement factors. MoCap supplies only the yaw
+heading prior (a magnetometer surrogate, Sec.~\ref{sec:models}) and the
+final RMSE evaluation; the position/attitude estimate uses no external
+pose reference.
 
 %==================================================================
 \section{Methodology}
