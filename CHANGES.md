@@ -1,5 +1,21 @@
 # CHANGES
 
+## Consolidate to T-RO journal version + lean conference version (2026-06-15)
+- Built a T-RO (IEEE Trans. on Robotics) journal version from the full paper:
+  `\documentclass[journal]`, journal title block, abstract trimmed to 197 words
+  (T-RO cap 200), author-bio placeholder, combined full-width trajectory figure
+  ported from `paper/`. Researched + recorded T-RO norms in `report/NOTES.md`.
+- **Retired the old conference-format `report/` and renamed the journal version into
+  `report/`** (they were the same content; no reason to keep both). Now: `report/` =
+  full T-RO journal version (12 pp, within free-to-12); `paper/` = lean 10-page
+  conference cut. `report/` uses `main.tex`; `.gitignore` updated to track report PDFs.
+- **Audited all shared numbers `paper/` vs new `report/`: identical** — SW headline,
+  both ICINS tables, ablations (marginalization 0.412/0.285, window-dur), held-out,
+  extrinsic self-cal 27.0/27.2, b-sweep 0.39→3.2→6.6, radar-contribution, NEES,
+  conclusion, abstract bounds. New `report/` is clean of stale values (no −21%, no
+  offline-ceiling, no 0.46/1.88 slow).
+
+
 ## Post-RANSAC audit fixes + paper/ float trim (2026-06-14)
 
 External audit of the 10-page `paper/` found cross-table inconsistencies left by the

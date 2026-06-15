@@ -1,9 +1,11 @@
-# t-ro/ — IEEE Transactions on Robotics (T-RO) submission version
+# report/ — IEEE Transactions on Robotics (T-RO) submission version
 
-A journal-formatted version of the paper, built from `report/` (the full-detail
-version — its depth is an asset at journal length, not a liability).
+This is the **full journal version** (formerly `t-ro/`; the old conference-format
+`report/` was retired into git history — the two were the same content, so they were
+consolidated here). The depth is an asset at journal length, not a liability.
+The lean 10-page conference cut lives in `paper/`.
 
-Build: `latexmk -pdf main.tex` → `main.pdf` (11 pages).
+Build: `latexmk -pdf main.tex` → `main.pdf` (12 pages, within T-RO's free-to-12 limit).
 
 ## T-RO norms applied (source: ieee-ras.org T-RO Information for Authors, fetched 2026-06)
 - **Class:** `\documentclass[journal]{IEEEtran}`, 10 pt, double-column Transactions layout.

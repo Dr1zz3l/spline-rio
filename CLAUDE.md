@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | Document | Role |
 |----------|------|
 | **CLAUDE.md** (this file) | Operational hub: how to run, current config, current results |
-| `report/IEEE-conference-template-062824.tex` | IEEE conference paper: methodology, ablations, negative results |
+| `report/main.tex` | **T-RO journal submission (full version)**: methodology, ablations, negative results. `paper/` is the lean 10-page conference cut. |
 | `documentation/Forward Model.md` | Math reference: sensor forward models, coordinate frames, Doppler sign convention |
 | `documentation/Backward Model.md` | Math reference: state parameterization (cumulative SO(3) B-spline), factor-graph MAP, Ceres LM, Schur-complement marginalization |
 | `documentation/FINDINGS.md` | Foundational calibration findings: body frame, time offsets, Doppler sign fix (§11), extrinsics |

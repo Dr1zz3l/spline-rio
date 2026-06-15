@@ -44,10 +44,8 @@ build/
 plots/
 
 # Generated figure PDFs (outputs, not source)
-report/figures/*.pdf
 
 # LaTeX build artifacts
-report/*.pdf
 report/*.aux
 report/*.log
 report/*.out
@@ -79,10 +77,3 @@ paper/*.blg
 paper/*.fls
 paper/*.fdb_latexmk
 paper/IEEEtran_HOWTO.pdf
-t-ro/*.aux
-t-ro/*.log
-t-ro/*.out
-t-ro/*.bbl
-t-ro/*.blg
-t-ro/*.fls
-t-ro/*.fdb_latexmk
