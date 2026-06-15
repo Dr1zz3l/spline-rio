@@ -40,16 +40,16 @@
 
 \title{Continuous-Time Radar-Inertial Odometry\\with B-Spline Sliding Window Optimization}
 
-\author{Timo~Weiss%
+\author{Timo~Weiss~and~Lukas~Pries%
 \thanks{Manuscript received Month~XX,~2026; revised Month~XX,~2026.}%
-\thanks{T.~Weiss is with the Department of Informatics, Technical
+\thanks{The authors are with the Department of Informatics, Technical
 University of Munich (TUM), 80333 Munich, Germany (e-mail:
-timo.weiss@tum.de).}%
+timo.weiss@tum.de; lukas.pries@tum.de).}%
 \thanks{Code and datasets are available at
 \protect\url{https://github.com/Dr1zz3l/radar-iwr6843-driver}.}}
 
 \markboth{IEEE Transactions on Robotics,~Vol.~XX, No.~X, Month~2026}%
-{Weiss: Continuous-Time Radar-Inertial Odometry with B-Spline Sliding Window Optimization}
+{Weiss and Pries: Continuous-Time Radar-Inertial Odometry}
 
 \maketitle
 
@@ -228,9 +228,8 @@ selection rule that exploits B-spline local support to make the
 marginal exactly closed (no double counting, no conditioning on
 interior states), and a documented symptom pattern by which the
 inconsistent variant can be recognized (Sec.~\ref{sec:prior_scale}).
-In the discrete-time UAV line, Doer and
-Trommer~\cite{doer2020ekf} and 4D-radar-aided inertial
-navigation define the state of practice.
+In the discrete-time UAV line, the EKF-RIO family of Doer and
+Trommer~\cite{doer2020ekf} defines the state of practice.
 Rather than comparing numbers across papers --- our own quantization
 ablation (Sec.~\ref{sec:heldout}) shows firmware configuration alone
 changes Doppler resolution by $12\times$ --- we cross-validate against
@@ -251,7 +250,8 @@ controller IMU, and a Vicon MoCap system used for ground
 truth evaluation.  The radar is mounted upside-down with a nominal
 $30\degree$ downward tilt (CAD); the mount is 3D-printed and
 hand-assembled, so the as-built angle is uncertain by a few degrees and
-is recovered by online extrinsic calibration (Sec.~\ref{sec:results}).
+is recovered by the batch extrinsic self-calibration
+(Sec.~\ref{sec:results}), then frozen for the sliding window.
 The nominal extrinsic rotation is $[180\degree, 25.5\degree, 0\degree]$
 (roll, pitch, yaw), translation $[0.08, 0.02, -0.01]$\,m in the body
 frame.  The radar operates at $\sim$11\,Hz with 0.049\,m/s Doppler
@@ -373,7 +373,8 @@ predicted Doppler for a point at sensor-frame bearing $\vu_s$ is:
 \end{equation}
 where $\vu_b = \vR_{bs}\,\vu_s$, $\vR_{bs}$ is the rotation from
 radar sensor to body frame (extrinsic $[\text{roll}{=}180\degree,\,
-\text{pitch}{=}25.5\degree,\,\text{yaw}{=}0\degree]$), and
+\text{pitch}{=}27.5\degree,\,\text{yaw}{=}0\degree]$; calibrated,
+Sec.~\ref{sec:results}), and
 $\vR_{bw} = \vR_{wb}^{\top}$.  The residual
 $r_k = v_{D,\text{meas}} - v_{D,\text{pred}}$ uses Huber
 loss with $\delta = 1.0$\,m/s --- robust, as defense-in-depth, to any
@@ -1464,13 +1465,18 @@ Doppler on an aggressive platform.
 \bibliographystyle{IEEEtran}
 \bibliography{references}
 
-% Author biography (<=100 words; required for the final accepted version,
-% optional for initial submission). Replace with degrees/dates as appropriate.
+% Author biographies (<=100 words each; required for the final accepted version,
+% optional for initial submission). Replace with degrees/dates/photos as appropriate.
 \begin{IEEEbiographynophoto}{Timo Weiss}
 is with the Technical University of Munich (TUM), Munich, Germany. His
 research interests include radar-inertial odometry, continuous-time
 state estimation on Lie groups, and aerial robotics in
 perception-degraded conditions.
+\end{IEEEbiographynophoto}
+
+\begin{IEEEbiographynophoto}{Lukas Pries}
+is with the Technical University of Munich (TUM), Munich, Germany, where
+he supervises research in radar perception and autonomous aerial systems.
 \end{IEEEbiographynophoto}
 
 \end{document}

@@ -10,6 +10,8 @@ No re-running required — uses stored sweep values.
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
+matplotlib.rcParams['pdf.fonttype'] = 42  # TrueType, not Type 3 (IEEE PDF eXpress)
+matplotlib.rcParams['ps.fonttype'] = 42
 import matplotlib.pyplot as plt
 from pathlib import Path
 
