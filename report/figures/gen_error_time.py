@@ -49,7 +49,7 @@ matplotlib.rcParams.update({
 C_BATCH = '#d62728'
 C_LIVE  = 'darkorange'
 
-fig, axes = plt.subplots(len(BAGS), 3, figsize=(13, 4.5 * len(BAGS)))
+fig, axes = plt.subplots(len(BAGS), 3, figsize=(13, 3.2 * len(BAGS)))
 if len(BAGS) == 1:
     axes = axes[np.newaxis, :]
 
@@ -99,7 +99,6 @@ for row, (bag_key, bag_label) in enumerate(BAGS):
     ax_pos.set_xlabel('Time (s)')
     ax_pos.set_ylabel('Position error (m)')
     ax_pos.set_title(f'{bag_label} — position')
-    ax_pos.legend(loc='upper left')
     ax_pos.grid(True, alpha=0.3)
     ax_pos.set_ylim(bottom=0)
 

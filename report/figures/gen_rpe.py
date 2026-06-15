@@ -67,13 +67,13 @@ C = {
 }
 
 matplotlib.rcParams.update({
-    # authored ~11in, displayed ~3.45in (~0.31x); fonts sized for ~9-10pt on page
-    'font.size':       28,
-    'axes.labelsize':  28,
-    'axes.titlesize':  27,
-    'xtick.labelsize': 23,
-    'ytick.labelsize': 23,
-    'legend.fontsize': 22,
+    # authored ~11in, displayed ~3.45in (~0.31x); fonts sized for ~7-9pt on page
+    'font.size':       20,
+    'axes.labelsize':  20,
+    'axes.titlesize':  20,
+    'xtick.labelsize': 17,
+    'ytick.labelsize': 17,
+    'legend.fontsize': 16,
     'lines.linewidth': 2.0,
     'figure.dpi':      150,
 })
@@ -208,8 +208,8 @@ for bag_key, label in RACING_BAGS:
                 label=f'{label} SW live')
 
 ax.set_xlabel('Segment length (m)')
-ax.set_ylabel('Translational error (% of segment length)')
-ax.set_title('Racing maneuvers — KITTI translational RPE')
+ax.set_ylabel('RPE (% of segment)')
+ax.set_title('Racing')
 ax.legend(loc='upper right')
 ax.grid(True, alpha=0.3)
 ax.set_ylim(bottom=0)
@@ -226,8 +226,8 @@ if d is not None:
             label=f'{label} batch')
 
 ax.set_xlabel('Segment length (m)')
-ax.set_ylabel('Translational error (% of segment length)')
-ax.set_title('Backflips — KITTI translational RPE')
+ax.set_ylabel('RPE (% of segment)')
+ax.set_title('Backflips')
 ax.legend(loc='upper right')
 ax.grid(True, alpha=0.3)
 ax.set_ylim(bottom=0)

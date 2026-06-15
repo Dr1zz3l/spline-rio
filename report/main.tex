@@ -779,10 +779,10 @@ Fig.~\ref{fig:error_time} shows the corresponding error timeseries.
   (consistent unscaled prior; per-window solve time on a laptop CPU)}
 \label{tab:sw}
 \small
-\setlength{\tabcolsep}{3.0pt}
+\setlength{\tabcolsep}{2.5pt}
 \begin{tabular}{@{}llccccc@{}}
 \toprule
-Bag & Mode & Vel (m/s) & Ori (\degree) & Pos (m) & Drift (\%) & $t_{\mathrm{win}}$ (s) \\
+Bag & Mode & Vel (m/s) & Ori (\degree) & Pos (m) & Drift\% & $t_{\mathrm{win}}$(s) \\
 \midrule
 \multirow{2}{*}{Slow racing}
   & Settled & 0.39 & 1.54 & 0.287 & 0.60 & \multirow{2}{*}{0.70} \\
@@ -1022,7 +1022,7 @@ This is the design-space split: their stack is engineered for dense
 clouds, hardware triggering, and a low-vibration carrier; ours for
 sparse, finely quantized Doppler on an aggressive platform.
 
-\begin{table}[t]
+\begin{table*}[t]
 \caption{Cross-validation on the public ICINS-2021 flight datasets
 \cite{doer2021yrio}.  All systems evaluated with our causal protocol
 (live estimate, start-anchored alignment): position RMSE [m] /
@@ -1033,7 +1033,7 @@ heading-independent and per-axis structure.}
 \label{tab:baselines}
 \centering
 \footnotesize
-\setlength{\tabcolsep}{3.5pt}
+\setlength{\tabcolsep}{8pt}
 \begin{tabular}{lccc}
 \toprule
 Flight (path) & ekf-rio & ekf-yrio & Ours \\
@@ -1044,7 +1044,7 @@ Flight (path) & ekf-rio & ekf-yrio & Ours \\
 4 (78\,m)  & 0.39 / 0.09 / 3.67 / 0.5 & \textbf{0.22} / \textbf{0.07} / 1.41 / \textbf{0.3} & 0.92 / 0.07 / \textbf{1.13} / 1.2 \\
 \bottomrule
 \end{tabular}
-\end{table}
+\end{table*}
 
 \begin{table*}[t]
 \caption{Decomposition of the Table~\ref{tab:baselines} cross-validation, making the
@@ -1109,6 +1109,7 @@ Table~\ref{tab:ablations} summarizes key design choices.
 \caption{Selected Ablation Results (batch solver, slow\_racing unless noted)}
 \label{tab:ablations}
 \small
+\setlength{\tabcolsep}{4pt}
 \begin{tabular}{@{}lcc@{}}
 \toprule
 Configuration & Pos (m) & Ori (\degree) \\
@@ -1323,7 +1324,7 @@ plots the orientation sweep.
 \caption{Prior Scale Sensitivity (SW, live-edge RMSE)}
 \label{tab:prior_scale}
 \small
-\setlength{\tabcolsep}{4pt}
+\setlength{\tabcolsep}{3pt}
 \begin{tabular}{@{}lcccc@{}}
 \toprule
 \texttt{scale} & \multicolumn{2}{c}{Slow racing} & \multicolumn{2}{c}{Fast racing} \\
@@ -1335,9 +1336,9 @@ $10^{-6}$                                & 0.442 & 2.21$^*$ & 0.951 & 3.57 \\
 $\bm{10^{-7}}$ \textbf{(slow default)}  & \textbf{0.338} & \textbf{2.08} & 1.279 & 3.57 \\
 $10^{-8}$                                & 0.336 & 2.08 & 1.344 & 3.57 \\
 \bottomrule
-\multicolumn{5}{l}{$^*$Orientation local maximum: 2.21\degree\ $>$ 2.16\degree\ (2e-4) and
-  2.08\degree\ (1e-7).}\\
-\multicolumn{5}{l}{---: scale not evaluated for this bag.}\\
+\multicolumn{5}{@{}p{\columnwidth}@{}}{\scriptsize $^*$Orientation
+  local maximum: 2.21\degree\ $>$ 2.16\degree\ (2e-4) and
+  2.08\degree\ (1e-7).  ---: scale not evaluated for this bag.}\\
 \multicolumn{5}{@{}p{\columnwidth}@{}}{\scriptsize Measured under the
   inconsistent-prior diagnostic configuration (predates the RANSAC
   default); the sensitivity \emph{pattern}, not the absolutes, is the

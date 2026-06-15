@@ -19,13 +19,13 @@ OUT_DIR = Path(__file__).parent
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 matplotlib.rcParams.update({
-    # authored ~9in, displayed ~3.45in (~0.38x); fonts sized for ~9-10pt on page
-    'font.size':       24,
-    'axes.labelsize':  24,
-    'axes.titlesize':  23,
-    'xtick.labelsize': 20,
-    'ytick.labelsize': 20,
-    'legend.fontsize': 19,
+    # authored ~9in, displayed ~3.45in (~0.38x); fonts sized for ~7-8pt on page
+    'font.size':       18,
+    'axes.labelsize':  17,
+    'axes.titlesize':  18,
+    'xtick.labelsize': 15,
+    'ytick.labelsize': 15,
+    'legend.fontsize': 14,
     'lines.linewidth': 2.0,
     'figure.dpi':      150,
 })
@@ -59,9 +59,9 @@ ax_ori.text(2.5e-6, slow_ori.min() + (slow_ori.max() - slow_ori.min()) * 0.1,
 ax_ori.axvline(1e-7, color=C_SLOW, lw=0.8, linestyle=':', alpha=0.6)
 ax_ori.axvline(2e-4, color=C_FAST, lw=0.8, linestyle=':', alpha=0.6)
 ax_ori.set_xlabel('marg_prior_scale')
-ax_ori.set_ylabel('Live-edge orientation RMSE (°)')
-ax_ori.set_title('Orientation RMSE vs. prior scale')
-ax_ori.legend(loc='upper right')
+ax_ori.set_ylabel('Orientation RMSE (°)')
+ax_ori.set_title('Orientation')
+ax_ori.legend(loc='center right')
 ax_ori.grid(True, alpha=0.3, which='both')
 
 # --- Position panel: dual y-axes for legibility ---
@@ -73,15 +73,15 @@ ax2.semilogx(fast_scales, fast_pos, 's--', color=C_FAST,
 ax_pos.axvline(1e-7, color=C_SLOW, lw=0.8, linestyle=':', alpha=0.6)
 ax_pos.axvline(2e-4, color=C_FAST, lw=0.8, linestyle=':', alpha=0.6)
 ax_pos.set_xlabel('marg_prior_scale')
-ax_pos.set_ylabel('Live-edge pos. RMSE — Slow racing (m)', color=C_SLOW)
-ax2.set_ylabel('Live-edge pos. RMSE — Fast racing (m)', color=C_FAST)
+ax_pos.set_ylabel('Slow pos. RMSE (m)', color=C_SLOW)
+ax2.set_ylabel('Fast pos. RMSE (m)', color=C_FAST)
 ax_pos.tick_params(axis='y', labelcolor=C_SLOW)
 ax2.tick_params(axis='y', labelcolor=C_FAST)
-ax_pos.set_title('Position RMSE vs. prior scale')
+ax_pos.set_title('Position')
 # Combined legend
 lines1, labs1 = ax_pos.get_legend_handles_labels()
 lines2, labs2 = ax2.get_legend_handles_labels()
-ax_pos.legend(lines1 + lines2, labs1 + labs2, loc='upper left', fontsize=9)
+ax_pos.legend(lines1 + lines2, labs1 + labs2, loc='upper center', fontsize=9)
 ax_pos.grid(True, alpha=0.3, which='both')
 
 fig.tight_layout()
