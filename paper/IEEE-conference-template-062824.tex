@@ -54,45 +54,31 @@ radar (10--60 points per frame) and a 1\,kHz IMU, evaluated through
 aggressive racing and attitude-tumbling flight up to
 \SI{10}{\radian\per\second} --- a regime in which the radar
 measurement model itself degrades and which existing RIO evaluations
-do not cover.  The state trajectory is represented in continuous time
-as a quintic position B-spline and a cumulative SO(3) orientation
-B-spline, enabling asynchronous sensor fusion and closed-form
-trajectory derivatives.  Optimization is performed by a fixed-lag
-smoother with Schur complement marginalization, running at a 0.3\,s
-stride over a 3\,s sliding window.  A sensor-only initialization
-pipeline (gyro integration for orientation, radar dead-reckoning for
-position) requires no external \emph{pose} reference.
-Yaw requires a magnetometer (standard on most platforms); here MoCap
-yaw serves that role.
-
-Radar Doppler measures velocity directly; RIO is therefore evaluated
-as a \emph{velocity and orientation} provider intended for fusion with
-position-fixing sensors (GPS, VIO, or SLAM), and position error is
-reported as drift per distance traveled --- the witness of velocity
-bias.
-A Markov-blanket factor-selection rule makes the marginalization a
-true marginal, eliminating prior-weight tuning across flight regimes.
-A single \emph{dynamics-adaptive measurement weighting law} ---
-rate-adaptive gyroscope trust, rate-dependent radar and
-accelerometer noise inflation, and per-point SNR weighting ---
-covers hover to \SI{10}{\radian\per\second} tumbling with one
-configuration, validated on held-out flights never used for tuning.
-At the \emph{live leading edge} --- the estimate a deployed system
-would emit --- velocity and orientation RMSE stay below
-\SI{0.5}{\metre\per\second} and \SI{3}{\degree} across
-gentle-to-aggressive racing, in real time on a laptop, with position
-drift under \SI{1}{\percent} of distance traveled; attitude-tumbling
-backflips, which expose radar systematics invisible in level flight,
-degrade gracefully to \SI{2.9}{\percent}\,/\,\SI{6.3}{\degree}.
-The output orientation covariance is near-calibrated
-(NEES-consistent on racing flights), supporting use as a factor source
-in a larger fusion graph.
-We further document negative results, including a diagnostic symptom
-pattern for marginalization inconsistency, a representation-level
-analysis that disproves the adaptive-knot-density hypothesis for this
-regime, and the finding that the apparent radar elevation bias under
-tumbling is a flight-regime error proxy rather than a physical
-antenna constant.
+do not cover.  The trajectory is represented in continuous time as a
+quintic position B-spline and a cumulative SO(3) orientation B-spline,
+optimized by a fixed-lag smoother with Schur complement marginalization
+at a 0.3\,s stride over a 3\,s window.  A sensor-only pipeline
+initializes the estimate without external \emph{pose} reference (yaw
+requires a magnetometer, here emulated by MoCap).  Because Doppler
+measures velocity directly, we evaluate RIO as a \emph{velocity and
+orientation} provider for fusion with position-fixing sensors (GPS,
+VIO, or SLAM), reporting position as drift per distance.  A
+Markov-blanket factor-selection rule makes the marginalization a true
+marginal, removing per-regime prior tuning, and a single
+dynamics-adaptive measurement-weighting law --- rate-adaptive gyroscope
+trust, rate-dependent radar and accelerometer noise inflation, and
+per-point SNR weighting --- covers hover to \SI{10}{\radian\per\second}
+with one configuration, validated on held-out flights.  At the live
+leading edge, velocity and orientation RMSE stay below
+\SI{0.5}{\metre\per\second} and \SI{3}{\degree} across racing (position
+drift under \SI{1}{\percent}, in real time on a laptop) and degrade
+gracefully to \SI{2.9}{\percent}\,/\,\SI{6.3}{\degree} under tumbling;
+the output orientation covariance is NEES-consistent, supporting use as
+a factor source in a larger fusion graph.  We also document negative
+results: a diagnostic for marginalization inconsistency, a
+representation-level analysis disproving the adaptive-knot-density
+hypothesis, and the finding that the tumbling elevation bias is a
+flight-regime proxy, not an antenna constant.
 \end{abstract}
 
 \begin{IEEEkeywords}
