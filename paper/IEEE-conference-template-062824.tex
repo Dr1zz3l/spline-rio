@@ -852,8 +852,6 @@ Flight & ekf-rio & ekf-yrio & Ours & horiz.\ & vert.\ & ekf-rio & ekf-yrio & Our
 3 & 0.25 & 0.26 & 0.27 & 0.30 & 1.28 & 0.36 & 0.26 & 0.76 \\
 4 & 0.74 & 0.74 & 0.74 & 0.26 & 1.15 & 0.30 & 0.15 & 0.46 \\
 \bottomrule
-\addlinespace[2pt]
-\multicolumn{9}{l}{\footnotesize Prefilter \emph{disabled} (Huber-only): our vertical drift $12$--$15\%$; whole-traj.\ ATE $9.57/2.88/10.86/5.48$\,m (flights~1--4).}\\
 \end{tabular}}%
 \dimen0=\wd0 \ifdim\wd2>\dimen0 \dimen0=\wd2 \fi
 \makebox[\dimen0][c]{\usebox0}
@@ -861,6 +859,12 @@ Flight & ekf-rio & ekf-yrio & Ours & horiz.\ & vert.\ & ekf-rio & ekf-yrio & Our
 \vspace{5pt}
 
 \makebox[\dimen0][c]{\usebox2}
+
+\vspace{2pt}
+
+% Footnote kept out of the tabular so its length cannot stretch the last
+% column; wrapped to the shared table width instead.
+\parbox{\dimen0}{\raggedright\footnotesize Prefilter \emph{disabled} (Huber-only): our vertical drift $12$--$15\%$; whole-traj.\ ATE $9.57/2.88/10.86/5.48$\,m (flights~1--4).\par}
 \end{table*}
 
 \subsection{Output Covariance Consistency (NEES)}
