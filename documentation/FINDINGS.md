@@ -19,18 +19,22 @@ User confirmed: radar mounted **upside-down** (180° roll) looking forward, 3D-p
 
 Physical mount: `[180, +30, 0]` (roll, pitch, yaw) = `Rx(180°)·Ry(+30°)`.
 
-**As-built calibrated value (2026-06-15): 27.5°, frozen.** The full-trajectory
-**batch** solve self-calibrates pitch to **27.0°/27.2°** (slow/fast racing) *from the
-legacy 25.5° init* — a few degrees under the 30° CAD nominal.  **The batch pitch self-cal
-is init-DEPENDENT** (2026-06-24 sweep, BOTH racing bags): the converged value tracks the
-init — 20°→16°, 23°→22°, 25.5°→27°, 27.5°→31°, 30°→36°, 33°→42° — diverging from a saddle
-near ~23°.  So the earlier "init-independent recovery" claim was **WRONG** (it was in the
-paper; now retracted in paper+report). 27° is just where the legacy 25.5° init lands, not
-a uniquely recovered angle.  Freezing rests on the pitch being **weakly observable** (the
-position RMSE is a shallow plateau — slow 0.19–0.33 m, fast ~flat 0.69–0.73 m across pitch
-16–42°), not on recovery.  This is **frozen at 27.5°** for all sliding-window runs: the SW
-likewise cannot observe a 1-DOF extrinsic per 3 s window (free pitch drifts init-dependently
-to 29.5/34.7/40°).
+**As-built pitch (2026-06-24): physically MEASURED at 27–28°, frozen at 27.5°.**
+Inclinometer on the radar face (reference surface 0°), on the **v1 mount**. Independently
+corroborated by the batch self-cal on the flight data (**27.0°/27.2°** slow/fast). A few
+degrees under the 30° CAD nominal (3D-printed, hand-assembled). **Two mounts:** v1 (Dec-2025
+flights: circle/loopings/Dec-backflips) and v2 (Mar-2026 *headline* flights: slow/fast_racing,
+backflips_best_velocity) are mechanically identical — v2 only adds radar crash protection,
+same tilt. So the inclinometer measures v1, the self-cal measures v2, and both agree on ≈27.5°.
+
+**The self-cal alone is init-DEPENDENT** (2026-06-24 sweep, BOTH racing bags): converged pitch
+tracks the init — 20°→16°, 23°→22°, 25.5°→27°, 27.5°→31°, 30°→36°, 33°→42°, saddle ~23°. So
+the OLD "init-independent recovery" claim was **WRONG** (retracted in paper+report). Pitch is
+weakly observable (orientation RMSE pitch-flat; position RMSE prefers LOWER pitch, bag-dependent
+optimum slow~25°/fast~22° → an error sponge, NOT geometry — do **not** MoCap-tune it). The
+**physical measurement**, not the solver, anchors 27.5°. `extrinsics.yaml` keeps 25.5° only as
+the batch self-cal *seed* (a stale early self-cal output; do NOT change it — reseeding to 27.5°
+makes the free-pitch batch land at ~31°). SW likewise can't observe it (free pitch → 29.5/34.7/40°).
 `extrinsics.yaml` still holds **25.5°** as the *batch self-cal init only* — it was an
 earlier, too-low config value, now understood to be wrong; deployed runs lock 27.5° via
 `--set-ext`. (Earlier versions of this doc reported 25.5° as the answer.)

@@ -43,7 +43,7 @@ nominal; the 3D-printed, hand-assembled fixture is a few degrees short).
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | Roll  | 180° | upside-down mounting |
-| Pitch | **27.5° (frozen)** | Batch self-cal yields **27.0°/27.2°** *from the legacy 25.5° init only* — it is init-DEPENDENT, NOT init-independent (2026-06-24 sweep: 25.5°→27°, 30°→36°, 33°→42° on both racing bags). Pitch is weakly observable (position RMSE a shallow plateau), so it is frozen at 27.5° for all sliding-window runs rather than estimated; the SW likewise drifts (free pitch → 29.5/34.7/40°). `extrinsics.yaml` keeps 25.5° only as the batch self-cal *init*; deployed runs lock 27.5° via `--set-ext`. (2026-06-24: "init-independent recovery" claim retracted, was wrong.) |
+| Pitch | **27.5° (frozen)** | **Physically MEASURED at 27–28°** (inclinometer on radar face, ref surface 0°, v1 mount), corroborated by batch self-cal on flight data (**27.0°/27.2°**). The physical measurement anchors it — the self-cal alone is **init-DEPENDENT** (2026-06-24 sweep: 25.5°→27°, 30°→36°, 33°→42° on both racing bags), so freeze, don't estimate. A few degrees under the 30° CAD nominal. `extrinsics.yaml` keeps 25.5° only as the batch self-cal *seed* (stale early output, don't change); deployed runs lock 27.5° via `--set-ext`. (2026-06-24: old "init-independent recovery" claim retracted, was wrong.) |
 | Yaw   | 0° | unobservable from Doppler; locked |
 | Translation `t_bs` | `[0.08, +0.02, −0.01]` m | 8 cm fwd, 2 cm left, 1 cm down in body frame |
 

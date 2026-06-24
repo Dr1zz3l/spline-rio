@@ -1,7 +1,7 @@
 # Radar-to-body extrinsics
 # Body frame: x=forward, y=left, z=up
 # rotation_euler_deg: [roll, pitch, yaw] in degrees
-rotation_euler_deg: [180.0, 25.5, 0.0]   # 180 deg roll, ~25.5 deg down-pitch (solver-calibrated from 30° physical), no yaw
+rotation_euler_deg: [180.0, 25.5, 0.0]   # 180 roll, no yaw. pitch 25.5 = stale batch self-cal SEED only (do NOT change: reseeding shifts the free-pitch batch). As-built pitch MEASURED 27-28deg (inclinometer); deployed runs LOCK 27.5 via --set-ext.
 translation_body_m: [0.08, 0.02, -0.01]   # 2 cm left (+y), 1 cm down (-z) (confirmed correct, except maybe 180deg yaw flip around drone coordinates)
 
 
