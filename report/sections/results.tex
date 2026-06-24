@@ -4,8 +4,8 @@
 \subsection{Batch Solver and Extrinsic Pitch}
 We use the full-trajectory C++ batch solve as an offline full-batch
 reference; offline it reaches
-\SI{0.20}{\metre}\,/\,\SI{1.0}{\degree} on slow racing and
-\SI{0.73}{\metre}\,/\,\SI{2.5}{\degree} on fast (the dense racing
+\SI{0.20}{\metre}\,/\,\SI{1.1}{\degree} on slow racing and
+\SI{0.64}{\metre}\,/\,\SI{2.5}{\degree} on fast (the dense racing
 $\Delta t_p$ over-fits fast racing, where the coarser sliding window
 does better).
 The radar-to-body pitch is a fixed mount angle, measured at
@@ -37,16 +37,16 @@ shown for reference (dashed) in the \ac{rpe} curves (\autoref{fig:rpe}).
 Bag & Mode & Vel (m/s) & Ori (\degree) & Pos (m) & Drift\% & $t_{\mathrm{win}}$(s) \\
 \midrule
 \multirow{2}{*}{Slow racing}
-  & Settled & 0.39 & 1.54 & 0.287 & 0.60 & \multirow{2}{*}{0.70} \\
-  & \textbf{Live edge} & \textbf{0.45} & \textbf{1.94} & \textbf{0.304} & \textbf{0.63} & \\
+  & Settled & 0.42 & 1.53 & 0.293 & 0.61 & \multirow{2}{*}{0.70} \\
+  & \textbf{Live edge} & \textbf{0.48} & \textbf{1.97} & \textbf{0.310} & \textbf{0.64} & \\
 \midrule
 \multirow{2}{*}{Fast racing}
-  & Settled & 0.24 & 2.31 & 0.285 & 0.63 & \multirow{2}{*}{0.35} \\
-  & \textbf{Live edge} & \textbf{0.32} & \textbf{2.84} & \textbf{0.389} & \textbf{0.86} & \\
+  & Settled & 0.25 & 2.35 & 0.312 & 0.69 & \multirow{2}{*}{0.35} \\
+  & \textbf{Live edge} & \textbf{0.32} & \textbf{2.88} & \textbf{0.399} & \textbf{0.88} & \\
 \midrule
 \multirow{2}{*}{Backflips\textsuperscript{$\ddagger$}}
-  & Settled & 3.47\textsuperscript{$\ast$} & 4.82 & 1.683 & 3.11 & \multirow{2}{*}{0.6} \\
-  & \textbf{Live edge} & \textbf{2.35} & \textbf{6.26} & \textbf{1.554} & \textbf{2.87} & \\
+  & Settled & 3.47\textsuperscript{$\ast$} & 5.01 & 1.674 & 3.09 & \multirow{2}{*}{0.6} \\
+  & \textbf{Live edge} & \textbf{2.35} & \textbf{6.35} & \textbf{1.545} & \textbf{2.85} & \\
 \bottomrule
 \multicolumn{7}{@{}p{\columnwidth}@{}}{\scriptsize
   All bags use the unscaled consistent marginalization prior
@@ -80,9 +80,8 @@ $\Delta t_p$ from 5\,ms to 40\,ms for aggressive flight (which
 \emph{also} drops the LM iteration count from 28 to 11 and slightly
 improves orientation), and warm-start alignment removing the
 live-edge seam.  For a mapping-oriented profile (full iterations,
-no warm-start alignment) slow racing reaches
-0.314\,m\,/\,1.12\degree\ settled (yaw 0.56\degree) at 2.1\,s per
-window.
+no warm-start alignment) slow racing settles to 1.14\degree\
+orientation (yaw 0.61\degree) at 2.1\,s per window.
 
 \begin{figure*}[t]
   \centering
@@ -114,9 +113,9 @@ window.
 function of segment length for racing bags (batch and SW live) and
 backflips (batch only).  At longer segments ($\geq 20$\,m) the global
 B-spline smoother reduces error sharply: slow racing batch reaches
-\SI{1.12}{\percent} at 20\,m and \SI{0.43}{\percent} at 40\,m; fast
-racing stabilises at $\approx$\SI{3.2}{\percent} beyond 20\,m.  At
-short segments ($\leq$10\,m) errors are larger (3--7\% for racing)
+\SI{1.08}{\percent} at 20\,m and \SI{1.02}{\percent} at 40\,m; fast
+racing stabilises at $\approx$\SI{2.2}{\percent} beyond 20\,m.  At
+short segments ($\leq$10\,m) errors are larger (3--8\% for racing)
 because the 11\,Hz radar provides only a handful of Doppler
 measurements per segment and the global optimizer cannot smooth over
 sub-second intervals.  This is a fundamental constraint of the
@@ -139,23 +138,24 @@ complementary view.
 
 \subsection{Radar Contribution}
 Radar is essential.  Disabling it (\texttt{-{}-no-radar}) collapses the
-live-edge estimate to \ac{imu} dead-reckoning: position drifts 6.4\% (slow)
-and 15.3\% (fast) of distance and velocity \ac{rmse} rises to 2.0 and
-1.7\,m/s as double-integrated accelerometer noise accumulates unbounded.
+live-edge estimate to \ac{imu} dead-reckoning: position drift balloons to
+5.9\% on slow racing and diverges entirely on fast racing
+($>$90\% of distance), with velocity \ac{rmse} rising to 2.4 and
+8.0\,m/s as double-integrated accelerometer noise accumulates unbounded.
 The direct Doppler velocity constraints bound this to the
-\autoref{tab:sw} figures (0.6--0.9\% drift, 0.32--0.45\,m/s velocity)
---- roughly an order-of-magnitude reduction in both.  Orientation
-improves more modestly, from 7.6\degree/6.8\degree\ (\ac{imu}-only) to
-1.9\degree/2.8\degree, the 1\,kHz gyroscope already constraining it.
+\autoref{tab:sw} figures (0.6--0.9\% drift, 0.32--0.48\,m/s velocity)
+--- one-to-two orders of magnitude lower.  Orientation
+improves more modestly, from 8.9\degree/4.0\degree\ (\ac{imu}-only) to
+2.0\degree/2.9\degree, the 1\,kHz gyroscope already constraining it.
 
 \subsection{Held-Out Validation}
 \label{sec:heldout}
 All tuning used three bags (slow/fast racing, backflips); the final
 configuration was then run \emph{unmodified} on flights never used for
 any decision.  A second, independent fast-racing flight reaches
-0.37\,m\,/\,2.81\degree\ live (vs.\ 0.39\,m\,/\,2.84\degree\ on the
+0.37\,m\,/\,2.81\degree\ live (vs.\ 0.40\,m\,/\,2.88\degree\ on the
 tuning bag), and a circular trajectory reaches
-0.88\,m\,/\,4.01\degree\ live.
+0.90\,m\,/\,3.77\degree\ live.
 Five additional stress-tier bags from an earlier recording day use an
 older radar firmware with $12\times$ coarser Doppler quantization
 (0.604 vs.\ 0.049\,m/s), partially unusable accelerometer axes, and
@@ -390,13 +390,13 @@ Configuration & Pos (m) & Ori (\degree) \\
 \quad Min-$\alpha$, $\lambda_\alpha{=}1.0$ & 2.069 & 83.8 \\
 \midrule
 \multicolumn{3}{l}{\textit{SW window dur.\ (slow\_racing SW, settled / live edge)}} \\
-\quad 1.5\,s & 0.284 / 0.292 & 1.40 / 1.90 \\
-\quad \textbf{3.0\,s (default)} & \textbf{0.286 / 0.303} & \textbf{1.49 / 1.88} \\
-\quad 5.0\,s & 0.307 / 0.336 & 1.43 / 1.92 \\
+\quad 1.5\,s & 0.292 / 0.299 & 1.51 / 2.01 \\
+\quad \textbf{3.0\,s (default)} & \textbf{0.293 / 0.310} & \textbf{1.53 / 1.97} \\
+\quad 5.0\,s & 0.313 / 0.341 & 1.49 / 2.03 \\
 \midrule
 \multicolumn{3}{l}{\textit{Marginalization (fast\_racing SW, settled)}\textsuperscript{\ddag}} \\
-\quad None (boundary prior only) & 0.412 & 2.66 \\
-\quad \textbf{Schur complement} & \textbf{0.285} & \textbf{2.31} \\
+\quad None (boundary prior only) & 0.412 & 2.71 \\
+\quad \textbf{Schur complement} & \textbf{0.312} & \textbf{2.35} \\
 \midrule
 \multicolumn{3}{l}{\textit{Extrinsic optimization (slow\_racing batch)}\textsuperscript{\S}} \\
 \quad \textbf{Pitch $\delta$ optimized (default)} & \textbf{0.169} & \textbf{1.02} \\
@@ -407,7 +407,9 @@ Configuration & Pos (m) & Ori (\degree) \\
   design choice at a fixed pre-\ac{ransac} operating point; the \ac{ransac} default
   shifts batch absolutes (e.g.\ slow batch 0.169$\to$0.198\,m) without
   changing orderings.  The SW rows (window duration, marginalization)
-  are under the \ac{ransac} default.
+  are under the \ac{ransac} default.  All runs use the sensor-only init
+  (\autoref{sec:init}); the bias seed shifts batch absolutes comparably,
+  again without changing orderings.
   \textsuperscript{\dag}Lever arm disabled for isolation; see Lever-arm rows
   for the current default (0.169\,m/1.02\degree).
   \textsuperscript{\ddag}Marginalization shown for \texttt{fast\_racing}; on
@@ -427,14 +429,14 @@ Lever-arm correction helps racing ($8$--$11\%$ position) but has
 negligible effect on backflips: at $\Delta t_o{=}0.8$\,ms the dense
 spline absorbs the $|\bm{\omega}{\times}\mathbf{t}_{bs}|\approx1$\,m/s
 term through orientation DoF.
-Schur marginalization reduces fast-racing settled position by 31\%
-(0.412\,m $\to$ 0.285\,m); for slow racing the optimal prior scale is
+Schur marginalization reduces fast-racing settled position by 24\%
+(0.412\,m $\to$ 0.312\,m); for slow racing the optimal prior scale is
 $10^{-7}$ (near-zero), so both variants give equivalent results ---
 the benefit is captured in \autoref{tab:prior_scale} instead.
-Window duration has little effect on slow racing (live 0.29--0.34\,m
-across 1.5--5\,s); on fast racing a 3\,s window modestly improves the
-live edge over 2\,s ($0.44\to0.39$\,m, $2.9\to2.8\degree$), so 3\,s is
-the default --- balancing latency against accuracy.
+Window duration has little effect on slow racing (live 0.30--0.34\,m
+across 1.5--5\,s); on fast racing a 3\,s window modestly beats a 2\,s
+one (a confirmed observability limit, \autoref{sec:backflips}), so 3\,s
+is the default --- balancing latency against accuracy.
 We lock pitch at its measured value for all sliding-window runs; even
 in the batch ablation, locking is marginally better than freeing it
 (0.157 vs.\ 0.169\,m on slow racing), consistent with the pitch being

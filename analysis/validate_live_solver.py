@@ -1247,6 +1247,11 @@ def main():
     USE_GNC = '--gnc' in sys.argv
     USE_CPP = '--cpp' in sys.argv
     USE_SLIDING_WINDOW = '--sliding-window' in sys.argv
+    # Accel-bias init is SENSOR-ONLY by default (gravity-aligned scalar
+    # correction during the stationary segment; no external attitude).
+    # --mocap-accel-bias re-enables the legacy MoCap-attitude full-3D seed
+    # (which changes headline live-edge metrics by <=5%; see REVIEW_RESPONSE).
+    MOCAP_ACCEL_BIAS = '--mocap-accel-bias' in sys.argv
     # Whole-trajectory Umeyama SE(3) alignment for the settled metrics instead of
     # the default causal start-anchored SE(3). Reported alongside the causal numbers
     # so baselines can be cross-checked against EVO/KITTI-aligned published figures.
@@ -1491,10 +1496,14 @@ def main():
         bag_data.imu_data,
         mocap_times=_mc_times_full,
         mocap_velocities=_mc_vels_full,
-        mocap_orientations=_mc_rots_full,
+        mocap_orientations=(_mc_rots_full if MOCAP_ACCEL_BIAS else None),
         min_stationary_sec=1.0,
         verbose=True,
     )
+    if MOCAP_ACCEL_BIAS:
+        print("  [--mocap-accel-bias] using MoCap attitude for full-3D accel-bias seed (legacy)")
+    else:
+        print("  [sensor-only] accel-bias init uses gravity-aligned scalar correction (no MoCap attitude)")
 
     if stationary_result is not None:
         acc_bias = stationary_result['acc_bias']

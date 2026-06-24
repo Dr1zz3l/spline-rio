@@ -186,11 +186,10 @@ was best across all bags (1.0 caused backflip divergence).
 \label{sec:init}
 
 \textbf{P1: Orientation.}
-A stationary segment before flight is detected automatically; the \ac{imu}
-biases $[\vb_a, \vb_g]$ are seeded from the gravity residual and mean
-gyroscope reading during this segment (\ac{mocap} orientation is used for a
-full 3-D accelerometer bias estimate when available; otherwise a gravity-
-aligned scalar correction is applied).
+A stationary segment before flight is detected automatically; the gyroscope
+bias is the mean reading over this segment and the accelerometer bias a
+gravity-aligned scalar correction --- both \emph{sensor-only}, using no
+external attitude reference.
 Initial roll/pitch are then derived from the stationary accelerometer
 (gravity direction).  Yaw is set to zero (gauge freedom; corrected
 later by the heading prior).  The full orientation trajectory is
