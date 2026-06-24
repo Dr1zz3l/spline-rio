@@ -201,11 +201,12 @@ Regularization: position: minimum-snap (∫||P⁴(t)||² dt);  orientation: angu
 Extrinsic calibration lives in `config/extrinsics.yaml` (pitch 25.5° is now only the
 **batch self-cal init**; deployed runs lock **27.5°** via `--set-ext`):
 - **Rotation**: `[roll=180°, pitch=27.5° frozen, yaw=0°]` — **physically measured at 27–28°**
-  (inclinometer, v1 mount), corroborated by batch self-cal (27.0/27.2°). The measurement
-  anchors it: self-cal alone is **init-DEPENDENT** (2026-06-24 sweep: 25.5°→27°, 30°→36°,
-  33°→42°; old "init-independent" claim retracted in paper+report), so frozen for SW, not
-  estimated. `extrinsics.yaml` keeps 25.5° only as the batch self-cal seed (stale; don't
-  change — reseeding to 27.5° lands the free-pitch batch at ~31°). SW free pitch → 29.5/34.7/40°.
+  (inclinometer), the SOLE founded anchor. Self-cal is **init-DEPENDENT** (lands at 27.0/27.2°
+  only because seeded at 25.5°; 2026-06-24 sweep: 25.5°→27°, 30°→36°, 33°→42°; old
+  "init-independent" claim retracted in paper+report) — NOT independent corroboration, so
+  frozen for SW, not estimated. `extrinsics.yaml` keeps 25.5° only as the batch self-cal seed
+  (stale; don't change — reseeding to 27.5° lands the free-pitch batch at ~31°). SW free pitch
+  → 29.5/34.7/40°. Paper/report state only the measured value (no self-cal, no v1/v2 mounts).
 - **Translation**: `[0.08, +0.02, -0.01]` m in body frame
 - Body frame: x=forward, y=left, z=up
 

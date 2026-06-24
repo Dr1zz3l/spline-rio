@@ -615,21 +615,14 @@ per-window wall time.
 \section{Results}
 \label{sec:results}
 
-\subsection{Extrinsic Self-Calibration}
-The radar-to-body pitch is a fixed mount angle, nominally 30\degree\ by
-CAD but lower as-built (3D-printed, hand-assembled fixture).  Two
-independent estimates agree on ${\approx}27.5\degree$: an inclinometer
-on the radar face reads 27--28\degree\ (reference surface 0\degree), and
-the batch self-calibration on the flight data converges to
-27.0\degree/27.2\degree\ (slow/fast).  We freeze pitch at 27.5\degree\
-for all sliding-window runs rather than estimate it online --- it is
-only weakly observable from Doppler (the self-calibration is
-init-dependent, and orientation RMSE is pitch-insensitive;
-Sec.~\ref{sec:backflips}), so the physical measurement anchors
-it.\footnote{The flights span two campaigns with mechanically identical
-radar mounts (the later adds crash protection); the inclinometer
-measures the earlier mount and the self-calibration the later flights,
-and both agree.}
+\subsection{Extrinsic Pitch}
+The radar-to-body pitch is a fixed mount angle, measured at
+27--28\degree\ with an inclinometer on the radar face (reference surface
+0\degree) and frozen at 27.5\degree --- a few degrees below the
+30\degree\ CAD design (3D-printed, hand-assembled fixture).  We freeze
+it rather than estimate it online because it is only weakly observable
+from Doppler: the self-calibration is init-dependent and orientation
+RMSE is pitch-insensitive (Sec.~\ref{sec:backflips}).
 
 \subsection{Sliding Window: Settled vs.\ Live}
 \label{sec:sw_results}

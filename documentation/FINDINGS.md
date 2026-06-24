@@ -20,12 +20,12 @@ User confirmed: radar mounted **upside-down** (180° roll) looking forward, 3D-p
 Physical mount: `[180, +30, 0]` (roll, pitch, yaw) = `Rx(180°)·Ry(+30°)`.
 
 **As-built pitch (2026-06-24): physically MEASURED at 27–28°, frozen at 27.5°.**
-Inclinometer on the radar face (reference surface 0°), on the **v1 mount**. Independently
-corroborated by the batch self-cal on the flight data (**27.0°/27.2°** slow/fast). A few
-degrees under the 30° CAD nominal (3D-printed, hand-assembled). **Two mounts:** v1 (Dec-2025
-flights: circle/loopings/Dec-backflips) and v2 (Mar-2026 *headline* flights: slow/fast_racing,
-backflips_best_velocity) are mechanically identical — v2 only adds radar crash protection,
-same tilt. So the inclinometer measures v1, the self-cal measures v2, and both agree on ≈27.5°.
+Inclinometer on the radar face (reference surface 0°). A few degrees under the 30° CAD
+nominal (3D-printed, hand-assembled). **The physical measurement is the SOLE founded anchor.**
+The batch self-cal lands at 27.0/27.2° but ONLY because it is seeded at 25.5° (init-dependent:
+seed it at 27.5° and it drifts to ~31°), so it is **NOT independent corroboration** — do not
+present it as confirmation. (Paper/report: state only the measured 27–28°/frozen 27.5°; the
+v1/v2 two-mount detail and the self-cal "corroboration" were dropped 2026-06-24 per author.)
 
 **The self-cal alone is init-DEPENDENT** (2026-06-24 sweep, BOTH racing bags): converged pitch
 tracks the init — 20°→16°, 23°→22°, 25.5°→27°, 27.5°→31°, 30°→36°, 33°→42°, saddle ~23°. So

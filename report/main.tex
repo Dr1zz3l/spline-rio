@@ -745,28 +745,21 @@ per-window wall time.
 \section{Results}
 \label{sec:results}
 
-\subsection{Batch Solver and Extrinsic Self-Calibration}
-We use the full-trajectory C++ batch solve as the extrinsic
-self-calibration stage; offline it reaches
+\subsection{Batch Solver and Extrinsic Pitch}
+We use the full-trajectory C++ batch solve as an offline full-batch
+reference; offline it reaches
 \SI{0.20}{\metre}\,/\,\SI{1.0}{\degree} on slow racing and
 \SI{0.73}{\metre}\,/\,\SI{2.5}{\degree} on fast (the dense racing
 $\Delta t_p$ over-fits fast racing, where the coarser sliding window
 does better).
-The radar-to-body pitch is a fixed mount angle, nominally 30\degree\ by
-CAD but lower as-built (3D-printed, hand-assembled fixture).  Two
-independent estimates agree on ${\approx}27.5\degree$: an inclinometer
-on the radar face reads 27--28\degree\ (reference surface 0\degree), and
-with the pitch left free the batch self-calibration converges to
-27.0\degree\ (slow racing) and 27.2\degree\ (fast).  We lock pitch at
-27.5\degree\ for the sliding-window runs rather than estimate it online
---- it is only weakly observable from Doppler (the self-calibration is
-init-dependent, and orientation RMSE is pitch-insensitive;
-Sec.~\ref{sec:backflips}), so the physical measurement anchors it.  The
-flights span two campaigns with mechanically identical radar mounts (the
-later adds crash protection); the inclinometer measures the earlier
-mount and the self-calibration the later flights, and both agree.  The
-batch estimate is shown for reference (dashed) in the RPE curves
-(Fig.~\ref{fig:rpe}).
+The radar-to-body pitch is a fixed mount angle, measured at
+27--28\degree\ with an inclinometer on the radar face (reference surface
+0\degree) and frozen at 27.5\degree --- a few degrees below the
+30\degree\ CAD design (3D-printed, hand-assembled fixture).  We lock it
+rather than estimate it online because it is only weakly observable from
+Doppler: the self-calibration is init-dependent and orientation RMSE is
+pitch-insensitive (Sec.~\ref{sec:backflips}).  The batch estimate is
+shown for reference (dashed) in the RPE curves (Fig.~\ref{fig:rpe}).
 
 \subsection{Sliding Window: Settled vs.\ Live}
 \label{sec:sw_results}
