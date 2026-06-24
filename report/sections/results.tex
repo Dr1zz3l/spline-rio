@@ -10,7 +10,7 @@ $\Delta t_p$ over-fits fast racing, where the coarser sliding window
 does better).
 The radar-to-body pitch is a fixed mount angle, measured at
 27--28\degree\ with an inclinometer on the radar face (reference surface
-0\degree) and frozen at 27.5\degree --- a few degrees below the
+0\degree) and frozen at 27.5\degree, a few degrees below the
 30\degree\ \ac{cad} design (3D-printed, hand-assembled fixture).  We lock it
 rather than estimate it online because it is only weakly observable from
 Doppler: the self-calibration is init-dependent and orientation \ac{rmse} is
@@ -73,7 +73,7 @@ With the consistent prior, settled velocity is smooth across stride
 boundaries (the earlier inconsistent prior produced position jumps
 that inflated the settled velocity derivative).
 Per-window solve times are 0.35--0.70\,s against a 0.3\,s stride on a
-laptop CPU --- fast racing runs in real time at a 0.4\,s stride.
+laptop CPU; fast racing runs in real time at a 0.4\,s stride.
 The dominant cost reductions were: the consistent prior removing
 the marginalization re-linearization ($\sim$0.6\,s), coarsening
 $\Delta t_p$ from 5\,ms to 40\,ms for aggressive flight (which
@@ -118,7 +118,7 @@ racing stabilises at $\approx$\SI{2.2}{\percent} beyond 20\,m.  At
 short segments ($\leq$10\,m) errors are larger (3--8\% for racing)
 because the 11\,Hz radar provides only a handful of Doppler
 measurements per segment and the global optimizer cannot smooth over
-sub-second intervals --- a constraint of the radar rate, not a spline
+sub-second intervals, a constraint of the radar rate, not a spline
 artifact.  Global position drift (\%) remains the headline deployment
 metric (live edge); \ac{rpe} is the complementary per-segment view.
 
@@ -127,7 +127,7 @@ metric (live edge); \ac{rpe} is the complementary per-segment view.
   \includegraphics[width=\columnwidth]{figures/rpe_drift.pdf}
   \caption{KITTI-style translational \ac{rpe} (end-point displacement error
     as \% of segment length) vs.\ accumulated GT distance.  Left:
-    racing bags --- batch (solid) and SW live edge (dashed).  Right:
+    racing bags, batch (solid) and SW live edge (dashed).  Right:
     backflips batch.}
   \label{fig:rpe}
 \end{figure}
@@ -136,12 +136,12 @@ metric (live edge); \ac{rpe} is the complementary per-segment view.
 Radar is essential.  Disabling it (\texttt{-{}-no-radar}) collapses the
 live-edge estimate to \ac{imu} dead-reckoning: position drift balloons to
 5.9\% on slow racing and diverges entirely on fast racing
-($\approx$99.5\% of distance --- error on the order of the full path
+($\approx$99.5\% of distance, error on the order of the full path
 length), with velocity \ac{rmse} rising to 2.4 and
 8.0\,m/s as double-integrated accelerometer noise accumulates unbounded.
 The direct Doppler velocity constraints bound this to the
-\autoref{tab:sw} figures (0.6--0.9\% drift, 0.32--0.48\,m/s velocity)
---- one-to-two orders of magnitude lower.  Orientation
+\autoref{tab:sw} figures (0.6--0.9\% drift, 0.32--0.48\,m/s velocity),
+one-to-two orders of magnitude lower.  Orientation
 improves more modestly, from 8.9\degree/4.0\degree\ (\ac{imu}-only) to
 2.0\degree/2.9\degree, the 1\,kHz gyroscope already constraining it.
 
@@ -159,8 +159,8 @@ older radar firmware with $12\times$ coarser Doppler quantization
 per-day time offsets; the default \ac{ransac} prefilter still keeps
 $46$--$75\%$ of returns (no starvation), and the system degrades
 gracefully (1.5--7\,m position), with the \emph{old-firmware backflips}
-orientation reaching 8.1\degree\ settled\,/\,9.1\degree\ live --- better
-than the 14.8\degree\ of its previous, individually tuned best --- under
+orientation reaching 8.1\degree\ settled\,/\,9.1\degree\ live (better
+than the 14.8\degree\ of its previous, individually tuned best) under
 the untuned universal configuration.  The rate-adaptive weighting thus
 transfers across both firmware and day.
 A data-health screening (radar frame-rate continuity, \ac{imu}/\ac{mocap}
@@ -193,25 +193,25 @@ alignment, same windows and ground truth).
 \autoref{tab:baselines} reports the headline metrics~(a) and their
 decomposition~(b).  On position our
 solver reaches the same order of magnitude as the baselines (0.5--1.9\,m,
-0.6--1.3\% drift) --- it trails the yaw-aided ekf-yrio on absolute
+0.6--1.3\% drift).  It trails the yaw-aided ekf-yrio on absolute
 position (best on all four flights), but velocity \ac{rmse}
 0.07--0.08\,m/s matches theirs and the order-of-magnitude vertical gap
 closes (below).
 The full 3-DoF orientation column favors our solver
 (0.51--1.13\degree\ vs.\ up to $10.1\degree$), but this gap is almost
 entirely \emph{yaw}: our heading is anchored by a pseudo-magnetometer
---- here the VINS pseudo-GT yaw used as a magnetometer surrogate, in
-place of the \ac{mocap} yaw available on our own platform --- whereas
+(here the VINS pseudo-GT yaw used as a magnetometer surrogate, in
+place of the \ac{mocap} yaw available on our own platform), whereas
 ekf-yrio uses sensor-only Manhattan-world yaw and ekf-rio is unaided.
 On the heading-\emph{independent} roll and pitch the three systems are
 comparable ($0.25$--$0.74\degree$, \autoref{tab:baselines}(b)),
 so the orientation column is not an attitude win; removing our heading
-aiding confirms this --- on flight\_1 our unaided yaw drifts to
+aiding confirms this: on flight\_1 our unaided yaw drifts to
 $9.9\degree$, matching unaided ekf-rio ($10.1\degree$), while roll/pitch
 and position are essentially unchanged.
 
 The default \ac{ransac} prefilter (\autoref{sec:models}) buys this
-same-order position --- its clearest single demonstration.
+same-order position, its clearest single demonstration.
 A single-chip 2-TX array has limited
 elevation diversity, and a minority of returns carry an
 elevation-correlated Doppler bias.  Doer's \mbox{reve} rejects these
@@ -221,8 +221,8 @@ per-frame vertical ego-velocity bias is $-0.06$ to $-0.16$\,m/s under a
 Huber-only front-end but at most $0.10$\,m/s in magnitude under \ac{ransac}.
 With the prefilter \emph{disabled}, our vertical channel accumulates a
 large systematic error (whole-trajectory \ac{ate} $9.6$\,m on flight\_1,
-$12$--$15\%$ vertical drift) that the baselines do not exhibit --- their
-vertical drift stays $\sim$0.2--0.3\,m; the \ac{ransac} prefilter removes it
+$12$--$15\%$ vertical drift) that the baselines do not exhibit (theirs
+stays $\sim$0.2--0.3\,m); the \ac{ransac} prefilter removes it
 at the source on all four flights, cutting whole-trajectory \ac{ate} to
 $0.24$--$0.76$\,m (\autoref{tab:baselines}(b)) and bringing
 position back into the baselines' range.  Their vertical accuracy is
@@ -230,7 +230,7 @@ not altitude aiding either: disabling the barometer in ekf-yrio shifts
 its vertical drift by $\le$0.04\,m (stock $\sigma_\mathrm{altimeter}{=}5$\,m
 makes it near-negligible), so they too estimate vertical from radar and
 \ac{imu} alone, by the same outlier-rejection mechanism.  The single-chip
-elevation bias is therefore real but not fundamental --- an
+elevation bias is therefore real but not fundamental: an
 outlier-rejection gap, closed by the same \ac{ransac} stage the
 baselines use.  Under
 whole-trajectory Umeyama alignment (\autoref{tab:baselines}(b))
@@ -240,7 +240,7 @@ confirming that our default front-end matches them.
 
 \textbf{Their filters on our data.}  The reverse port is a
 \emph{sensor/stack-coupling characterization}, not a head-to-head
-comparison --- it is regime-dependent, and we report the measured
+comparison; it is regime-dependent, and we report the measured
 outcome rather than a verdict.  Here we port ekf-rio and its multi-radar generalization
 x-rio~\cite{doer2021xrio} (run single-radar); ekf-yrio, the yaw-aided
 single-radar variant Doer benchmarks the ICINS flights with, was the
@@ -265,7 +265,7 @@ exceeds their process-noise parameter range, making propagation
 overconfident so the gate then rejects the few updates that survive.
 This is a design-space split (\autoref{sec:conclusion}), not a defect of
 either method: their stack runs near sensor rate on dense clouds, ours
-spends \SI{0.35}{}--\SI{0.70}{\second} per window on sparse Doppler ---
+spends \SI{0.35}{}--\SI{0.70}{\second} per window on sparse Doppler,
 an accuracy-versus-latency trade.
 
 \begin{table*}[t]
@@ -341,9 +341,9 @@ $\chi^2_3$-distributed with mean~3.
 On the racing flights, summarized by the per-window median for
 \emph{both} channels, the \emph{orientation} \ac{nees} is $1.2$--$2.6$
 and the velocity \ac{nees} $1.4$--$5.4$ (consistent value~3):
-orientation is essentially calibrated --- slightly conservative on slow
+orientation is essentially calibrated (slightly conservative on slow
 racing, near-exact on fast, as the weights approximate effective-noise
-whitening --- and velocity is calibrated to mildly overconfident.  We
+whitening), and velocity is calibrated to mildly overconfident.  We
 report the median, not the mean, because the means (velocity especially)
 are inflated by a few windows where the finite-difference \ac{mocap}
 velocity reference is unreliable.  Both are \emph{calibration checks}, not powered
@@ -352,7 +352,7 @@ $\chi^2_3$ mean-3 expectation holds only heuristically.  On backflips the
 orientation covariance is overconfident
 by ${\sim}3\times$ in standard deviation (unmodeled flip-time error) and
 only 6 of 50 windows survive the ground-truth quality mask
-(\autoref{sec:setup}) --- too few to support a consistency statement, so
+(\autoref{sec:setup}), too few to support a consistency statement, so
 we report it as a caveat rather than a result.  Deployment recipe: inflate the emitted covariance per
 regime ($1\times$ gentle, $3\times$ aggressive), or calibrate online
 from innovations.
@@ -419,7 +419,7 @@ Configuration & Pos (m) & Ori (\degree) \\
   nearly equivalent.
   \textsuperscript{\S}C++ solver supports only 1-DoF pitch offset (roll/yaw
   unobservable from Doppler; free 3-angle optimization tested in Python
-  solver showed 6--8\degree\ orientation runaway --- see
+  solver showed 6--8\degree\ orientation runaway; see
   \autoref{sec:negative}).}\\
 \end{tabular}
 \end{table}
@@ -433,12 +433,12 @@ spline absorbs the $|\bm{\omega}{\times}\mathbf{t}_{bs}|\approx1$\,m/s
 term through orientation DoF.
 Schur marginalization reduces fast-racing settled position by 24\%
 (0.412\,m $\to$ 0.312\,m); for slow racing the optimal prior scale is
-$10^{-7}$ (near-zero), so both variants give equivalent results ---
+$10^{-7}$ (near-zero), so both variants give equivalent results;
 the benefit is captured in \autoref{tab:prior_scale} instead.
 Window duration has little effect on slow racing (live 0.30--0.34\,m
 across 1.5--5\,s); on fast racing a 3\,s window modestly beats a 2\,s
 one (a confirmed observability limit, \autoref{sec:backflips}), so 3\,s
-is the default --- balancing latency against accuracy.
+is the default, balancing latency against accuracy.
 We lock pitch at its measured value for all sliding-window runs; even
 in the batch ablation, locking is marginally better than freeing it
 (0.157 vs.\ 0.169\,m on slow racing), consistent with the pitch being

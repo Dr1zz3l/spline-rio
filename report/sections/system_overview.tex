@@ -5,8 +5,8 @@
 \label{sec:problem}
 
 \textbf{Estimation problem.}
-We estimate the continuous-time 6-DoF body trajectory --- world-frame
-position $\vp_w(t)\in\mathbb{R}^3$ and orientation $\vR(t)\in\SO$ ---
+We estimate the continuous-time 6-DoF body trajectory (world-frame
+position $\vp_w(t)\in\mathbb{R}^3$ and orientation $\vR(t)\in\SO$)
 together with the constant \ac{imu} biases $\vb_a,\vb_g$, from asynchronous
 measurements over the estimation interval (the full trajectory in batch
 mode, a sliding window online): radar Doppler velocities ($\sim$11\,Hz),
@@ -14,8 +14,8 @@ accelerometer and gyroscope samples (1\,kHz), and a low-rate heading
 prior.  We adopt a \emph{continuous-time} representation because the
 sensors are asynchronous and run at disparate rates: a trajectory defined
 for every $t$ is evaluated at each measurement's exact timestamp, and its
-derivatives --- velocity $\dot{\vp}_w$, acceleration $\ddot{\vp}_w$, and
-body angular velocity $\vom_b$ --- follow in closed form, so no
+derivatives (velocity $\dot{\vp}_w$, acceleration $\ddot{\vp}_w$, and
+body angular velocity $\vom_b$) follow in closed form, so no
 inter-sample interpolation or rigid-keyframe approximation is required.
 
 \textbf{Parameterization.}
@@ -37,7 +37,7 @@ value (\autoref{sec:state}).
 \textbf{Estimator.}
 Treating the measurement noise as zero-mean and independent, the
 \ac{map} estimate is the minimizer of the negative
-log-posterior --- a weighted nonlinear least-squares problem over the
+log-posterior, a weighted nonlinear least-squares problem over the
 measurement residuals, the spline regularizers, and the priors:
 \begin{equation}
 \begin{aligned}

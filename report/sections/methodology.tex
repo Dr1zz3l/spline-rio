@@ -56,7 +56,7 @@ radar sensor to body frame (extrinsic $[\text{roll}{=}180\degree,\,
 \autoref{sec:results}), and
 $\vR_{bw} = \vR_{wb}^{\top}$.  The residual
 $r_k = v_{D,\text{meas}} - v_{D,\text{pred}}$ uses Huber
-loss with $\delta = 1.0$\,m/s --- robust, as defense-in-depth, to any
+loss with $\delta = 1.0$\,m/s, robust as defense-in-depth to any
 residual Doppler noise on the surviving inlier returns; the
 \SI{0.049}{\metre\per\second} Doppler resolution sets a lower bound but
 does not drive the choice.
@@ -73,15 +73,15 @@ spline solver, hard-rejecting the elevation-biased minority before the
 optimization.  The prefilter is seeded
 (\texttt{numpy.default\_rng(0)}), so the full pipeline reproduces
 bit-identically; frames with fewer than five returns bypass it
-unchanged --- on those sparse frames, including most of the backflip
+unchanged.  On those sparse frames, including most of the backflip
 regime, the in-solver Huber loss is the sole radar outlier protection,
 so the two stages are complementary, not redundant.  It runs once at
 frame load, not per window, so it does not
 enter the per-window timing budget (\autoref{sec:results}).
-\autoref{sec:baselines} quantifies what it removes --- on the public
+\autoref{sec:baselines} quantifies what it removes: on the public
 ICINS flights it closes an order-of-magnitude vertical-drift gap, and on
 our own flights it improves aggressive-racing live position by $22\%$ ($0.50\to0.39$\,m
-live) --- and it is enabled by default for every result in this paper.
+live).  It is enabled by default for every result in this paper.
 
 \textbf{Dynamics-adaptive measurement weighting.}
 The central practical finding of this work is that a single
@@ -90,7 +90,7 @@ streams covers hover to \SI{10}{\radian\per\second} tumbling with one
 configuration.  Each component was derived from a measured failure
 diagnosis (\autoref{sec:backflips}), not tuned ad hoc:
 \begin{itemize}
-\item \emph{Gyroscope --- trust more when rotating fast.}
+\item \emph{Gyroscope: trust more when rotating fast.}
   Per-sample weight
   $\lambda_g^{\mathrm{eff}} = \lambda_g\bigl(1 + (|\vz_g|/\omega_g)^p\bigr)$
   with $\lambda_g{=}4$, $\omega_g{=}4$\,rad/s, $p{=}4$, using the
@@ -98,16 +98,16 @@ diagnosis (\autoref{sec:backflips}), not tuned ad hoc:
   exponent keeps racing untouched ($\lambda^{\mathrm{eff}}\!\approx\!\lambda_g$
   below 3\,rad/s) and reaches $\lambda^{\mathrm{eff}}\!\approx\!160$--$500$
   during flips, where the gyroscope is the only clean sensor.  A
-  quadratic ramp ($p{=}2$) stiffens the gyro already at 2--5\,rad/s ---
-  where radar is still informative --- and degrades racing roll/yaw.
-\item \emph{Radar --- trust less when rotating fast.}
+  quadratic ramp ($p{=}2$) stiffens the gyro already at 2--5\,rad/s
+  (where radar is still informative) and degrades racing roll/yaw.
+\item \emph{Radar: trust less when rotating fast.}
   A radar frame integrates over tens of milliseconds; at body rate
   $\omega$ the scene smears by $\omega\,T_{\mathrm{frame}}$
   ($\approx$17\degree\ at 10\,rad/s).  Per-frame noise inflation
   $\sigma_{\mathrm{eff}}^2 = \sigma_0^2\bigl(1+(|\vom|/\omega_r)^2\bigr)$,
   $\omega_r{=}4$\,rad/s, $|\vom|$ from the warm-start spline at
   problem-build time; continuous, no hard-gate tuning cliff.
-\item \emph{Accelerometer --- same form,} $\omega_a{=}8$\,rad/s:
+\item \emph{Accelerometer: same form,} $\omega_a{=}8$\,rad/s:
   during flips the accelerometer carries thrust transients and
   vibration, its gravity information is nil mid-flip, and it otherwise
   distorts orientation through the $\vR$--$\ddot{\vp}$ coupling.
@@ -191,7 +191,7 @@ was best across all bags (1.0 caused backflip divergence).
 \textbf{P1: Orientation.}
 A stationary segment before flight is detected automatically; the gyroscope
 bias is the mean reading over this segment and the accelerometer bias a
-gravity-aligned scalar correction --- both \emph{sensor-only}, using no
+gravity-aligned scalar correction, both \emph{sensor-only} and using no
 external attitude reference.
 Initial roll/pitch are then derived from the stationary accelerometer
 (gravity direction).  Yaw is set to zero (gauge freedom; corrected
@@ -305,8 +305,8 @@ coordinates.
 
 \textbf{Consistent factor selection (Markov-blanket rule).}
 Which residuals enter Eq.~\eqref{eq:schur} determines whether the
-prior is a true marginal.  A na\"ive choice --- all residuals touching
-marginalized \emph{or} boundary variables --- pulls in every \ac{imu} factor
+prior is a true marginal.  A na\"ive choice (all residuals touching
+marginalized \emph{or} boundary variables) pulls in every \ac{imu} factor
 of the window through the shared bias block ($\sim$25{,}000 residual
 rows), \emph{conditions} on interior states (treating them as perfectly
 known), and double-counts factors that are re-added in the next window.
@@ -318,12 +318,12 @@ far-edge \ac{imu} factors.  We instead exploit the splines' local support
 of $N$ knots (quintic position $N{=}6$, cubic orientation $N{=}4$): a
 factor touching marginalized knot $i$ has support
 $[i, i{+}N{-}1] \subseteq$ marg\,$\cup$\,boundary, so including
-\emph{only} residuals that touch a marginalized variable --- rather than
-those touching marginalized \emph{or} boundary variables --- (plus the
-previous prior) yields an exactly closed, consistent marginal.  With this rule the prior is applied
+\emph{only} residuals that touch a marginalized variable (rather than
+those touching marginalized \emph{or} boundary variables), plus the
+previous prior, yields an exactly closed, consistent marginal.  With this rule the prior is applied
 \textbf{unscaled} (scale $=1$) across all flight regimes, and its
 Mahalanobis residual at the solution drops from $10^{6}$--$10^{12}$
-to $\mathcal{O}(1)$ --- the prior agrees with the incoming data.
+to $\mathcal{O}(1)$: the prior agrees with the incoming data.
 
 \emph{Relation to \ac{fej}.}  This mechanism is distinct from, and
 complementary to, first-estimates-Jacobian approaches to
@@ -336,7 +336,7 @@ employ \ac{fej}; instead the prior is re-centered at each window's warm
 start (curvature retained, gradient pull discarded).  We do not claim
 this re-centering preserves consistency across relinearizations as a
 theoretical guarantee; rather, in our experiments it left no measurable
-inconsistency symptom --- the \ac{nees} analysis of
+inconsistency symptom; the \ac{nees} analysis of
 \autoref{sec:nees} provides the corresponding empirical evidence.
 
 \textbf{Live-edge warm start.}

@@ -2,7 +2,7 @@
 \label{sec:conclusion}
 
 \emph{Can a single-chip mmWave radar plus \ac{imu} provide usable 6-DoF
-state estimation?}  Yes --- as a \emph{velocity and orientation}
+state estimation?}  Yes, as a \emph{velocity and orientation}
 source: at the live leading edge,
 \SI{0.48}{\metre\per\second}/\SI{2.0}{\degree} on gentle racing,
 \SI{0.32}{\metre\per\second}/\SI{2.9}{\degree} on aggressive racing
@@ -12,16 +12,16 @@ on racing.
 Absolute position is not observable from Doppler+\ac{imu} and drifts with
 distance (0.6--0.9\% on racing, 2.9\% under tumbling); yaw requires a
 heading sensor.  Within those structural limits, \emph{good results
-took three things}: (1) a \emph{consistent} fixed-lag smoother ---
-the Markov-blanket factor-selection rule makes the marginalization a
+took three things}: (1) a \emph{consistent} fixed-lag smoother, with a
+Markov-blanket factor-selection rule that makes the marginalization a
 true marginal, eliminating regime-dependent prior tuning whose
 symptom pattern we document as a reusable diagnostic;
 (2) a \emph{dynamics-adaptive trust allocation} across the
 measurement streams (rate-adaptive gyroscope weight, rate-inflated
-radar/accelerometer noise, per-point \ac{snr} weighting) --- one
+radar/accelerometer noise, per-point \ac{snr} weighting), one
 configuration from hover to \SI{10}{\radian\per\second}, with the
 velocity--orientation trade made explicit as a measured Pareto curve;
-and (3) \emph{characterized sensor systematics} --- including the
+and (3) \emph{characterized sensor systematics}, including the
 finding that the apparent elevation bias under tumbling is a
 flight-regime error proxy, not an antenna constant, and that the
 extrinsic pitch is weakly observable, best fixed at its measured value
@@ -47,5 +47,5 @@ leaves a Huber-only port at $12$--$15\%$ vertical drift.  In reverse,
 their stock filters, starved by our sparse ${\sim}13$-point clouds and
 racing-frame vibration, reject up to 99.7\% of radar updates and
 dead-reckon on slow racing (degrading, not diverging, on the faster
-flight) --- each stack engineered for its own regime, a low-vibration
+flight).  Each stack is engineered for its own regime: a low-vibration
 carrier versus sparse Doppler on an aggressive platform.

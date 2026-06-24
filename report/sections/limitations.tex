@@ -19,7 +19,7 @@ about the world gravity axis leaves all radial velocity measurements
 unchanged, so absolute heading cannot be recovered from radar and \ac{imu}
 alone.  A magnetometer resolves this and is standard on virtually all
 flight platforms; here \ac{mocap} yaw serves that role.  Because that
-\ac{mocap} yaw is noise- and bias-free --- unlike a real magnetometer ---
+\ac{mocap} yaw is noise- and bias-free (unlike a real magnetometer),
 the heading-aided orientation numbers are correspondingly optimistic;
 the heading-\emph{independent} roll/pitch decomposition
 (\autoref{tab:baselines}(b)) and the unaided-yaw check
@@ -51,18 +51,18 @@ inter-window information transfer.
 ($\lambda_{\mathrm{pos\text{-}init}}{=}0.5$ per CP) bounds the
 position random walk that sparse, rate-inflated radar cannot prevent
 within a 3\,s window (without it position diverges to 8\,m; on racing
-bags the same anchor is \emph{harmful} --- it is a flip-regime rescue,
+bags the same anchor is \emph{harmful}: a flip-regime rescue,
 not a general ingredient).
-(iii)~The dynamics-adaptive weighting law (\autoref{sec:models}) ---
+(iii)~The dynamics-adaptive weighting law (\autoref{sec:models}),
 in particular rate-adaptive gyroscope trust, which on this bag alone
-is worth $\sim$3\degree\ of orientation at zero position cost ---
+is worth $\sim$3\degree\ of orientation at zero position cost,
 plus the flip-regime Doppler correction $b{=}{-}1.5$\,m/s.
 Together these reach \textbf{1.67\,m\,/\,5.0\degree\ settled and
 1.55\,m\,/\,6.4\degree\ live at $\sim$0.6\,s per window}
 (\autoref{tab:sw}; \autoref{fig:traj}).  The default \ac{ransac}
 prefilter (\autoref{sec:models})
-is neutral here --- backflip frames are already sparse and mostly fall
-below its five-return floor, so they bypass it --- and the small change
+is neutral here (backflip frames are already sparse and mostly fall
+below its five-return floor, so they bypass it), and the small change
 from the Huber front-end ($1.51\to1.55$\,m live) is within run-to-run
 noise.
 
@@ -75,11 +75,11 @@ At 8\,ms the window is well-conditioned (62.5\,Hz model bandwidth
 comfortably covers the 10--20\,Hz flip dynamics).
 The same density is what makes the \emph{batch} problem bistable (the
 $\sim$8\degree/$\sim$25\degree\ oscillation noted above): the final cost
-\emph{anti-correlates} with accuracy --- the underconstrained problem
-overfits the wrong global orientation --- so single-run comparisons at
+\emph{anti-correlates} with accuracy (the underconstrained problem
+overfits the wrong global orientation), so single-run comparisons at
 this density are not trustworthy.
 
-\emph{Attributing the z-axis failure --- and what $b$ really is.}
+\emph{Attributing the z-axis failure, and what $b$ really is.}
 A visual trajectory check (numeric \ac{rmse} conceals it) showed the SW
 estimate sinking in altitude.  Disabling the position anchor exposes
 the raw behaviour: a near-constant $-0.57$\,m/s world-$z$ drift
@@ -91,15 +91,15 @@ initially interpreted $b$ as the antenna-fixed elevation bias of the
 interpretation: (i)~with extrinsic pitch \emph{locked} at its
 measured value, level-flight racing degrades catastrophically under
 any explicit $b$ (fast-racing live position
-0.39\,$\to$\,3.2\,$\to$\,6.6\,m for $b{=}0,-0.5,-1.0$) --- a true
+0.39\,$\to$\,3.2\,$\to$\,6.6\,m for $b{=}0,-0.5,-1.0$): a true
 antenna-fixed bias would be tolerated, since nothing else can absorb
 it; and (ii)~on backflips the optimum keeps growing monotonically
 past the \ac{wls}-measured static bias of $-0.5$\,m/s (through $-1.5$
 to $-2.0$), into physically implausible territory.
-We conclude $b$ is a \emph{flight-regime error proxy} --- it absorbs
+We conclude $b$ is a \emph{flight-regime error proxy}: it absorbs
 an attitude-correlated Doppler systematic during flips (most likely
 intra-frame motion distortion) that happens to project like an
-elevation term --- and we cap it at $b{=}{-}1.5$ rather than chase
+elevation term, and we cap it at $b{=}{-}1.5$ rather than chase
 the monotone trend without a mechanism.
 Relatedly, extrinsic pitch is a \emph{plateau}: over a $3{\times}3$ grid
 over (locked pitch, $b$) the \ac{rmse} is indistinguishable across
@@ -131,16 +131,16 @@ Marginalization}
 \label{sec:prior_scale}
 
 Our initial marginalization implementation selected all residuals
-touching marginalized \emph{or} boundary variables --- which, through
+touching marginalized \emph{or} boundary variables, which, through
 the shared bias block, baked every \ac{imu} factor of the window into the
 Schur complement, conditioned on interior states, and double-counted
 factors re-added in the next window (\autoref{sec:sw}).  The
 resulting overconfident prior had to be deflated by a hand-tuned
 scale, and the required scale varied by orders of magnitude across
 flight regimes with a harmful intermediate region.  We document this
-behaviour because the symptom pattern --- no universal prior weight,
-non-monotone sensitivity, robust losses on the prior acting backwards
---- is a useful \emph{diagnostic for marginalization inconsistency} in
+behaviour because the symptom pattern (no universal prior weight,
+non-monotone sensitivity, robust losses on the prior acting backwards)
+is a useful \emph{diagnostic for marginalization inconsistency} in
 sliding-window estimators generally.
 \autoref{tab:prior_scale} shows the sweep measured with the
 inconsistent prior; \autoref{fig:prior_scale}
@@ -176,7 +176,7 @@ $10^{-8}$                                & 0.336 & 2.08 & 1.344 & 3.57 \\
 Slow racing is best served by a near-zero prior ($10^{-7}$): with
 gentle dynamics, each 3\,s window is self-sufficient and additional
 inter-window coupling is harmful.  Fast racing instead needs the prior
-($2{\times}10^{-4}$) for inter-window position continuity ---
+($2{\times}10^{-4}$) for inter-window position continuity;
 without it (scale$=10^{-7}$) fast-racing live position degrades from
 0.825\,m to 1.279\,m.  The two bags thus want opposite scales, and the
 non-monotone slow-racing orientation maximum at $10^{-6}$
@@ -209,7 +209,7 @@ jumps in the settled trajectory disappear (settled velocity \ac{rmse}
     (left): slow racing shows a local maximum at $10^{-6}$;
     fast racing orientation is insensitive to scale.
     Position (right): slow racing worsens monotonically with
-    increasing scale while fast racing improves sharply ---
+    increasing scale while fast racing improves sharply:
     the two bags require opposite scale regimes.}
   \label{fig:prior_scale}
 \end{figure}
@@ -222,13 +222,13 @@ We tested whether denser or non-uniform orientation knots reduce the
 residual backflip attitude error; they do not.  At $\Delta t_o{=}8$\,ms
 the orientation spline already represents the MoCap attitude to
 1.28\degree\ \ac{rmse} \emph{during} the flips, and its angular-velocity
-tracking of the gyro stream is 0.295\,rad/s RMS --- flat across
+tracking of the gyro stream is 0.295\,rad/s RMS, flat across
 $\Delta t_o\in\{16,8,4\}$\,ms and sitting at the rate-independent
 vibration floor (0.17\,rad/s).  The flip orientation gap is therefore
 \emph{not} a spline-bandwidth limit: the spline can represent the
 motion, but the optimizer does not rotate to it (the gyro residual
 correlates with $|\vom_b|$ at $+0.94$ against the \emph{solved}
-trajectory, and open-loop gyro dead-reckoning is 7.8\degree\ --- better
+trajectory, and open-loop gyro dead-reckoning is 7.8\degree, better
 than the 9.2\degree\ this fusion reaches \emph{at the diagnostic
 configuration}, before the rate-adaptive gyro trust of
 \autoref{sec:backflips} brings it to the \SI{6.4}{\degree} headline

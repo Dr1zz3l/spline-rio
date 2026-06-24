@@ -38,15 +38,15 @@ prior for spinning-radar- and lidar-inertial odometry, and
 \v{S}tironja et al.~\cite{stironja2026rio} model the \ac{imu} trajectory
 continuously inside an \ac{rio} estimator with online spatio-temporal
 calibration.  Single-chip radar-inertial estimation has itself
-received recent attention --- Huang et al.~\cite{huang2024lessismore}
+received recent attention: Huang et al.~\cite{huang2024lessismore}
 exploit radar cross-section and Doppler physics to make a sparse
 single-chip cloud usable, in a discrete-time sliding-window
-optimization --- but on ground-robot and handheld platforms rather
+optimization, but on ground-robot and handheld platforms rather
 than aerial tumbling flight.
 Our setting differs from all of these in sensor and
 regime: a \emph{single-chip} radar (10--60 points per frame,
 2-TX elevation array) on a quadrotor in aggressive racing and
-attitude-tumbling flight up to \SI{10}{\radian\per\second} --- a
+attitude-tumbling flight up to \SI{10}{\radian\per\second}, a
 regime in which, as \autoref{sec:backflips} shows, the radar
 measurement model itself degrades in ways invisible on ground
 vehicles.
@@ -75,9 +75,9 @@ pattern by which the inconsistent variant can be recognized
 (\autoref{sec:prior_scale}).
 In the discrete-time UAV line, the \ac{ekf}-\ac{rio} family of Doer and
 Trommer~\cite{doer2020ekf} defines the state of practice.
-Absolute \ac{rmse} is not comparable across papers --- our own quantization
+Absolute \ac{rmse} is not comparable across papers: our own quantization
 ablation (\autoref{sec:heldout}) shows firmware configuration alone
-changes Doppler resolution by $12\times$ --- so rather than quote their
+changes Doppler resolution by $12\times$, so rather than quote their
 numbers we cross-validate against this line directly:
 \autoref{sec:baselines} runs our system on the
 public ICINS-2021 flight datasets of~\cite{doer2021yrio} and re-evaluates

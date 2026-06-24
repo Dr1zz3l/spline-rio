@@ -66,7 +66,7 @@ The final 3\,s is trimmed.  Velocity \ac{rmse} is computed from the
 analytical first derivative of the position B-spline, not from finite
 differences of the estimated trajectory.
 \emph{Position drift} (\%) is position \ac{rmse} normalised by the total
-GT path length --- the standard odometry metric for a
+GT path length, the standard odometry metric for a
 dead-reckoning system with no loop closure.
 Start-anchored alignment is harsher than the whole-trajectory
 SE(3)/Umeyama fit (the EVO/KITTI default) used by most odometry papers,
@@ -98,6 +98,6 @@ eliminated to avoid Jet-arithmetic overhead over the large set of
 spline control-point parameters per factor.
 In the sliding-window solver the linear solve and the
 marginalization-prior recompute (\texttt{compute\_prior}, evaluated
-\emph{every} LM iteration --- distinct from the ${\sim}10$\,ms one-time
+\emph{every} LM iteration, as distinct from the ${\sim}10$\,ms one-time
 prior \emph{formation} of \autoref{sec:sw}) are the dominant costs;
 Jacobian evaluation accounts for roughly 25--30\% of per-window wall time.
