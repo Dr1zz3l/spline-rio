@@ -273,91 +273,6 @@ platform.
 \section{System Overview}
 \label{sec:overview}
 
-\subsection{Hardware Platform}
-The system runs on a quadrotor with a TI IWR6843AOPEVM
-mmWave radar (60--64\,GHz \ac{fmcw}), a Pixhawk flight
-controller \ac{imu}, and a Vicon \ac{mocap} system used for ground
-truth evaluation.  The radar is mounted upside-down at a nominal $30\degree$ downtilt by
-\ac{cad}; the as-built angle is a few degrees lower (\autoref{sec:results}),
-and the extrinsic rotation is $[180\degree, 27.5\degree, 0\degree]$
-(roll, pitch, yaw), translation $[0.08, 0.02, -0.01]$\,m in the body
-frame.  The radar boresight lies along the body forward axis, so the
-Euler pitch is numerically the physical boresight downtilt.  The radar operates at $\sim$11\,Hz with 0.049\,m/s Doppler
-resolution (best-velocity firmware configuration).  Raw \ac{imu} rate
-is $\sim$993\,Hz; both modalities are used at full rate.
-
-\subsection{Pipeline}
-Because the B-spline optimization is nonlinear, it needs an initial
-trajectory to converge; a three-stage sensor-only pipeline
-(\autoref{fig:pipeline}) constructs one from sensor data alone, which
-seeds a C++ Ceres solver (batch or sliding window).  The raw
-measurements then also enter the solver directly as factors
-(\autoref{fig:pipeline}, dashed):
-\textbf{P1} derives initial roll/pitch from the stationary
-accelerometer and forward-integrates gyroscope measurements;
-\textbf{P2} estimates per-frame ego-velocity with \ac{wls} and integrates
-to a position trajectory;
-\textbf{P3} builds sensor-only boundary priors at $t=0$.
-\ac{mocap} supplies only the yaw heading prior (a magnetometer surrogate,
-\autoref{sec:models}) and the final \ac{rmse} evaluation; P1--P3 and the
-position/attitude estimate use no external pose reference.
-
-\begin{figure}[t]
-\centering
-\scalebox{0.92}{%
-\begin{tikzpicture}[
-  font=\small,
-  box/.style={rectangle, rounded corners=3pt, draw, minimum width=1.55cm,
-              minimum height=0.52cm, align=center},
-  sensor/.style={box, fill=blue!12},
-  stage/.style={box, fill=orange!20},
-  solver/.style={box, fill=green!15, minimum width=1.6cm, minimum height=0.95cm},
-  arr/.style={-{Latex[length=2mm]}, thick},
-  darr/.style={-{Latex[length=2mm]}, thick, dashed, gray!70},
-  ]
-  %% Nodes: sensor column, two init stages, merge/P3 stage, solver, output
-  \node[sensor] (imu)    at (0.0,  1.1) {\ac{imu}\\1\,kHz};
-  \node[sensor] (radar)  at (0.0, -0.5) {Radar\\$\sim$11\,Hz};
-  \node[stage]  (p1)     at (2.2,  2.0) {P1: Gyro\\${\to}R(t)$};
-  \node[stage]  (p2)     at (2.2,  0.2) {P2: \ac{wls}\\${\to}\mathbf{p}(t)$};
-  \node[stage]  (p3)     at (4.1,  1.1) {P3: Priors\\${\to}$ init};
-  \node[solver] (solver) at (5.9,  1.1) {C++ Ceres\\(batch/SW)};
-  \node[box, fill=gray!10] (out) at (7.7, 1.1)
-        {$\hat{\mathbf{p}},\hat{R},\hat{\mathbf{v}}$};
-
-  %% Init pipeline arrows (solid, no crossings by construction)
-  % IMU → P1 (upper-right diagonal)
-  \draw[arr] (imu.north east) -- (p1.west);
-  % IMU → P2 (lower-right diagonal; meets Radar→P2 at P2, no earlier crossing)
-  \draw[arr] (imu.south east) -- (p2.west);
-  % Radar → P2 (upper-right; both end at P2 → no crossing)
-  \draw[arr] (radar.east)     -- (p2.west);
-  % P1 and P2 → P3 (converge; meet at P3, no earlier crossing)
-  \draw[arr] (p1.east)        -- (p3.north west);
-  \draw[arr] (p2.east)        -- (p3.south west);
-  % P3 → Solver
-  \draw[arr] (p3.east)        -- (solver.west);
-  % Solver → Output
-  \draw[arr] (solver.east)    -- (out.west);
-
-  %% Raw-data feeds (dashed, routed above/below init block to avoid crossings)
-  \draw[darr] (imu.east)   to[out=10,  in=170] (solver.north west);
-  \draw[darr] (radar.east) to[out=350, in=190] (solver.south west);
-\end{tikzpicture}%
-}% end scalebox
-\caption{System pipeline. Solid: initialization flow (P1--P3 seed
-the optimizer). Dashed: raw sensor data fed as measurement factors.
-Radar returns first pass a \ac{ransac} ego-velocity prefilter
-(\autoref{sec:models}) that rejects elevation-biased outliers before
-both P2 and the solver. \ac{mocap} supplies only the yaw heading prior
-(magnetometer surrogate) and \ac{rmse} evaluation.}
-\label{fig:pipeline}
-\end{figure}
-
-%==================================================================
-\section{Methodology}
-\label{sec:method}
-
 \subsection{Problem Formulation}
 \label{sec:problem}
 
@@ -421,6 +336,85 @@ Levenberg--Marquardt (Ceres) using analytic Jacobians.  The fixed-lag
 estimator solves it over a 3\,s window and, on each stride, marginalizes
 the states leaving the window into $E_{\text{prior}}$ via the Schur
 complement (\autoref{sec:sw}), keeping the per-window cost bounded.
+
+\subsection{Hardware Platform}
+The system runs on a quadrotor with a TI IWR6843AOPEVM
+mmWave radar (60--64\,GHz \ac{fmcw}), a Pixhawk flight
+controller \ac{imu}, and a Vicon \ac{mocap} system used for ground
+truth evaluation.  The radar is mounted upside-down at a nominal $30\degree$ downtilt by
+\ac{cad}; the as-built angle is a few degrees lower (\autoref{sec:results}),
+and the extrinsic rotation is $[180\degree, 27.5\degree, 0\degree]$
+(roll, pitch, yaw), translation $[0.08, 0.02, -0.01]$\,m in the body
+frame.  The radar boresight lies along the body forward axis, so the
+Euler pitch is numerically the physical boresight downtilt.  The radar operates at $\sim$11\,Hz with 0.049\,m/s Doppler
+resolution (best-velocity firmware configuration).  Raw \ac{imu} rate
+is $\sim$993\,Hz; both modalities are used at full rate.
+
+\subsection{Pipeline}
+\autoref{fig:pipeline} shows the pipeline.  A three-stage sensor-only
+initialization (P1--P3, detailed in \autoref{sec:init}) builds the
+initial trajectory the nonlinear solve needs, from radar and \ac{imu}
+data alone; the same raw measurements then also enter the solver directly
+as factors (\autoref{fig:pipeline}, dashed).  \ac{mocap} supplies only the
+yaw heading prior (a magnetometer surrogate, \autoref{sec:models}) and the
+final \ac{rmse} evaluation; P1--P3 and the position/attitude estimate use
+no external pose reference.
+
+\begin{figure}[t]
+\centering
+\scalebox{0.92}{%
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={rectangle, rounded corners=3pt, draw, minimum width=1.55cm,
+              minimum height=0.52cm, align=center},
+  sensor/.style={box, fill=blue!12},
+  stage/.style={box, fill=orange!20},
+  solver/.style={box, fill=green!15, minimum width=1.6cm, minimum height=0.95cm},
+  arr/.style={-{Latex[length=2mm]}, thick},
+  darr/.style={-{Latex[length=2mm]}, thick, dashed, gray!70},
+  ]
+  %% Nodes: sensor column, two init stages, merge/P3 stage, solver, output
+  \node[sensor] (imu)    at (0.0,  1.1) {\ac{imu}\\1\,kHz};
+  \node[sensor] (radar)  at (0.0, -0.5) {Radar\\$\sim$11\,Hz};
+  \node[stage]  (p1)     at (2.2,  2.0) {P1: Gyro\\${\to}R(t)$};
+  \node[stage]  (p2)     at (2.2,  0.2) {P2: \ac{wls}\\${\to}\mathbf{p}(t)$};
+  \node[stage]  (p3)     at (4.1,  1.1) {P3: Priors\\${\to}$ init};
+  \node[solver] (solver) at (5.9,  1.1) {C++ Ceres\\(batch/SW)};
+  \node[box, fill=gray!10] (out) at (7.7, 1.1)
+        {$\hat{\mathbf{p}},\hat{R},\hat{\mathbf{v}}$};
+
+  %% Init pipeline arrows (solid, no crossings by construction)
+  % IMU → P1 (upper-right diagonal)
+  \draw[arr] (imu.north east) -- (p1.west);
+  % IMU → P2 (lower-right diagonal; meets Radar→P2 at P2, no earlier crossing)
+  \draw[arr] (imu.south east) -- (p2.west);
+  % Radar → P2 (upper-right; both end at P2 → no crossing)
+  \draw[arr] (radar.east)     -- (p2.west);
+  % P1 and P2 → P3 (converge; meet at P3, no earlier crossing)
+  \draw[arr] (p1.east)        -- (p3.north west);
+  \draw[arr] (p2.east)        -- (p3.south west);
+  % P3 → Solver
+  \draw[arr] (p3.east)        -- (solver.west);
+  % Solver → Output
+  \draw[arr] (solver.east)    -- (out.west);
+
+  %% Raw-data feeds (dashed, routed above/below init block to avoid crossings)
+  \draw[darr] (imu.east)   to[out=10,  in=170] (solver.north west);
+  \draw[darr] (radar.east) to[out=350, in=190] (solver.south west);
+\end{tikzpicture}%
+}% end scalebox
+\caption{System pipeline. Solid: initialization flow (P1--P3 seed
+the optimizer). Dashed: raw sensor data fed as measurement factors.
+Radar returns first pass a \ac{ransac} ego-velocity prefilter
+(\autoref{sec:models}) that rejects elevation-biased outliers before
+both P2 and the solver. \ac{mocap} supplies only the yaw heading prior
+(magnetometer surrogate) and \ac{rmse} evaluation.}
+\label{fig:pipeline}
+\end{figure}
+
+%==================================================================
+\section{Methodology}
+\label{sec:method}
 
 \subsection{State Representation}
 \label{sec:state}
