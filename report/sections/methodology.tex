@@ -1,0 +1,347 @@
+\section{Methodology}
+\label{sec:method}
+
+\subsection{State Representation}
+\label{sec:state}
+
+\textbf{Position.}
+The world-frame position $\vp_w(t) \in \mathbb{R}^3$ is a quintic
+(order-6) uniform B-spline with knot spacing $\Delta t_p = 5$\,ms.
+Velocity $\dot{\vp}_w$ and acceleration $\ddot{\vp}_w$ are
+obtained as analytical derivatives of the spline.
+
+\textbf{Orientation.}
+We use the \emph{cumulative} SO(3) B-spline
+formulation~\cite{sommer2020efficient}:
+\begin{equation}
+  \vR(t) = \vR_{\mathrm{base}}[k{-}3]
+           \prod_{j=k-3}^{k} \Exp\!\bigl(\tilde{B}_j(t)\,\vOm_j\bigr),
+  \label{eq:ori_spline}
+\end{equation}
+where $k$ is the active knot index for time $t$,
+$\vOm_j \in \so$ are incremental rotation control points
+(standard $\Exp$/$\Log$ map convention),
+$\tilde{B}_j(t)$ are cumulative cubic basis functions, and
+$\vR_{\mathrm{base}}$ is the left anchor rotation.  Knot spacing
+is $\Delta t_o = 8$\,ms.  Body-frame angular velocity $\vom_b(t)$
+is obtained as a closed-form derivative of~\eqref{eq:ori_spline}
+directly from \texttt{evaluate\_lie()} without numerical
+differentiation.
+
+\textbf{Biases and extrinsics.}
+A constant 6-DoF \ac{imu} bias $[\vb_a, \vb_g]$ is estimated jointly.
+The extrinsic pitch $\delta_\text{pitch}$ (1 DoF) is optimized
+with a soft prior; roll and yaw are fixed (unobservable from
+Doppler).  It is freed in the batch solve but locked at the measured
+27.5\degree\ for the sliding window (\autoref{sec:backflips}).
+
+\subsection{Measurement Models}
+\label{sec:models}
+
+\textbf{Radar Doppler with lever arm.}
+The TI IWR6843 reports positive Doppler for a receding target.
+With antenna offset $\mathbf{t}_{bs}$ from the body \ac{com}, the
+predicted Doppler for a point at sensor-frame bearing $\vu_s$ is:
+\begin{equation}
+  v_D = -\vu_b^{\top}\!\left(
+    \vR_{bw}\,\vv_w(t) + \vom_b(t) \times \mathbf{t}_{bs}
+  \right),
+  \label{eq:doppler}
+\end{equation}
+where $\vu_b = \vR_{bs}\,\vu_s$, $\vR_{bs}$ is the rotation from
+radar sensor to body frame (extrinsic $[\text{roll}{=}180\degree,\,
+\text{pitch}{=}27.5\degree,\,\text{yaw}{=}0\degree]$; measured,
+\autoref{sec:results}), and
+$\vR_{bw} = \vR_{wb}^{\top}$.  The residual
+$r_k = v_{D,\text{meas}} - v_{D,\text{pred}}$ uses Huber
+loss with $\delta = 1.0$\,m/s --- robust, as defense-in-depth, to any
+residual Doppler noise on the surviving inlier returns; the
+\SI{0.049}{\metre\per\second} Doppler resolution sets a lower bound but
+does not drive the choice.
+
+\textbf{\ac{ransac} ego-velocity prefilter (default front-end).}
+A single-chip radar with only 2\,TX antennas has limited elevation
+diversity, and a minority of returns carry an elevation-correlated
+Doppler bias that a robust kernel only down-weights.  Following
+reve~\cite{doer2020ekf}, we therefore prepend a reve-style 3D
+least-squares \ac{ransac} ego-velocity estimate to the per-frame Doppler set
+(inlier threshold $0.15$\,m/s) and pass only the inlier returns to the
+spline solver, hard-rejecting the elevation-biased minority before the
+optimization.  The prefilter is seeded
+(\texttt{numpy.default\_rng(0)}), so the full pipeline reproduces
+bit-identically; frames with fewer than five returns bypass it
+unchanged --- on those sparse frames, including most of the backflip
+regime, the in-solver Huber loss is the sole radar outlier protection,
+so the two stages are complementary, not redundant.  It runs once at
+frame load, not per window, so it does not
+enter the per-window timing budget (\autoref{sec:results}).
+\autoref{sec:baselines} quantifies what it removes --- on the public
+ICINS flights it closes an order-of-magnitude vertical-drift gap, and on
+our own flights it improves aggressive-racing live position by $22\%$ ($0.50\to0.39$\,m
+live) --- and it is enabled by default for every result in this paper.
+
+\textbf{Dynamics-adaptive measurement weighting.}
+The central practical finding of this work is that a single
+\emph{rate-adaptive trust allocation} across the three measurement
+streams covers hover to \SI{10}{\radian\per\second} tumbling with one
+configuration.  Each component was derived from a measured failure
+diagnosis (\autoref{sec:backflips}), not tuned ad hoc:
+\begin{itemize}
+\item \emph{Gyroscope --- trust more when rotating fast.}
+  Per-sample weight
+  $\lambda_g^{\mathrm{eff}} = \lambda_g\bigl(1 + (|\vz_g|/\omega_g)^p\bigr)$
+  with $\lambda_g{=}4$, $\omega_g{=}4$\,rad/s, $p{=}4$, using the
+  \emph{measured} rate (causal, no spline evaluation).  The quartic
+  exponent keeps racing untouched ($\lambda^{\mathrm{eff}}\!\approx\!\lambda_g$
+  below 3\,rad/s) and reaches $\lambda^{\mathrm{eff}}\!\approx\!160$--$500$
+  during flips, where the gyroscope is the only clean sensor.  A
+  quadratic ramp ($p{=}2$) stiffens the gyro already at 2--5\,rad/s ---
+  where radar is still informative --- and degrades racing roll/yaw.
+\item \emph{Radar --- trust less when rotating fast.}
+  A radar frame integrates over tens of milliseconds; at body rate
+  $\omega$ the scene smears by $\omega\,T_{\mathrm{frame}}$
+  ($\approx$17\degree\ at 10\,rad/s).  Per-frame noise inflation
+  $\sigma_{\mathrm{eff}}^2 = \sigma_0^2\bigl(1+(|\vom|/\omega_r)^2\bigr)$,
+  $\omega_r{=}4$\,rad/s, $|\vom|$ from the warm-start spline at
+  problem-build time; continuous, no hard-gate tuning cliff.
+\item \emph{Accelerometer --- same form,} $\omega_a{=}8$\,rad/s:
+  during flips the accelerometer carries thrust transients and
+  vibration, its gravity information is nil mid-flip, and it otherwise
+  distorts orientation through the $\vR$--$\ddot{\vp}$ coupling.
+\item \emph{Per-point \ac{snr} weighting.}
+  $w_i = \mathrm{clip}\bigl((I_i/\tilde{I})^{\alpha},\,0.25,\,4\bigr)$
+  with frame-median intensity $\tilde I$ and $\alpha{=}1$
+  (median-relative, so the global radar weight is unchanged).  High-\ac{snr}
+  returns carry measurably better Doppler: on aggressive racing this
+  alone improves live orientation from 3.31\degree\ to 2.88\degree\ at
+  unchanged position.
+\end{itemize}
+The weighting trades are made explicit in
+\autoref{sec:backflips}: on tumbling flight the radar/accelerometer
+gates exchange velocity accuracy for orientation accuracy along a
+measured Pareto curve; $(\omega_r,\omega_a){=}(4,8)$ is its knee.
+
+\textbf{Flip-regime Doppler correction.}
+Under sustained tumbling an additional attitude-correlated Doppler
+systematic appears, which we absorb with a per-point term
+$v_{\mathrm{corr}} = v_{\mathrm{meas}} - b\,u_{s,z}$ ($b{=}{-}1.5$\,m/s,
+backflips only).  \autoref{sec:backflips} shows why $b$ must be
+interpreted as a flight-regime error proxy rather than a physical
+elevation bias of the 2-TX array.
+
+\textbf{Accelerometer.}
+\begin{equation}
+  \mathbf{r}_a = \vz_a - \vR_{bw}\!\left(\ddot{\vp}_w - \vg_w\right) - \vb_a,
+  \label{eq:accel}
+\end{equation}
+weighted $\lambda_a = 0.01$.
+
+\textbf{Gyroscope.}
+\begin{equation}
+  \mathbf{r}_g = \vz_g - \vom_b(t) - \vb_g,
+  \label{eq:gyro}
+\end{equation}
+weighted $\lambda_g = 4.0$ (L2 loss).
+
+\textbf{Gravity direction.}
+\begin{equation}
+  \mathbf{r}_{\mathrm{tilt}} =
+    \frac{\vz_a - \vb_a}{\|\vz_a - \vb_a\|} - \vR_{bw}^{\top}\hat{\vg},
+  \label{eq:tilt}
+\end{equation}
+active when $\bigl|\,\|\vz_a{-}\vb_a\| - g\,\bigr| < 3\,\mathrm{m/s}^2$.
+This provides roll/pitch anchoring during near-hover phases without
+contaminating dynamic flight.
+
+\textbf{Heading prior.}
+Yaw is unobservable from Doppler alone (all yaw-equivalent
+trajectories predict identical radial velocities under pure
+rotation about gravity).  We supply a heading reference from a magnetometer (standard on
+most platforms; here simulated by \ac{mocap} yaw).  The residual $r_\psi = \psi_\text{est} - \psi_\text{ref}$
+is added at $\sim$100\,Hz, with $\lambda_\psi = 0.6$ by default and
+raised to $10$ on the heading-critical bags (slow racing, backflips;
+\autoref{tab:sw} footnote).
+
+\subsection{Regularization}
+\label{sec:reg}
+
+\textbf{Position: minimum snap.}
+$E_{\text{snap}} = \lambda_s \int \|\vp^{(4)}(t)\|^2\,dt$
+with $\lambda_s = 2{\times}10^{-5}$.
+
+\textbf{Orientation: minimum angular acceleration.}
+Rather than penalizing angular velocity increments (minimum $\omega$),
+which opposes every banked turn and the entire backflip maneuver, we
+penalize the \emph{second} finite difference on SO(3):
+\begin{equation}
+  \mathbf{r}_\alpha = \Log(\vR_{i-1}^{-1}\vR_i)
+                    - \Log(\vR_i^{-1}\vR_{i+1}),
+  \label{eq:min_alpha}
+\end{equation}
+which is zero for constant angular rate.
+Swept $\lambda_\alpha \in \{0, 0.001, 0.01, 0.1, 1.0\}$; 0.1
+was best across all bags (1.0 caused backflip divergence).
+
+\subsection{Sensor-Only Initialization (P1--P3)}
+\label{sec:init}
+
+\textbf{P1: Orientation.}
+A stationary segment before flight is detected automatically; the \ac{imu}
+biases $[\vb_a, \vb_g]$ are seeded from the gravity residual and mean
+gyroscope reading during this segment (\ac{mocap} orientation is used for a
+full 3-D accelerometer bias estimate when available; otherwise a gravity-
+aligned scalar correction is applied).
+Initial roll/pitch are then derived from the stationary accelerometer
+(gravity direction).  Yaw is set to zero (gauge freedom; corrected
+later by the heading prior).  The full orientation trajectory is
+obtained by forward-integrating debiased gyroscope readings:
+$\vR(t+\Delta t) = \vR(t)\,\Exp\!\bigl((\vz_g - \vb_g)\Delta t\bigr)$.
+
+\textbf{P2: Position.}
+Per radar frame, weighted least squares estimates the 3D ego-velocity
+$\vv_{\text{wls}}$ from the \ac{ransac} inlier returns
+(\autoref{sec:models}).  Doppler alias
+unwrapping uses \ac{imu}-integrated world-frame velocity to select the
+correct alias before the main solver runs (20.9\% of points aliased
+in fast racing, 1.7\% in slow racing).
+World-frame velocity is integrated with forward Euler to produce an
+initial position trajectory.
+
+\textbf{P3: Boundary priors.}
+Position, velocity, orientation, and angular velocity boundary
+priors are built from the sensor-only state at $t=0$.
+$\lambda_{\text{bnd}} = 1000$ for position and velocity.
+
+\subsection{Sliding Window with Schur Complement Marginalization}
+\label{sec:sw}
+
+\begin{figure}[t]
+\centering
+\scalebox{0.97}{%
+\begin{tikzpicture}[
+  font=\small,
+  cp/.style={circle, draw, minimum size=6pt, inner sep=0pt},
+  ]
+  % --- shaded zone backgrounds (draw first, CPs on top) ---
+  \fill[red!12]   (1.5,-0.22) rectangle (2.7, 0.22);
+  \fill[green!12] (2.7,-0.22) rectangle (4.5, 0.22);
+
+  % --- timeline ---
+  \draw[->, thick] (-0.2,0) -- (8.4,0) node[right]{$t$};
+
+  % --- gray CPs ---
+  \foreach \x in {0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0,
+                  4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5}
+    \node[cp, fill=gray!30] at (\x, 0) {};
+
+  % --- red (marginalized) CPs ---
+  \foreach \x in {1.5, 2.0, 2.5}
+    \node[cp, fill=red!55] at (\x, 0) {};
+
+  % --- green (boundary) CPs ---
+  \foreach \x in {3.0, 3.5, 4.0, 4.5}
+    \node[cp, fill=green!55!black] at (\x, 0) {};
+
+  % === ABOVE the timeline: window span brackets ===
+
+  % Window w bracket: ticks at y=0.32, horizontal bar at y=0.55, label at y=0.75
+  \draw[blue!75!black, thick]
+    (1.5,0.32) -- (1.5,0.55) -- (4.5,0.55) -- (4.5,0.32);
+  \node[blue!75!black] at (3.0, 0.80) {window $w$ \ (3\,s)};
+
+  % Window w+1 bracket: ticks at y=0.95, bar at y=1.18, label at y=1.38
+  \draw[blue!45, thick, dashed]
+    (2.7,0.95) -- (2.7,1.18) -- (5.7,1.18) -- (5.7,0.95);
+  \node[blue!45] at (4.2, 1.43) {window $w{+}1$};
+
+  % === BELOW the timeline: zone labels ===
+  % Red anchored east (text grows left); green anchored west (text grows right)
+  % → labels always point away from the shared boundary at x=2.7
+
+  \node[red!75!black, anchor=east] at (2.5, -0.65) {stride (0.3\,s)};
+  \node[red!75!black, anchor=east, font=\footnotesize] at (2.5, -1.00) {marginalized};
+
+  \node[green!55!black, anchor=west] at (2.9, -0.65) {boundary state};
+  \node[green!55!black, anchor=west, font=\footnotesize] at (2.9, -1.00) {30-dim prior};
+
+  % Prior propagation: boundary CPs feed the next window
+  \draw[-{Latex[length=2mm]}, green!55!black, thick]
+    (4.2, -1.30) to[out=0, in=180] (5.5, -1.30);
+  \node[green!55!black, font=\footnotesize, anchor=west] at (5.55, -1.30)
+    {prior $\to w{+}1$};
+
+\end{tikzpicture}%
+}% end scalebox
+\caption{Sliding window: red CPs (stride zone) are marginalized
+into a 30-dim Gaussian prior on the green boundary CPs.}
+\label{fig:sw_diagram}
+\end{figure}
+
+The fixed-lag smoother advances a 3\,s window in 0.3\,s strides.
+After each Ceres LM solve, the \emph{stride zone} CPs and orientation
+knots are marginalized:
+\begin{equation}
+  S = H_{bb} - H_{ab}^{\top} H_{aa}^{-1} H_{ab},
+  \label{eq:schur}
+\end{equation}
+where $a$ indexes stride-zone variables and $b$ indexes boundary
+variables (last $N{-}1$ position CPs, last $N{-}1$ orientation
+knots, and the 6-DoF bias; dimension 30).  $S$ is factored as
+$S = LL^{\top}$ and stored as a \texttt{MargPriorFunctor} for the
+next window.
+
+\textbf{Re-centered prior.}
+Before adding the prior to each window's problem, the linearization
+point $\mathbf{x}_0$ is updated to the current warm-start.  This
+makes the prior contribute only curvature (the Hessian shape), not a
+gradient pull toward a stale historical estimate.  The residual is
+$\mathbf{r} = L^{\top}(\mathbf{x} - \mathbf{x}_0)$ in local
+coordinates.
+
+\textbf{Consistent factor selection (Markov-blanket rule).}
+Which residuals enter Eq.~\eqref{eq:schur} determines whether the
+prior is a true marginal.  A na\"ive choice --- all residuals touching
+marginalized \emph{or} boundary variables --- pulls in every \ac{imu} factor
+of the window through the shared bias block ($\sim$25{,}000 residual
+rows), \emph{conditions} on interior states (treating them as perfectly
+known), and double-counts factors that are re-added in the next window.
+The resulting prior is overconfident by orders of magnitude and must be
+deflated by a hand-tuned scale of $10^{-7}$--$2{\times}10^{-4}$
+depending on flight dynamics (\autoref{sec:prior_scale}).
+We instead exploit B-spline locality: a factor touching marginalized
+knot $i$ has support $[i, i{+}N{-}1] \subseteq$
+marg\,$\cup$\,boundary, so including \emph{only} residuals that touch a
+marginalized variable (plus the previous prior) yields an exactly
+closed, consistent marginal.  With this rule the prior is applied
+\textbf{unscaled} (scale $=1$) across all flight regimes, and its
+Mahalanobis residual at the solution drops from $10^{6}$--$10^{12}$
+to $\mathcal{O}(1)$ --- the prior agrees with the incoming data.
+
+\emph{Relation to \ac{fej}.}  This mechanism is distinct from, and
+complementary to, first-estimates-Jacobian approaches to
+marginalization consistency~\cite{dongsi2012consistency}: \ac{fej} fixes
+the \emph{linearization points} of the prior to preserve the
+observability nullspace, whereas our rule corrects the
+\emph{factor set} entering the Schur complement so that the marginal
+is exactly closed \emph{at a fixed linearization point}.  We do not
+employ \ac{fej}; instead the prior is re-centered at each window's warm
+start (curvature retained, gradient pull discarded).  We do not claim
+this re-centering preserves consistency across relinearizations as a
+theoretical guarantee; rather, in our experiments it left no measurable
+inconsistency symptom --- the \ac{nees} analysis of
+\autoref{sec:nees} provides the corresponding empirical evidence.
+
+\textbf{Live-edge warm start.}
+Control points entering the window each stride would otherwise hold
+stale dead-reckoned initialization values; any CP-level seam is
+amplified by the min-snap term ($\propto \Delta/\Delta t_p^4$, initial
+cost $\sim$$10^{13}$).  We rigidly align the entering segment (shift +
+$\Delta R$) to the last data-supported CP of the previous solution,
+reducing the initial cost by five orders of magnitude.
+
+\textbf{Marginalization cost.}
+The restricted Gauss--Newton Hessian for Eq.~\eqref{eq:schur} is
+accumulated by evaluating the affected cost functions directly
+(tangent-space Jacobians via the manifold plus-Jacobian, Triggs
+correction for robust losses), avoiding a full solver re-linearization;
+the marginalization step costs $\sim$10\,ms per window.

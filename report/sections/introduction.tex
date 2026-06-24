@@ -1,0 +1,66 @@
+\section{Introduction}
+\label{sec:intro}
+
+Visual odometry and \ac{lidar}-based \ac{slam} are well-established, but both
+degrade in dusty, foggy, featureless, or textureless environments.
+Millimeter-wave (mmWave) \ac{fmcw} radar is inherently robust to these
+conditions: it penetrates smoke and dust, operates in the dark, and
+measures Doppler velocity directly without feature matching.  These
+properties make it attractive for aggressive flight in unstructured
+environments.
+
+Combining a mmWave radar with an \ac{imu} (\ac{rio}) for ego-motion estimation
+has been explored with discrete-time \ac{ekf} and graph-optimization
+formulations~\cite{doer2020ekf,kramer2020rve}.  However, the
+asynchronous nature of radar-\ac{imu} data (radar at $\sim$11\,Hz, \ac{imu} at
+$\sim$1\,kHz) motivates a continuous-time representation where the
+trajectory is a smooth function evaluated at any sensor timestamp
+without interpolation approximation.
+
+\textbf{Research question.}
+This work asks, end to end: \emph{can a single-chip mmWave radar,
+fused with an \ac{imu}, provide usable 6-DoF state estimation --- and if
+so, what does it take?}  The starting point is what the sensor can and
+cannot do: per-point Doppler yields direct ego-velocity, but at
+10--60 points per frame there are no bearing-stable features for
+position fixing, and yaw is a gauge freedom of Doppler+\ac{imu}.  The
+system is therefore a \emph{velocity and orientation} source whose
+position estimate drifts with distance --- by construction, not by
+defect.  What it takes to turn that capability into accurate
+estimates, and where it ultimately fails, is the subject of the rest
+of this paper.
+
+We contribute:
+\begin{itemize}
+  \item \emph{Single-chip radar under aggressive and tumbling flight},
+        characterizing how the radar measurement model breaks in this
+        regime: rate-dependent intra-frame smearing, and the finding
+        that the apparent elevation bias under tumbling is a
+        flight-regime error proxy, not a physical antenna constant.
+        Backflips at \SI{10}{\radian\per\second} on a single-chip
+        sensor are, to our knowledge, unexplored.
+  \item A \emph{consistency-analyzed} fixed-lag smoother: a factor-set
+        selection rule exploiting B-spline local support to make the
+        Schur marginal exactly closed --- distinct from and
+        complementary to \ac{fej} --- eliminating prior-weight tuning, at
+        0.35--0.70\,s per window on a laptop (real time for aggressive
+        racing).
+  \item One measurement-weighting configuration from hover to
+        \SI{10}{\radian\per\second}, with the velocity--orientation
+        trade as a measured Pareto curve and accuracy validated on
+        \emph{held-out flights} never used for tuning.
+  \item Honest negative results: a diagnostic symptom pattern for
+        marginalization inconsistency; a representation-level study
+        that \emph{disproves} the adaptive-knot-density hypothesis for
+        this regime; ground-truth limits during aggressive maneuvers;
+        and a \ac{nees} check confirming the reported orientation covariance
+        is consistent on racing flights.
+\end{itemize}
+
+\textbf{Data and code.}
+The complete system --- physically correct Doppler model with lever
+arm, sensor-only initialization, full hyperparameter disclosure, and
+deterministic re-runs --- is released for independent reproduction.
+The datasets (Vicon \ac{mocap} lab, TI IWR6843AOPEVM, Pixhawk) and the
+C++ Ceres solver with Python bindings are available at
+\url{https://github.com/Dr1zz3l/radar-iwr6843-driver}.

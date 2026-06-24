@@ -1,0 +1,69 @@
+\section{Experimental Setup}
+\label{sec:setup}
+
+All experiments use the rosbag datasets collected in a Vicon \ac{mocap}
+lab.  \autoref{tab:datasets} summarizes the three bags used for
+evaluation.
+
+\begin{table}[t]
+\centering
+\caption{Dataset Summary}
+\label{tab:datasets}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Bag & Dur.\ (s) & $v_{\max}$ (m/s) & $|\omega|_{\max}$ (rad/s) & Frames \\
+\midrule
+Slow racing & 25.8 & 3.65 & 2.62 & 258 \\
+Fast racing & 18.0 & 5.66 & 9.14 & 179 \\
+Backflips\textsuperscript{*} & 18.1 & $\sim$4.3 (95\%) & $\sim$10.9 (95\%) & 181 \\
+\bottomrule
+\multicolumn{5}{l}{\textsuperscript{*}95th percentile; \ac{mocap} tracking artifacts dominate peaks.}
+\end{tabular}
+\end{table}
+
+\textbf{\ac{imu} rate:} $\sim$993\,Hz (full rate, no downsampling for C++ solver).
+\textbf{Evaluation:} Start-anchored rigid alignment to \ac{mocap} ground
+truth: the alignment rotation $\mathbf{R}_\mathrm{align} =
+\mathbf{R}_{\mathrm{gt},0}\,\mathbf{R}_{\mathrm{est},0}^\top$
+and translation $\mathbf{t}_\mathrm{align} =
+\mathbf{p}_{\mathrm{gt},0} - \mathbf{R}_\mathrm{align}\,
+\mathbf{p}_{\mathrm{est},0}$ are fixed at frame~0 (no scale).
+The final 3\,s is trimmed.  Velocity \ac{rmse} is computed from the
+analytical first derivative of the position B-spline, not from finite
+differences of the estimated trajectory.
+\emph{Position drift} (\%) is position \ac{rmse} normalised by the total
+GT path length --- the standard odometry metric for a
+dead-reckoning system with no loop closure.
+Start-anchored alignment is harsher than the whole-trajectory
+SE(3)/Umeyama fit (the EVO/KITTI default) used by most odometry papers,
+because it cannot retro-fit a constant transform to cancel accumulated
+drift: it fixes the frame once, at the start, exactly as a deployed
+estimator must.  We adopt it precisely for this causal,
+deployment-relevant reading, and apply it identically to every system
+compared.  Where we compare against externally published figures
+(\autoref{sec:baselines}) we additionally report whole-trajectory-aligned
+numbers so the baselines can be cross-checked against their own papers.
+\emph{Translational \ac{rpe}} (relative pose error, \autoref{fig:rpe}) is
+the KITTI-standard per-segment displacement error averaged over all
+sub-segments of a given accumulated GT length.
+Because the start-anchored alignment offsets cancel within every
+relative displacement, \ac{rpe} is alignment-independent.
+For sliding window, \emph{live (leading-edge)} \ac{rmse} is computed by
+snapshotting the estimate at $[t_\text{end}{-}\text{stride},\, t_\text{end}]$
+of each window at 50\,Hz before any subsequent refinement.  The
+\emph{settled} \ac{rmse} evaluates the same trajectory after all windows
+have refined each point.
+
+\textbf{Solver implementation.}
+The Ceres LM problem is solved with \texttt{SPARSE\_NORMAL\_CHOLESKY}
+(SuiteSparse), up to 400 iterations.
+All three factor types (gyroscope, accelerometer, and radar Doppler)
+use hand-derived analytic Jacobians based on the basalt
+cumulative-spline Jacobian struct; Ceres automatic differentiation was
+eliminated to avoid Jet-arithmetic overhead over the large set of
+spline control-point parameters per factor.
+In the sliding-window solver the linear solve and the
+marginalization-prior recompute (\texttt{compute\_prior}) are the
+dominant costs; Jacobian evaluation accounts for roughly 25--30\% of
+per-window wall time.

@@ -1,0 +1,52 @@
+\section{Conclusion}
+\label{sec:conclusion}
+
+\emph{Can a single-chip mmWave radar plus \ac{imu} provide usable 6-DoF
+state estimation?}  Yes --- as a \emph{velocity and orientation}
+source: at the live leading edge,
+\SI{0.45}{\metre\per\second}/\SI{1.9}{\degree} on gentle racing,
+\SI{0.32}{\metre\per\second}/\SI{2.8}{\degree} on aggressive racing
+(0.35--0.70\,s per window on a laptop), confirmed on held-out flights
+and with \ac{nees}-consistent orientation covariance.
+Absolute position is not observable from Doppler+\ac{imu} and drifts with
+distance (0.6--0.9\% on racing, 2.9\% under tumbling); yaw requires a
+heading sensor.  Within those structural limits, \emph{good results
+took three things}: (1) a \emph{consistent} fixed-lag smoother ---
+the Markov-blanket factor-selection rule makes the marginalization a
+true marginal, eliminating regime-dependent prior tuning whose
+symptom pattern we document as a reusable diagnostic;
+(2) a \emph{dynamics-adaptive trust allocation} across the
+measurement streams (rate-adaptive gyroscope weight, rate-inflated
+radar/accelerometer noise, per-point \ac{snr} weighting) --- one
+configuration from hover to \SI{10}{\radian\per\second}, with the
+velocity--orientation trade made explicit as a measured Pareto curve;
+and (3) \emph{characterized sensor systematics} --- including the
+finding that the apparent elevation bias under tumbling is a
+flight-regime error proxy, not an antenna constant, and that the
+extrinsic pitch is weakly observable, best fixed at its measured value
+rather than estimated online.  Notably, the largest accuracy gains came from diagnosis-led
+re-weighting of existing measurements, not from added model capacity:
+a representation-level study showed the orientation spline already
+tracks \SI{10}{\radian\per\second} flips at the gyroscope noise floor,
+disproving our own adaptive-knot-density hypothesis before
+implementation.
+
+Open limitations: (1) loop-scale position geometry through flips is
+bounded by during-flip radar data quality (Doppler noise
+$15\times$ the level-flight core), demonstrated by an asymmetric
+factor-split ablation; (2) ground truth itself degrades during flips
+(\ac{mocap} occlusion), bounding what can be measured there; and
+(3) cross-validation against the \ac{ekf}-\ac{rio} family
+(\autoref{sec:baselines}) reveals a design-space split.  With our
+default \ac{ransac} front-end --- the same single-chip outlier rejection
+\mbox{reve} uses --- our solver reaches position parity on their public
+flights ($0.5$--$1.9$\,m, same order as the baselines), matches their
+roll/pitch, and leads on heading-aided orientation; the prefilter is
+what closes the single-chip elevation-bias gap, turning a Huber-only
+port's $12$--$15\%$ vertical drift into baseline parity.  In the reverse
+direction their stock filters, starved by our sparse ${\sim}13$-point
+clouds and racing-frame vibration, reject up to 99.7\% of radar updates
+and dead-reckon on our slow-racing bag (degrading, not diverging, on the
+faster one).  Each stack is engineered for its own regime --- dense
+clouds and a low-vibration carrier versus sparse, finely quantized
+Doppler on an aggressive platform.
