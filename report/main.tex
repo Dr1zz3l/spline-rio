@@ -1007,8 +1007,8 @@ yaw aiding) are re-run from their stock configurations on the same
 bags, and \emph{both} systems are evaluated with the identical causal
 protocol of Sec.~\ref{sec:setup} (live estimates, start-anchored
 alignment, same windows and ground truth).
-Table~\ref{tab:baselines} reports the headline metrics and
-Table~\ref{tab:baselines-decomp} the decomposition.  On position our
+Table~\ref{tab:baselines} reports the headline metrics~(a) and their
+decomposition~(b).  On position our
 solver reaches the same order as the baselines (0.5--1.9\,m,
 0.6--1.3\% drift), with velocity RMSE 0.07--0.08\,m/s matching theirs.
 The full 3-DoF orientation column favors our solver
@@ -1018,7 +1018,7 @@ entirely \emph{yaw}: our heading is anchored by a pseudo-magnetometer
 place of the MoCap yaw available on our own platform --- whereas
 ekf-yrio uses sensor-only Manhattan-world yaw and ekf-rio is unaided.
 On the heading-\emph{independent} roll and pitch the three systems are
-comparable ($0.25$--$0.74\degree$, Table~\ref{tab:baselines-decomp}),
+comparable ($0.25$--$0.74\degree$, Table~\ref{tab:baselines}(b)),
 so the orientation column is not an attitude win; removing our heading
 aiding confirms this --- on flight\_1 our unaided yaw drifts to
 $9.9\degree$, matching unaided ekf-rio ($10.1\degree$), while roll/pitch
@@ -1038,7 +1038,7 @@ large systematic error (whole-trajectory ATE $9.6$\,m on flight\_1,
 $12$--$15\%$ vertical drift) that the baselines do not exhibit --- their
 vertical drift stays $\sim$0.2--0.3\,m; the RANSAC prefilter removes it
 at the source on all four flights, cutting whole-trajectory ATE to
-$0.24$--$0.76$\,m (Table~\ref{tab:baselines-decomp}) and bringing
+$0.24$--$0.76$\,m (Table~\ref{tab:baselines}(b)) and bringing
 position to baseline parity.  We could not attribute the baselines'
 vertical accuracy to altitude aiding: an ablation disabling the
 barometer in ekf-yrio changes its vertical drift by $\le$0.04\,m (within
@@ -1048,7 +1048,7 @@ vertical estimates from radar and IMU alone --- by the same
 outlier-rejection mechanism.  The single-chip elevation bias is
 therefore real but not fundamental: it is an outlier-rejection gap,
 closed by the same RANSAC stage the baselines use.  Under
-whole-trajectory Umeyama alignment (Table~\ref{tab:baselines-decomp})
+whole-trajectory Umeyama alignment (Table~\ref{tab:baselines}(b))
 all three systems agree to $\le$1\,m, consistent with the baselines'
 published full-alignment figures (they are faithfully reproduced) and
 confirming that our default front-end matches them.
@@ -1082,19 +1082,30 @@ clouds, hardware triggering, and a low-vibration carrier; ours for
 sparse, finely quantized Doppler on an aggressive platform.
 
 \begin{table*}[t]
-\caption{Cross-validation on the public ICINS-2021 flight datasets
-\cite{doer2021yrio}.  All systems evaluated with our causal protocol
-(live estimate, start-anchored alignment): position RMSE [m] /
-velocity RMSE [m/s] / orientation RMSE [\degree] / position drift
-[\% of path].  Heading aiding differs by design (see text);
-Table~\ref{tab:baselines-decomp} decomposes these numbers into their
-heading-independent and per-axis structure.}
+\caption{Cross-validation on the public ICINS-2021 flight
+datasets~\cite{doer2021yrio}, all systems under our causal protocol
+(live estimate, start-anchored alignment).
+\textbf{(a)}~Headline metrics; heading aiding differs by design (see text).
+\textbf{(b)}~Decomposition, making the honest structure visible at a
+glance: \emph{roll/pitch} is the heading-independent attitude RMSE
+(per-axis RMS, yaw excluded), so the large orientation gap in~(a) is yaw,
+not attitude; \emph{our drift} splits our position error into horizontal
+and vertical, both sub-1.3\% under the default RANSAC prefilter
+(Sec.~\ref{sec:models}; the footnote gives the prefilter-disabled figures
+for contrast); \emph{whole-traj.\ ATE} re-evaluates every system under the
+standard EVO/KITTI Umeyama alignment (no scale) for cross-checking against
+published figures.}
 \label{tab:baselines}
 \centering
 \footnotesize
-\setlength{\tabcolsep}{8pt}
-\begin{tabular}{lccc}
+% Box both subtables, then centre each within the wider one's width so they
+% share one axis; footnote kept out of the tabular so it cannot stretch the
+% last column.
+\setlength{\tabcolsep}{6pt}%
+\sbox0{\begin{tabular}{lccc}
 \toprule
+\multicolumn{4}{l}{\textit{(a)~Headline: position [m] / velocity [m/s] / orientation [\degree] / drift [\%]}}\\
+\midrule
 Flight (path) & ekf-rio & ekf-yrio & Ours \\
 \midrule
 1 (142\,m) & 1.41 / 0.20 / 10.1 / 1.0 & \textbf{0.39} / \textbf{0.08} / 0.70 / \textbf{0.3} & 0.92 / 0.08 / \textbf{0.51} / 0.6 \\
@@ -1102,28 +1113,12 @@ Flight (path) & ekf-rio & ekf-yrio & Ours \\
 3 (147\,m) & \textbf{0.47} / 0.08 / 1.07 / \textbf{0.3} & 0.48 / 0.08 / 1.09 / \textbf{0.3} & 1.92 / \textbf{0.07} / \textbf{0.52} / 1.3 \\
 4 (78\,m)  & 0.39 / 0.09 / 3.67 / 0.5 & \textbf{0.22} / \textbf{0.07} / 1.41 / \textbf{0.3} & 0.92 / 0.07 / \textbf{1.13} / 1.2 \\
 \bottomrule
-\end{tabular}
-\end{table*}
-
-\begin{table*}[t]
-\caption{Decomposition of the Table~\ref{tab:baselines} cross-validation, making the
-honest structure visible at a glance.  \emph{Roll/pitch} is the heading-independent
-attitude RMSE (per-axis RMS, yaw excluded): the three systems are comparable, so the
-large orientation gap in Table~\ref{tab:baselines} is yaw, not attitude.  \emph{Our
-drift} splits our position error into horizontal and vertical; with the default RANSAC
-prefilter (Sec.~\ref{sec:models}) both are sub-1.3\%, the vertical elevation-bias leak
-having been rejected at the front-end (the footnote gives the prefilter-disabled figures
-for contrast).
-\emph{Whole-traj.\ ATE} re-evaluates every system under the standard EVO/KITTI Umeyama
-alignment (no scale) for cross-checking against published figures.}
-\label{tab:baselines-decomp}
-\centering
-\footnotesize
-\setlength{\tabcolsep}{5pt}
-% Footnote kept out of the tabular so its length cannot stretch the last
-% column; wrapped to the table width below instead.
-\sbox0{\begin{tabular}{lcccccccc}
+\end{tabular}}%
+\setlength{\tabcolsep}{5pt}%
+\sbox2{\begin{tabular}{lcccccccc}
 \toprule
+\multicolumn{9}{l}{\textit{(b)~Decomposition}}\\
+\midrule
  & \multicolumn{3}{c}{Roll/pitch RMSE [\degree]} & \multicolumn{2}{c}{Our drift [\% path]} & \multicolumn{3}{c}{Whole-traj.\ ATE [m]} \\
 \cmidrule(lr){2-4}\cmidrule(lr){5-6}\cmidrule(lr){7-9}
 Flight & ekf-rio & ekf-yrio & Ours & horiz.\ & vert.\ & ekf-rio & ekf-yrio & Ours \\
@@ -1134,9 +1129,16 @@ Flight & ekf-rio & ekf-yrio & Ours & horiz.\ & vert.\ & ekf-rio & ekf-yrio & Our
 4 & 0.74 & 0.74 & 0.74 & 0.26 & 1.15 & 0.30 & 0.15 & 0.46 \\
 \bottomrule
 \end{tabular}}%
-\usebox0
-\par\vspace{2pt}
-\parbox{\wd0}{\raggedright\footnotesize Prefilter \emph{disabled} (Huber-only): our vertical drift $12$--$15\%$; whole-traj.\ ATE $9.57/2.88/10.86/5.48$\,m (flights~1--4).\par}
+\dimen0=\wd0 \ifdim\wd2>\dimen0 \dimen0=\wd2 \fi
+\makebox[\dimen0][c]{\usebox0}
+
+\vspace{5pt}
+
+\makebox[\dimen0][c]{\usebox2}
+
+\vspace{2pt}
+
+\parbox{\dimen0}{\raggedright\footnotesize Prefilter \emph{disabled} (Huber-only): our vertical drift $12$--$15\%$; whole-traj.\ ATE $9.57/2.88/10.86/5.48$\,m (flights~1--4).\par}
 \end{table*}
 
 \subsection{Output Covariance Consistency (NEES)}
