@@ -43,7 +43,7 @@ nominal; the 3D-printed, hand-assembled fixture is a few degrees short).
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | Roll  | 180° | upside-down mounting |
-| Pitch | **27.5° (frozen)** | as-built value. Batch self-calibration recovers **27.0°/27.2°** init-independently (from either 25.5° or 30° init); frozen at 27.5° for all sliding-window runs — the SW cannot observe a 1-DOF extrinsic (free pitch drifts init-dependently to 29.5/34.7/40°). `extrinsics.yaml` keeps 25.5° only as the batch self-cal *init*; deployed runs lock 27.5° via `--set-ext`. (2026-06-15 update; old docs said 25.5°.) |
+| Pitch | **27.5° (frozen)** | Batch self-cal yields **27.0°/27.2°** *from the legacy 25.5° init only* — it is init-DEPENDENT, NOT init-independent (2026-06-24 sweep: 25.5°→27°, 30°→36°, 33°→42° on both racing bags). Pitch is weakly observable (position RMSE a shallow plateau), so it is frozen at 27.5° for all sliding-window runs rather than estimated; the SW likewise drifts (free pitch → 29.5/34.7/40°). `extrinsics.yaml` keeps 25.5° only as the batch self-cal *init*; deployed runs lock 27.5° via `--set-ext`. (2026-06-24: "init-independent recovery" claim retracted, was wrong.) |
 | Yaw   | 0° | unobservable from Doppler; locked |
 | Translation `t_bs` | `[0.08, +0.02, −0.01]` m | 8 cm fwd, 2 cm left, 1 cm down in body frame |
 

@@ -243,20 +243,25 @@ platform.
 The system runs on a quadrotor with a TI IWR6843AOPEVM
 mmWave radar (60--64\,GHz FMCW), a Pixhawk flight
 controller IMU, and a Vicon MoCap system used for ground
-truth evaluation.  The radar is mounted upside-down with a nominal
-$30\degree$ downward tilt (CAD); the mount is 3D-printed and
-hand-assembled, so the as-built angle is uncertain by a few degrees and
-is recovered by the batch extrinsic self-calibration
-(Sec.~\ref{sec:results}), then frozen for the sliding window.
-The nominal extrinsic rotation is $[180\degree, 25.5\degree, 0\degree]$
-(roll, pitch, yaw), translation $[0.08, 0.02, -0.01]$\,m in the body
-frame.  The radar operates at $\sim$11\,Hz with 0.049\,m/s Doppler
+truth evaluation.  The radar is mounted upside-down with a $30\degree$ downward tilt by
+CAD design; because the mount is 3D-printed and hand-assembled, the
+as-built angle is a few degrees off and is recovered by the batch
+extrinsic self-calibration (Sec.~\ref{sec:results}), then frozen for the
+sliding window.  The extrinsic rotation is
+$[180\degree, 25.5\degree, 0\degree]$ (roll, pitch, yaw), translation
+$[0.08, 0.02, -0.01]$\,m in the body frame; the $25.5\degree$ pitch is a
+legacy value from an early calibration that seeds the solve, not a
+measurement.  The radar operates at $\sim$11\,Hz with 0.049\,m/s Doppler
 resolution (best-velocity firmware configuration).  Raw IMU rate
 is $\sim$993\,Hz; both modalities are used at full rate.
 
 \subsection{Pipeline}
-Fig.~\ref{fig:pipeline} shows the three-stage initialization feeding
-into a C++ Ceres solver (batch or sliding window):
+Because the B-spline optimization is nonlinear, it needs an initial
+trajectory to converge; a three-stage sensor-only pipeline
+(Fig.~\ref{fig:pipeline}) constructs one from sensor data alone, which
+seeds a C++ Ceres solver (batch or sliding window).  The raw
+measurements then also enter the solver directly as factors
+(Fig.~\ref{fig:pipeline}, dashed):
 \textbf{P1} derives initial roll/pitch from the stationary
 accelerometer and forward-integrates gyroscope measurements;
 \textbf{P2} estimates per-frame ego-velocity with WLS and integrates
@@ -750,15 +755,13 @@ self-calibration stage; offline it reaches
 \SI{0.73}{\metre}\,/\,\SI{2.5}{\degree} on fast (the dense racing
 $\Delta t_p$ over-fits fast racing, where the coarser sliding window
 does better).
-With the extrinsic pitch left free, it self-calibrates from the
-25.5\degree\ nominal to 27.0\degree\ (slow racing) and 27.2\degree\
-(fast racing) --- recovering the as-built mount angle, which the
-3D-printed, hand-assembled fixture leaves a few degrees short of the
-30\degree\ CAD nominal.  Racing bags converge to the same pitch estimate
-whether initialized at 25.5\degree\ or 30\degree, so the estimate is
-data-driven, not init-dependent --- an independent check on the
-extrinsic calibration.  We lock pitch at 27.5\degree\ for the
-sliding-window runs (Sec.~\ref{sec:backflips}).  The batch estimate is
+With the extrinsic pitch left free, it self-calibrates from the legacy
+25.5\degree\ initialization to 27.0\degree\ (slow racing) and
+27.2\degree\ (fast racing), a few degrees below the 30\degree\ CAD
+design.  The pitch is only weakly observable, however, so we lock it at
+27.5\degree\ for the sliding-window runs rather than estimate it --- the
+self-calibration is init-dependent and the RMSE forms a plateau
+(Sec.~\ref{sec:backflips}).  The batch estimate is
 shown for reference (dashed) in the RPE curves (Fig.~\ref{fig:rpe}).
 
 \subsection{Sliding Window: Settled vs.\ Live}
@@ -1279,15 +1282,16 @@ Relatedly, extrinsic pitch is a \emph{plateau}: over a $3{\times}3$ grid
 over (locked pitch, $b$) the RMSE is indistinguishable across
 26.5--28.5\degree\ on backflips, and locking at 27.5\degree\ versus
 online sliding-window self-calibration is RMSE-neutral on racing.  We
-freeze it rather than estimate it online because the windowed solve
-cannot observe a 1-DOF extrinsic --- free pitch drifts to physically
-wrong, init-dependent values (e.g.\ 40\degree\ on fast racing from a
-30\degree\ start), whereas the full-trajectory batch calibration
-recovers 27.5\degree\ init-independently.  The earlier
-``self-calibrated $+2\degree$ absorbs the elevation bias'' reading is
-retired --- 27.5\degree\ is simply the correct as-built mount angle (a
-few degrees short of the $30\degree$ CAD nominal; the 3D-printed,
-loosely-fastened fixture accounts for the difference).
+freeze it rather than estimate it online because free pitch is only
+weakly observable and \emph{init-dependent in both} the windowed solve
+and the full-trajectory batch: the converged value tracks the
+initialization ($25.5\degree{\to}27\degree$, $30\degree{\to}36\degree$
+on both racing bags, diverging from a saddle near $23\degree$).  The
+earlier ``self-calibrated $+2\degree$ absorbs the elevation bias''
+reading is retired; $27.5\degree$ is a value within this plateau,
+consistent with the hand-built mount sitting a few degrees below the
+$30\degree$ CAD design (the 3D-printed, loosely-fastened fixture
+accounts for the difference).
 
 \emph{Remaining gap.}
 The residual $\sim$6\degree\ live orientation error during flips

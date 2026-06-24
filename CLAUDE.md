@@ -201,8 +201,12 @@ Regularization: position: minimum-snap (∫||P⁴(t)||² dt);  orientation: angu
 Extrinsic calibration lives in `config/extrinsics.yaml` (pitch 25.5° is now only the
 **batch self-cal init**; deployed runs lock **27.5°** via `--set-ext`):
 - **Rotation**: `[roll=180°, pitch=27.5° frozen, yaw=0°]` — as-built value. Batch self-cal
-  recovers 27.0/27.2° init-independently; frozen at 27.5° for SW (the SW can't observe a
-  1-DOF extrinsic — free pitch drifts to 29.5/34.7/40°). `extrinsics.yaml` keeps 25.5° as init.
+  yields 27.0/27.2° *from the legacy 25.5° init only* — it is **init-DEPENDENT, not
+  init-independent** (2026-06-24 sweep: 25.5°→27°, 30°→36°, 33°→42° on both racing bags;
+  the old "init-independent" claim was wrong and is retracted in paper+report). Pitch is
+  weakly observable (RMSE plateau), so it is **frozen at 27.5° for SW** rather than
+  estimated; the SW likewise drifts (free pitch → 29.5/34.7/40°). `extrinsics.yaml` keeps
+  25.5° as init.
 - **Translation**: `[0.08, +0.02, -0.01]` m in body frame
 - Body frame: x=forward, y=left, z=up
 

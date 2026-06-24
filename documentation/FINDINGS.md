@@ -20,11 +20,17 @@ User confirmed: radar mounted **upside-down** (180° roll) looking forward, 3D-p
 Physical mount: `[180, +30, 0]` (roll, pitch, yaw) = `Rx(180°)·Ry(+30°)`.
 
 **As-built calibrated value (2026-06-15): 27.5°, frozen.** The full-trajectory
-**batch** solve self-calibrates pitch to **27.0°/27.2°** (slow/fast racing),
-*init-independently* (same estimate from 25.5° or 30° init) — recovering the as-built
-mount angle, a few degrees under the 30° CAD nominal.  This is **frozen at 27.5°** for
-all sliding-window runs: the SW cannot observe a 1-DOF extrinsic per 3 s window (free
-pitch drifts init-dependently to 29.5/34.7/40°), and RMSE is plateau-neutral to pitch.
+**batch** solve self-calibrates pitch to **27.0°/27.2°** (slow/fast racing) *from the
+legacy 25.5° init* — a few degrees under the 30° CAD nominal.  **The batch pitch self-cal
+is init-DEPENDENT** (2026-06-24 sweep, BOTH racing bags): the converged value tracks the
+init — 20°→16°, 23°→22°, 25.5°→27°, 27.5°→31°, 30°→36°, 33°→42° — diverging from a saddle
+near ~23°.  So the earlier "init-independent recovery" claim was **WRONG** (it was in the
+paper; now retracted in paper+report). 27° is just where the legacy 25.5° init lands, not
+a uniquely recovered angle.  Freezing rests on the pitch being **weakly observable** (the
+position RMSE is a shallow plateau — slow 0.19–0.33 m, fast ~flat 0.69–0.73 m across pitch
+16–42°), not on recovery.  This is **frozen at 27.5°** for all sliding-window runs: the SW
+likewise cannot observe a 1-DOF extrinsic per 3 s window (free pitch drifts init-dependently
+to 29.5/34.7/40°).
 `extrinsics.yaml` still holds **25.5°** as the *batch self-cal init only* — it was an
 earlier, too-low config value, now understood to be wrong; deployed runs lock 27.5° via
 `--set-ext`. (Earlier versions of this doc reported 25.5° as the answer.)
@@ -43,7 +49,8 @@ The previous value of `[0, +30, 0]` was incorrect — it did not account for the
 
 ### Current Status
 **Deployed extrinsic pitch is frozen at 27.5°** (the as-built value; batch self-cal
-recovers 27.0/27.2° init-independently). `extrinsics.yaml` retains 25.5° only as the
+yields 27.0/27.2° from the legacy 25.5° init, but is init-DEPENDENT — see above, not a
+unique recovery). `extrinsics.yaml` retains 25.5° only as the
 batch self-cal init; racing/backflips runs lock 27.5° via `--set-ext`. For flipped bags,
 additionally apply `Rz(180°)` (see Section 11).
 
