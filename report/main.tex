@@ -108,19 +108,15 @@ without interpolation approximation.
 \textbf{Research question.}
 This work asks, end to end: \emph{can a single-chip mmWave radar,
 fused with an IMU, provide usable 6-DOF state estimation --- and if
-so, what does it take to obtain good results?}  The answer is
-structured in three parts.  (1)~\emph{What the sensor provides:}
-per-point Doppler yields direct ego-velocity, but at 10--60 points
-per frame there are no bearing-stable features for position fixing;
-yaw is a gauge freedom of Doppler+IMU.  The system is therefore a
-\emph{velocity and orientation} source whose position estimate drifts
-with distance --- by construction, not by defect.  (2)~\emph{What it
-takes:} a consistent fixed-lag smoother and a dynamics-adaptive
-weighting of every measurement stream, each step of which we derive
-from a measured failure diagnosis rather than tuning folklore.
-(3)~\emph{What the limits are:} characterized via held-out flights,
-extreme maneuvers, calibrated output covariance, and documented
-negative results.
+so, what does it take?}  The starting point is what the sensor can and
+cannot do: per-point Doppler yields direct ego-velocity, but at
+10--60 points per frame there are no bearing-stable features for
+position fixing, and yaw is a gauge freedom of Doppler+IMU.  The
+system is therefore a \emph{velocity and orientation} source whose
+position estimate drifts with distance --- by construction, not by
+defect.  What it takes to turn that capability into accurate
+estimates, and where it ultimately fails, is the subject of the rest
+of this paper.
 
 We contribute:
 \begin{itemize}
@@ -148,15 +144,14 @@ We contribute:
         and a NEES check confirming the reported orientation covariance
         is consistent on racing flights.
 \end{itemize}
-The complete system --- physically correct Doppler model with lever
-arm, sensor-only initialization, full hyperparameter disclosure,
-deterministic re-runs --- is released with code and datasets for
-independent reproduction.
 
 \textbf{Data and code.}
+The complete system --- physically correct Doppler model with lever
+arm, sensor-only initialization, full hyperparameter disclosure, and
+deterministic re-runs --- is released for independent reproduction.
 The datasets (Vicon MoCap lab, TI IWR6843AOPEVM, Pixhawk) and the
-C++ Ceres solver with Python bindings used in this work are available
-at \url{https://github.com/Dr1zz3l/radar-iwr6843-driver}.
+C++ Ceres solver with Python bindings are available at
+\url{https://github.com/Dr1zz3l/radar-iwr6843-driver}.
 
 %==================================================================
 \section{Related Work}
