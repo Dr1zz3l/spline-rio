@@ -39,14 +39,13 @@ factor-split ablation; (2) ground truth itself degrades during flips
 (\ac{mocap} occlusion), bounding what can be measured there; and
 (3) cross-validation against the \ac{ekf}-\ac{rio} family
 (\autoref{sec:baselines}) reveals a design-space split.  With our
-default \ac{ransac} front-end --- the single-chip outlier rejection
-\mbox{reve} uses --- our solver reaches the same order of magnitude on
-position on their public flights ($0.5$--$1.9$\,m, trailing the
-yaw-aided baseline), matches their roll/pitch, and leads on heading-aided
+default \ac{ransac} front-end our solver reaches the same order of
+magnitude on position on their public flights ($0.5$--$1.9$\,m, trailing
+the yaw-aided baseline), matches their roll/pitch, and leads on heading-aided
 orientation; the prefilter closes the elevation-bias gap that otherwise
 leaves a Huber-only port at $12$--$15\%$ vertical drift.  In reverse,
 their stock filters, starved by our sparse ${\sim}13$-point clouds and
 racing-frame vibration, reject up to 99.7\% of radar updates and
-dead-reckon on slow racing --- each stack engineered for its own regime,
-dense low-vibration carrier versus sparse Doppler on an aggressive
-platform.
+dead-reckon on slow racing (degrading, not diverging, on the faster
+flight) --- each stack engineered for its own regime, a low-vibration
+carrier versus sparse Doppler on an aggressive platform.
