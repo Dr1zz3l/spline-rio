@@ -324,6 +324,70 @@ both P2 and the solver. MoCap supplies only the yaw heading prior
 \section{Methodology}
 \label{sec:method}
 
+\subsection{Problem Formulation}
+\label{sec:problem}
+
+\textbf{Estimation problem.}
+We estimate the continuous-time 6-DoF body trajectory --- world-frame
+position $\vp_w(t)\in\mathbb{R}^3$ and orientation $\vR(t)\in\SO$ ---
+together with the constant IMU biases $\vb_a,\vb_g$, from asynchronous
+measurements over the estimation interval (the full trajectory in batch
+mode, a sliding window online): radar Doppler velocities ($\sim$11\,Hz),
+accelerometer and gyroscope samples (1\,kHz), and a low-rate heading
+prior.  We adopt a \emph{continuous-time} representation because the
+sensors are asynchronous and run at disparate rates: a trajectory defined
+for every $t$ is evaluated at each measurement's exact timestamp, and its
+derivatives --- velocity $\dot{\vp}_w$, acceleration $\ddot{\vp}_w$, and
+body angular velocity $\vom_b$ --- follow in closed form, so no
+inter-sample interpolation or rigid-keyframe approximation is required.
+
+\textbf{Parameterization.}
+The trajectory is a B-spline (Sec.~\ref{sec:state}): the position is a
+quintic uniform B-spline with control points
+$\{\mathbf{P}_i\}\subset\mathbb{R}^3$, and the orientation a cumulative
+$\SO$ B-spline with incremental control points $\{\vOm_j\}\subset\so$.
+This renders the otherwise infinite-dimensional trajectory
+finite-dimensional; the control points and the IMU biases form the
+estimated state
+\begin{equation}
+  \mathcal{X} = \bigl\{\,\mathbf{P}_i,\ \vOm_j,\ \vb_a,\ \vb_g\,\bigr\}.
+  \label{eq:state}
+\end{equation}
+The batch solve additionally frees the single observable extrinsic degree
+of freedom (the radar pitch); the sliding window fixes it at the measured
+value (Sec.~\ref{sec:state}).
+
+\textbf{Estimator.}
+Treating the measurement noise as zero-mean and independent, the
+maximum-a-posteriori (MAP) estimate is the minimizer of the negative
+log-posterior --- a weighted nonlinear least-squares problem over the
+measurement residuals, the spline regularizers, and the priors:
+\begin{equation}
+\begin{aligned}
+  \hat{\mathcal{X}} = \operatorname*{arg\,min}_{\mathcal{X}}
+    & \sum_{k}\rho_\delta\!\bigl(r_{D,k}^2\bigr)
+    + \lambda_a\!\sum_{m}\lVert r_{a,m}\rVert^2
+    + \lambda_g\!\sum_{m}\lVert r_{g,m}\rVert^2 \\
+    & + \lambda_\psi\!\sum_{n} r_{\psi,n}^2
+    + E_{\text{reg}}(\mathcal{X})
+    + E_{\text{prior}}(\mathcal{X}),
+\end{aligned}
+\label{eq:map}
+\end{equation}
+where $r_D,r_a,r_g,r_\psi$ are the radar-Doppler, accelerometer,
+gyroscope, and heading residuals of Sec.~\ref{sec:models};
+$\rho_\delta$ is the Huber kernel ($\delta{=}1.0$\,m/s) that bounds the
+influence of heavy-tailed Doppler outliers; the $\lambda_\bullet$ are the
+(rate-adaptive) information weights of Sec.~\ref{sec:models};
+$E_{\text{reg}}$ collects the position min-snap and orientation
+smoothness regularizers (Sec.~\ref{sec:reg}); and $E_{\text{prior}}$
+holds the boundary and, online, the marginalization priors
+(Sec.~\ref{sec:sw}).  We minimize~\eqref{eq:map} with
+Levenberg--Marquardt (Ceres) using analytic Jacobians.  The fixed-lag
+estimator solves it over a 3\,s window and, on each stride, marginalizes
+the states leaving the window into $E_{\text{prior}}$ via the Schur
+complement (Sec.~\ref{sec:sw}), keeping the per-window cost bounded.
+
 \subsection{State Representation}
 \label{sec:state}
 
@@ -355,9 +419,8 @@ differentiation.
 A constant 6-DoF IMU bias $[\vb_a, \vb_g]$ is estimated jointly.
 The extrinsic pitch $\delta_\text{pitch}$ (1 DoF) is optimized
 with a soft prior; roll and yaw are fixed (unobservable from
-Doppler).  It is optimized in batch for self-calibration and locked at
-the calibrated 27.5\degree\ for the sliding window
-(Sec.~\ref{sec:backflips}).
+Doppler).  It is freed in the batch solve but locked at the measured
+27.5\degree\ for the sliding window (Sec.~\ref{sec:backflips}).
 
 \subsection{Measurement Models}
 \label{sec:models}
