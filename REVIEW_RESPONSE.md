@@ -47,6 +47,30 @@ All ADAPT/PARTIAL items are now in `report/` (modular `sections/*.tex`):
 Build: 12 pages, 0 undefined refs, 0 overfull. Trimmed to 12pp via redundancy cuts + tightened
 float spacing + bios commented out (optional for initial submission).
 
+## v2 work order (updated `opus_review.md`, 2026-06-24) — ALL valid items DONE
+
+Commits `674788e` (edits) + `76773de` (re-run items). Each checked against compiled source first.
+- **[4] "Doer et al." → "Doer and Trommer"** — VALID and *I'd missed it in v1*: the v1 grep
+  false-negatived because the source line-wrapped "Doer et\nal."; ref [1] is two authors.
+- **[1] NEES (P0)** — VALID cherry-picking catch (ori=mean, vel=median). Re-ran both racing bags
+  sensor-only; now report BOTH as per-window median: ori 1.2–2.6, vel 1.4–5.4 (consistent 3),
+  means kept parenthetically. Orientation calibrated/conservative; abstract claim holds.
+- **[2] "fused 9°"** — VALID number clash with the 6.35° headline. Verified provenance
+  (ROADMAP: 7.80° gyro-only vs 9.2° fused, diagnostic config); relabeled as the pre-reweighting
+  diagnostic value that rate-adaptive gyro then brings to the 6.4° headline.
+- **[3]/[6]** — VALID stale VII-C backflip numbers → Table III (1.67m/5.0° settled, 6.4° live).
+- **[8] --no-radar** — re-ran both racing bags: confirms 5.9%/2.4 (slow), 8.0 vel + IMU-only ori
+  8.9/4.0 (fast); ">90%" made precise to ≈99.5%.
+- **[5]** IV-A knot spacings tagged "slow racing; see Table II". **[7]** abstract 6-DOF→6-DoF.
+  **[10]** Table I footnote: ~10 rad/s is the 95th-pct sustained rate, not instantaneous max.
+- **[9] audit** clean (no stale MoCap numbers, no "parity", all other "et al." ≥3 authors).
+- **[11]** reverse-port compute one-liner folded in (EKF near sensor rate vs 0.35–0.70 s/window);
+  page cost absorbed by trimming redundancy in VII-B + Conclusion (per user: trim anywhere).
+- **DECLINED:** [12] backflip error panel (optional), [13] extra recordings (needs data).
+- **No-change (reviewer agrees):** Ng [8] IROS 2021, 6-DoF title, timing, marginalization framing.
+
+Build after v2: 12 pages, 0 undefined refs, 0 overfull, 0 broken refs.
+
 ## Verdict summary
 
 | # | Concern | Verified? | Verdict |
