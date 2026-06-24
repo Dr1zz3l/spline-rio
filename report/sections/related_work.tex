@@ -16,8 +16,9 @@ batch/sliding-window optimizer.
 Furgale et al.~\cite{furgale2013unified} introduced uniform B-splines
 for continuous-time visual-inertial calibration.  The basalt
 \ac{vio}~\cite{usenko2020basalt} uses cumulative B-splines on Lie groups
-for stereo-inertial odometry. We adapt the basalt-style cumulative
-SO(3) B-spline to radar-inertial fusion.
+for stereo-inertial odometry, as does the continuous-time stereo-inertial
+odometry of Hug et al.~\cite{hug2022continuous}. We adapt the basalt-style
+cumulative SO(3) B-spline to radar-inertial fusion.
 
 \textbf{Marginalization in sliding-window estimators.}
 OKVIS~\cite{leutenegger2015keyframe} and
@@ -60,8 +61,7 @@ may legitimately connect to marginalized ones, and
 observability nullspace.  In continuous time,
 CLIC~\cite{lv2023clic} and
 LIO-MARS~\cite{quenzel2025liomars} marginalize spline knots leaving
-the window, and Hug et al.~\cite{hug2022continuous} apply Schur
-marginalization to visual-inertial splines.  These select the factors to
+the window.  These select the factors to
 marginalize by adjacency to the dropped knots, which is correct when the
 estimated states are all local to the window.  Our setting adds a
 \emph{global} shared \ac{imu} bias coupled to every \ac{imu} factor: that
