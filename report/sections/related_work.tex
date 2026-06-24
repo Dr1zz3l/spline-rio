@@ -6,8 +6,8 @@ Doppler-based ego-velocity estimation from mmWave radar was
 demonstrated by Kellner et al.~\cite{kellner2014instantaneous} and
 extended to 3D with weighted least squares by
 Kramer et al.~\cite{kramer2020rve}, whose RVE system fuses radar
-with \ac{imu} in a discrete-time \ac{ekf}.  Doer et
-al.~\cite{doer2020ekf} present an \ac{ekf}-based \ac{rio} with online
+with \ac{imu} in a discrete-time \ac{ekf}.  Doer and
+Trommer~\cite{doer2020ekf} present an \ac{ekf}-based \ac{rio} with online
 extrinsic calibration. Our work uses the same per-frame \ac{wls}
 ego-velocity estimator but embeds it in a continuous-time
 batch/sliding-window optimizer.

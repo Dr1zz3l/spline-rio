@@ -6,7 +6,8 @@
 
 \textbf{Position.}
 The world-frame position $\vp_w(t) \in \mathbb{R}^3$ is a quintic
-(order-6) uniform B-spline with knot spacing $\Delta t_p = 5$\,ms.
+(order-6) uniform B-spline with knot spacing $\Delta t_p = 5$\,ms
+(slow racing; per-regime grids in \autoref{tab:config}).
 Velocity $\dot{\vp}_w$ and acceleration $\ddot{\vp}_w$ are
 obtained as analytical derivatives of the spline.
 
@@ -23,7 +24,8 @@ $\vOm_j \in \so$ are incremental rotation control points
 (standard $\Exp$/$\Log$ map convention),
 $\tilde{B}_j(t)$ are cumulative cubic basis functions, and
 $\vR_{\mathrm{base}}$ is the left anchor rotation.  Knot spacing
-is $\Delta t_o = 8$\,ms.  Body-frame angular velocity $\vom_b(t)$
+is $\Delta t_o = 8$\,ms (slow racing; see \autoref{tab:config}).
+Body-frame angular velocity $\vom_b(t)$
 is obtained as a closed-form derivative of~\eqref{eq:ori_spline}
 directly from \texttt{evaluate\_lie()} without numerical
 differentiation.

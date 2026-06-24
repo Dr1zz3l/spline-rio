@@ -58,8 +58,8 @@ not a general ingredient).
 in particular rate-adaptive gyroscope trust, which on this bag alone
 is worth $\sim$3\degree\ of orientation at zero position cost ---
 plus the flip-regime Doppler correction $b{=}{-}1.5$\,m/s.
-Together these reach \textbf{1.68\,m\,/\,4.8\degree\ settled and
-1.55\,m\,/\,6.3\degree\ live at $\sim$0.6\,s per window}
+Together these reach \textbf{1.67\,m\,/\,5.0\degree\ settled and
+1.55\,m\,/\,6.4\degree\ live at $\sim$0.6\,s per window}
 (\autoref{tab:sw}; \autoref{fig:traj}).  The default \ac{ransac}
 prefilter (\autoref{sec:models})
 is neutral here --- backflip frames are already sparse and mostly fall
@@ -230,7 +230,10 @@ vibration floor (0.17\,rad/s).  The flip orientation gap is therefore
 motion, but the optimizer does not rotate to it (the gyro residual
 correlates with $|\vom_b|$ at $+0.94$ against the \emph{solved}
 trajectory, and open-loop gyro dead-reckoning is 7.8\degree\ --- better
-than the fused 9\degree).  The lever is measurement weighting and
+than the 9.2\degree\ this fusion reaches \emph{at the diagnostic
+configuration}, before the rate-adaptive gyro trust of
+\autoref{sec:backflips} brings it to the \SI{6.4}{\degree} headline
+of \autoref{tab:sw}).  The lever is measurement weighting and
 robustness (\autoref{sec:backflips}), not knot density: the
 dynamics-adaptive gyro trust closes most of the gap, \emph{disproving}
 the adaptive-knot-density hypothesis for this regime and obviating the
