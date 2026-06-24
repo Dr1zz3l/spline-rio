@@ -291,13 +291,15 @@ neutral (within +3%); ICINS whole-traj ATE order-of-magnitude (9.6→0.46, 2.9�
 10.9→0.76, 5.5→0.46m); held-out + old-firmware kept-% 46–75% (no starvation), old-fw
 backflips ori 10.7→8.1°/9.1°. Config UNCHANGED (universality preserved). Both papers
 (report/ master + paper/) rewritten to RANSAC-default; duration/portability hedge +
-batch Table II removed. Numbers below are the RANSAC-default headline:
+batch Table II removed. **2026-06-24: accel-bias init is now SENSOR-ONLY by default**
+(gravity-aligned scalar correction; legacy MoCap-attitude seed opt-in via `--mocap-accel-bias`,
+≤5% on the live edge — review #2 fix). Numbers below are the RANSAC-default, **sensor-only** headline:
 
 | Bag | Per-bag extras | Live vel | Live ori | Live pos (drift) | Settled pos/ori | dt/win |
 |-----|--------|---------|---------|------------------|-----------------|--------|
-| fast_racing | grids .04/.016 + locked p27.5 | **0.32** | 2.84° | **0.39m** (0.86%) | **0.285/2.31°** | **0.35s** |
-| slow_racing (live) | iter12 + λh10 + locked p27.5 | **0.45** | **1.94°** | 0.30m (0.63%) | 0.287/1.54° | 0.70s |
-| backflips | tether.5 + b−1.5 + p27.5 + lgb0 | **2.35** | **6.26°** | **1.55m** (2.87%) | **1.68/4.82°** | ~0.6s |
+| fast_racing | grids .04/.016 + locked p27.5 | **0.32** | 2.88° | **0.40m** (0.88%) | **0.312/2.35°** | **0.35s** |
+| slow_racing (live) | iter12 + λh10 + locked p27.5 | **0.48** | **1.97°** | 0.31m (0.64%) | 0.293/1.53° | 0.70s |
+| backflips | tether.5 + b−1.5 + p27.5 + lgb0 | **2.35** | **6.35°** | **1.55m** (2.85%) | **1.67/5.01°** | ~0.6s |
 
 Pre-RANSAC (Huber-only) baseline, 2026-06-12, gates 4/8 — for reference:
 
