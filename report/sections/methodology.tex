@@ -63,7 +63,8 @@ does not drive the choice.
 A single-chip radar with only 2\,TX antennas has limited elevation
 diversity, and a minority of returns carry an elevation-correlated
 Doppler bias that a robust kernel only down-weights.  Following
-reve~\cite{doer2020ekf}, we therefore prepend a reve-style 3D
+\mbox{reve}~\cite{doer2020ekf} (Doer's radar ego-velocity estimator), we
+therefore prepend a \mbox{reve}-style 3D
 least-squares \ac{ransac} ego-velocity estimate to the per-frame Doppler set
 (inlier threshold $0.15$\,m/s) and pass only the inlier returns to the
 spline solver, hard-rejecting the elevation-biased minority before the
@@ -201,8 +202,11 @@ Per radar frame, weighted least squares estimates the 3D ego-velocity
 $\vv_{\text{wls}}$ from the \ac{ransac} inlier returns
 (\autoref{sec:models}).  Doppler alias
 unwrapping uses \ac{imu}-integrated world-frame velocity to select the
-correct alias before the main solver runs (20.9\% of points aliased
-in fast racing, 1.7\% in slow racing).
+correct alias once at frame load (20.9\% of points aliased
+in fast racing, 1.7\% in slow racing); the unwrapped Doppler is the
+measurement consumed by \emph{both} this \ac{wls} estimate and the main
+solver's radar factors (\autoref{eq:doppler}), with the solver's own
+$v_{\max}$ check kept only as a residual safety net.
 World-frame velocity is integrated with forward Euler to produce an
 initial position trajectory.
 

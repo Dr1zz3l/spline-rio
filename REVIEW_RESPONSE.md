@@ -28,6 +28,22 @@ All ADAPT/PARTIAL items are now in `report/` (modular `sections/*.tex`):
 - **Minors:** title hyphenated; metric ordering unified; tool-name typography; Dataset table
   95th-pct footnote.
 
+**Minors — final audit (2026-06-24, commit pending):**
+- **[8] Ng et al. venue/year — VERIFIED CORRECT, no change.** IROS 2021 (IEEE Xplore doc
+  9636014); `arXiv:2201.02437` is the post-conference preprint (Jan 2022). The bib's
+  `year=2021`/`booktitle=IROS` is right.
+- **Doppler-unwrap scope — CLARIFIED.** Code check (`validate_live_solver.py:930
+  preunwrap_radar_frames`, called at :1849) confirms the unwrapped Doppler replaces the frame
+  velocities fed to the solver, so it reaches the **main solver's radar factors**, not only the
+  P2 WLS seed (the C++ solver's own $v_{\max}$ check is just a safety net). Methodology IV-D P2
+  now states this explicitly.
+- **`reve` first-mention gloss — ADDED** ("Doer's radar ego-velocity estimator") and
+  `\mbox`-wrapped to match its later typography; RVE/basalt/ekf-rio/ekf-yrio/x-rio were already
+  defined at first mention.
+- **"Doer et al." — CONFIRMED CLEAN** (grep: reads "Doer and Trommer").
+- **DECLINED for now:** Fig. 4 backflip error-vs-time panel (optional, low priority); extra
+  recordings per regime (#5's strongest answer — needs new flight data, user's call).
+
 Build: 12 pages, 0 undefined refs, 0 overfull. Trimmed to 12pp via redundancy cuts + tightened
 float spacing + bios commented out (optional for initial submission).
 
