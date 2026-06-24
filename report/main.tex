@@ -36,6 +36,15 @@
 \newcommand{\Log}{\mathrm{Log}}
 \newcommand{\calX}{\mathcal{X}}
 
+% --- Cross-references: \autoref with IEEE-style names ---
+\usepackage[hidelinks]{hyperref}
+\renewcommand{\sectionautorefname}{Section}
+\renewcommand{\subsectionautorefname}{Section}
+\renewcommand{\subsubsectionautorefname}{Section}
+\renewcommand{\figureautorefname}{Fig.}
+\renewcommand{\tableautorefname}{Table}
+\renewcommand{\equationautorefname}{Eq.}
+
 \begin{document}
 
 \title{Continuous-Time Radar-Inertial Odometry\\with B-Spline Sliding Window Optimization}
@@ -203,7 +212,7 @@ Our setting differs from all of these in sensor and
 regime: a \emph{single-chip} radar (10--60 points per frame,
 2-TX elevation array) on a quadrotor in aggressive racing and
 attitude-tumbling flight up to \SI{10}{\radian\per\second} --- a
-regime in which, as Sec.~\ref{sec:backflips} shows, the radar
+regime in which, as \autoref{sec:backflips} shows, the radar
 measurement model itself degrades in ways invisible on ground
 vehicles.
 
@@ -222,14 +231,14 @@ line is narrower and complementary to FEJ: a factor-\emph{set}
 selection rule that exploits B-spline local support to make the
 marginal exactly closed (no double counting, no conditioning on
 interior states), and a documented symptom pattern by which the
-inconsistent variant can be recognized (Sec.~\ref{sec:prior_scale}).
+inconsistent variant can be recognized (\autoref{sec:prior_scale}).
 In the discrete-time UAV line, the EKF-RIO family of Doer and
 Trommer~\cite{doer2020ekf} defines the state of practice.
 Absolute RMSE is not comparable across papers --- our own quantization
-ablation (Sec.~\ref{sec:heldout}) shows firmware configuration alone
+ablation (\autoref{sec:heldout}) shows firmware configuration alone
 changes Doppler resolution by $12\times$ --- so rather than quote their
 numbers we cross-validate against this line directly:
-Sec.~\ref{sec:baselines} runs our system on the
+\autoref{sec:baselines} runs our system on the
 public ICINS-2021 flight datasets of~\cite{doer2021yrio} and re-evaluates
 their EKF estimators under our causal metrics on the same data, and
 reports the regime-dependent result of porting their filters to our
@@ -244,7 +253,7 @@ The system runs on a quadrotor with a TI IWR6843AOPEVM
 mmWave radar (60--64\,GHz FMCW), a Pixhawk flight
 controller IMU, and a Vicon MoCap system used for ground
 truth evaluation.  The radar is mounted upside-down at a nominal $30\degree$ downtilt
-(CAD); the as-built angle is a few degrees lower (Sec.~\ref{sec:results}),
+(CAD); the as-built angle is a few degrees lower (\autoref{sec:results}),
 and the extrinsic rotation is $[180\degree, 27.5\degree, 0\degree]$
 (roll, pitch, yaw), translation $[0.08, 0.02, -0.01]$\,m in the body
 frame.  The radar boresight lies along the body forward axis, so the
@@ -255,17 +264,17 @@ is $\sim$993\,Hz; both modalities are used at full rate.
 \subsection{Pipeline}
 Because the B-spline optimization is nonlinear, it needs an initial
 trajectory to converge; a three-stage sensor-only pipeline
-(Fig.~\ref{fig:pipeline}) constructs one from sensor data alone, which
+(\autoref{fig:pipeline}) constructs one from sensor data alone, which
 seeds a C++ Ceres solver (batch or sliding window).  The raw
 measurements then also enter the solver directly as factors
-(Fig.~\ref{fig:pipeline}, dashed):
+(\autoref{fig:pipeline}, dashed):
 \textbf{P1} derives initial roll/pitch from the stationary
 accelerometer and forward-integrates gyroscope measurements;
 \textbf{P2} estimates per-frame ego-velocity with WLS and integrates
 to a position trajectory;
 \textbf{P3} builds sensor-only boundary priors at $t=0$.
 MoCap supplies only the yaw heading prior (a magnetometer surrogate,
-Sec.~\ref{sec:models}) and the final RMSE evaluation; P1--P3 and the
+\autoref{sec:models}) and the final RMSE evaluation; P1--P3 and the
 position/attitude estimate use no external pose reference.
 
 \begin{figure}[t]
@@ -314,7 +323,7 @@ position/attitude estimate use no external pose reference.
 \caption{System pipeline. Solid: initialization flow (P1--P3 seed
 the optimizer). Dashed: raw sensor data fed as measurement factors.
 Radar returns first pass a RANSAC ego-velocity prefilter
-(Sec.~\ref{sec:models}) that rejects elevation-biased outliers before
+(\autoref{sec:models}) that rejects elevation-biased outliers before
 both P2 and the solver. MoCap supplies only the yaw heading prior
 (magnetometer surrogate) and RMSE evaluation.}
 \label{fig:pipeline}
@@ -342,7 +351,7 @@ body angular velocity $\vom_b$ --- follow in closed form, so no
 inter-sample interpolation or rigid-keyframe approximation is required.
 
 \textbf{Parameterization.}
-The trajectory is a B-spline (Sec.~\ref{sec:state}): the position is a
+The trajectory is a B-spline (\autoref{sec:state}): the position is a
 quintic uniform B-spline with control points
 $\{\mathbf{P}_i\}\subset\mathbb{R}^3$, and the orientation a cumulative
 $\SO$ B-spline with incremental control points $\{\vOm_j\}\subset\so$.
@@ -355,7 +364,7 @@ estimated state
 \end{equation}
 The batch solve additionally frees the single observable extrinsic degree
 of freedom (the radar pitch); the sliding window fixes it at the measured
-value (Sec.~\ref{sec:state}).
+value (\autoref{sec:state}).
 
 \textbf{Estimator.}
 Treating the measurement noise as zero-mean and independent, the
@@ -375,18 +384,18 @@ measurement residuals, the spline regularizers, and the priors:
 \label{eq:map}
 \end{equation}
 where $r_D,r_a,r_g,r_\psi$ are the radar-Doppler, accelerometer,
-gyroscope, and heading residuals of Sec.~\ref{sec:models};
+gyroscope, and heading residuals of \autoref{sec:models};
 $\rho_\delta$ is the Huber kernel ($\delta{=}1.0$\,m/s) that bounds the
 influence of heavy-tailed Doppler outliers; the $\lambda_\bullet$ are the
-(rate-adaptive) information weights of Sec.~\ref{sec:models};
+(rate-adaptive) information weights of \autoref{sec:models};
 $E_{\text{reg}}$ collects the position min-snap and orientation
-smoothness regularizers (Sec.~\ref{sec:reg}); and $E_{\text{prior}}$
+smoothness regularizers (\autoref{sec:reg}); and $E_{\text{prior}}$
 holds the boundary and, online, the marginalization priors
-(Sec.~\ref{sec:sw}).  We minimize~\eqref{eq:map} with
+(\autoref{sec:sw}).  We minimize~\eqref{eq:map} with
 Levenberg--Marquardt (Ceres) using analytic Jacobians.  The fixed-lag
 estimator solves it over a 3\,s window and, on each stride, marginalizes
 the states leaving the window into $E_{\text{prior}}$ via the Schur
-complement (Sec.~\ref{sec:sw}), keeping the per-window cost bounded.
+complement (\autoref{sec:sw}), keeping the per-window cost bounded.
 
 \subsection{State Representation}
 \label{sec:state}
@@ -420,7 +429,7 @@ A constant 6-DoF IMU bias $[\vb_a, \vb_g]$ is estimated jointly.
 The extrinsic pitch $\delta_\text{pitch}$ (1 DoF) is optimized
 with a soft prior; roll and yaw are fixed (unobservable from
 Doppler).  It is freed in the batch solve but locked at the measured
-27.5\degree\ for the sliding window (Sec.~\ref{sec:backflips}).
+27.5\degree\ for the sliding window (\autoref{sec:backflips}).
 
 \subsection{Measurement Models}
 \label{sec:models}
@@ -437,8 +446,8 @@ predicted Doppler for a point at sensor-frame bearing $\vu_s$ is:
 \end{equation}
 where $\vu_b = \vR_{bs}\,\vu_s$, $\vR_{bs}$ is the rotation from
 radar sensor to body frame (extrinsic $[\text{roll}{=}180\degree,\,
-\text{pitch}{=}27.5\degree,\,\text{yaw}{=}0\degree]$; calibrated,
-Sec.~\ref{sec:results}), and
+\text{pitch}{=}27.5\degree,\,\text{yaw}{=}0\degree]$; measured,
+\autoref{sec:results}), and
 $\vR_{bw} = \vR_{wb}^{\top}$.  The residual
 $r_k = v_{D,\text{meas}} - v_{D,\text{pred}}$ uses Huber
 loss with $\delta = 1.0$\,m/s --- robust, as defense-in-depth, to any
@@ -461,8 +470,8 @@ unchanged --- on those sparse frames, including most of the backflip
 regime, the in-solver Huber loss is the sole radar outlier protection,
 so the two stages are complementary, not redundant.  It runs once at
 frame load, not per window, so it does not
-enter the per-window timing budget (Sec.~\ref{sec:results}).
-Sec.~\ref{sec:baselines} quantifies what it removes --- on the public
+enter the per-window timing budget (\autoref{sec:results}).
+\autoref{sec:baselines} quantifies what it removes --- on the public
 ICINS flights it closes an order-of-magnitude vertical-drift gap, and on
 our own flights it improves aggressive-racing live position by $22\%$ ($0.50\to0.39$\,m
 live) --- and it is enabled by default for every result in this paper.
@@ -472,7 +481,7 @@ The central practical finding of this work is that a single
 \emph{rate-adaptive trust allocation} across the three measurement
 streams covers hover to \SI{10}{\radian\per\second} tumbling with one
 configuration.  Each component was derived from a measured failure
-diagnosis (Sec.~\ref{sec:backflips}), not tuned ad hoc:
+diagnosis (\autoref{sec:backflips}), not tuned ad hoc:
 \begin{itemize}
 \item \emph{Gyroscope --- trust more when rotating fast.}
   Per-sample weight
@@ -504,7 +513,7 @@ diagnosis (Sec.~\ref{sec:backflips}), not tuned ad hoc:
   unchanged position.
 \end{itemize}
 The weighting trades are made explicit in
-Sec.~\ref{sec:backflips}: on tumbling flight the radar/accelerometer
+\autoref{sec:backflips}: on tumbling flight the radar/accelerometer
 gates exchange velocity accuracy for orientation accuracy along a
 measured Pareto curve; $(\omega_r,\omega_a){=}(4,8)$ is its knee.
 
@@ -512,7 +521,7 @@ measured Pareto curve; $(\omega_r,\omega_a){=}(4,8)$ is its knee.
 Under sustained tumbling an additional attitude-correlated Doppler
 systematic appears, which we absorb with a per-point term
 $v_{\mathrm{corr}} = v_{\mathrm{meas}} - b\,u_{s,z}$ ($b{=}{-}1.5$\,m/s,
-backflips only).  Sec.~\ref{sec:backflips} shows why $b$ must be
+backflips only).  \autoref{sec:backflips} shows why $b$ must be
 interpreted as a flight-regime error proxy rather than a physical
 elevation bias of the 2-TX array.
 
@@ -547,7 +556,7 @@ rotation about gravity).  We supply a heading reference from a magnetometer (sta
 most platforms; here simulated by MoCap yaw).  The residual $r_\psi = \psi_\text{est} - \psi_\text{ref}$
 is added at $\sim$100\,Hz, with $\lambda_\psi = 0.6$ by default and
 raised to $10$ on the heading-critical bags (slow racing, backflips;
-Table~\ref{tab:sw} footnote).
+\autoref{tab:sw} footnote).
 
 \subsection{Regularization}
 \label{sec:reg}
@@ -587,7 +596,7 @@ $\vR(t+\Delta t) = \vR(t)\,\Exp\!\bigl((\vz_g - \vb_g)\Delta t\bigr)$.
 \textbf{P2: Position.}
 Per radar frame, weighted least squares estimates the 3D ego-velocity
 $\vv_{\text{wls}}$ from the RANSAC inlier returns
-(Sec.~\ref{sec:models}).  Doppler alias
+(\autoref{sec:models}).  Doppler alias
 unwrapping uses IMU-integrated world-frame velocity to select the
 correct alias before the main solver runs (20.9\% of points aliased
 in fast racing, 1.7\% in slow racing).
@@ -694,7 +703,7 @@ rows), \emph{conditions} on interior states (treating them as perfectly
 known), and double-counts factors that are re-added in the next window.
 The resulting prior is overconfident by orders of magnitude and must be
 deflated by a hand-tuned scale of $10^{-7}$--$2{\times}10^{-4}$
-depending on flight dynamics (Sec.~\ref{sec:prior_scale}).
+depending on flight dynamics (\autoref{sec:prior_scale}).
 We instead exploit B-spline locality: a factor touching marginalized
 knot $i$ has support $[i, i{+}N{-}1] \subseteq$
 marg\,$\cup$\,boundary, so including \emph{only} residuals that touch a
@@ -716,7 +725,7 @@ start (curvature retained, gradient pull discarded).  We do not claim
 this re-centering preserves consistency across relinearizations as a
 theoretical guarantee; rather, in our experiments it left no measurable
 inconsistency symptom --- the NEES analysis of
-Sec.~\ref{sec:nees} provides the corresponding empirical evidence.
+\autoref{sec:nees} provides the corresponding empirical evidence.
 
 \textbf{Live-edge warm start.}
 Control points entering the window each stride would otherwise hold
@@ -738,7 +747,7 @@ the marginalization step costs $\sim$10\,ms per window.
 \label{sec:setup}
 
 All experiments use the rosbag datasets collected in a Vicon MoCap
-lab.  Table~\ref{tab:datasets} summarizes the three bags used for
+lab.  \autoref{tab:datasets} summarizes the three bags used for
 evaluation.
 
 \begin{table}[t]
@@ -778,9 +787,9 @@ drift: it fixes the frame once, at the start, exactly as a deployed
 estimator must.  We adopt it precisely for this causal,
 deployment-relevant reading, and apply it identically to every system
 compared.  Where we compare against externally published figures
-(Sec.~\ref{sec:baselines}) we additionally report whole-trajectory-aligned
+(\autoref{sec:baselines}) we additionally report whole-trajectory-aligned
 numbers so the baselines can be cross-checked against their own papers.
-\emph{Translational RPE} (relative pose error, Fig.~\ref{fig:rpe}) is
+\emph{Translational RPE} (relative pose error, \autoref{fig:rpe}) is
 the KITTI-standard per-segment displacement error averaged over all
 sub-segments of a given accumulated GT length.
 Because the start-anchored alignment offsets cancel within every
@@ -821,16 +830,16 @@ The radar-to-body pitch is a fixed mount angle, measured at
 30\degree\ CAD design (3D-printed, hand-assembled fixture).  We lock it
 rather than estimate it online because it is only weakly observable from
 Doppler: the self-calibration is init-dependent and orientation RMSE is
-pitch-insensitive (Sec.~\ref{sec:backflips}).  The batch estimate is
-shown for reference (dashed) in the RPE curves (Fig.~\ref{fig:rpe}).
+pitch-insensitive (\autoref{sec:backflips}).  The batch estimate is
+shown for reference (dashed) in the RPE curves (\autoref{fig:rpe}).
 
 \subsection{Sliding Window: Settled vs.\ Live}
 \label{sec:sw_results}
 
-Table~\ref{tab:sw} reports sliding window results
+\autoref{tab:sw} reports sliding window results
 (3\,s window, 0.3\,s stride, Schur marginalization).
-Fig.~\ref{fig:traj} shows trajectory overlays for all three flights;
-Fig.~\ref{fig:error_time} shows the corresponding error timeseries.
+\autoref{fig:traj} shows trajectory overlays for all three flights;
+\autoref{fig:error_time} shows the corresponding error timeseries.
 
 \begin{table}[t]
 \centering
@@ -857,12 +866,12 @@ Bag & Mode & Vel (m/s) & Ori (\degree) & Pos (m) & Drift\% & $t_{\mathrm{win}}$(
 \bottomrule
 \multicolumn{7}{@{}p{\columnwidth}@{}}{\scriptsize
   All bags use the unscaled consistent marginalization prior
-  (Sec.~\ref{sec:sw}) and the \emph{same} dynamics-adaptive weighting
-  law (Sec.~\ref{sec:models}).  Per-regime parameters are limited to
+  (\autoref{sec:sw}) and the \emph{same} dynamics-adaptive weighting
+  law (\autoref{sec:models}).  Per-regime parameters are limited to
   spline grids ($\Delta t_p{=}5/40/10$\,ms), the heading weight, and
   for backflips the position-init anchor
   ($\lambda_{\mathrm{pos\text{-}init}}{=}0.5$) and flip-regime Doppler
-  correction $b{=}{-}1.5$\,m/s (Sec.~\ref{sec:backflips}).  Extrinsic
+  correction $b{=}{-}1.5$\,m/s (\autoref{sec:backflips}).  Extrinsic
   pitch locked at 27.5\degree\ for all bags.
   $^\ast$Settled velocity on backflips is a retrospective-evaluation
   artifact (stride-boundary resampling); the live column is the
@@ -917,7 +926,7 @@ window.
 \subsection{Relative Pose Error and Position Drift}
 \label{sec:rpe}
 
-Fig.~\ref{fig:rpe} shows the KITTI-style translational RPE as a
+\autoref{fig:rpe} shows the KITTI-style translational RPE as a
 function of segment length for racing bags (batch and SW live) and
 backflips (batch only).  At longer segments ($\geq 20$\,m) the global
 B-spline smoother reduces error sharply: slow racing batch reaches
@@ -950,7 +959,7 @@ live-edge estimate to IMU dead-reckoning: position drifts 6.4\% (slow)
 and 15.3\% (fast) of distance and velocity RMSE rises to 2.0 and
 1.7\,m/s as double-integrated accelerometer noise accumulates unbounded.
 The direct Doppler velocity constraints bound this to the
-Table~\ref{tab:sw} figures (0.6--0.9\% drift, 0.32--0.45\,m/s velocity)
+\autoref{tab:sw} figures (0.6--0.9\% drift, 0.32--0.45\,m/s velocity)
 --- roughly an order-of-magnitude reduction in both.  Orientation
 improves more modestly, from 7.6\degree/6.8\degree\ (IMU-only) to
 1.9\degree/2.8\degree, the 1\,kHz gyroscope already constraining it.
@@ -980,8 +989,8 @@ coverage) precedes all held-out evaluation, since several early bags
 contain radar UART dropouts; all evaluation windows lie on healthy
 spans.  Each flight condition is a single representative recording: the
 evaluation's breadth comes from these held-out flights, the
-cross-platform validation of Sec.~\ref{sec:baselines}, and the
-deterministic, bit-identical re-runs of Sec.~\ref{sec:sw_results}
+cross-platform validation of \autoref{sec:baselines}, and the
+deterministic, bit-identical re-runs of \autoref{sec:sw_results}
 (which preclude run selection) --- not from repeated trials of one
 recording.
 
@@ -1002,9 +1011,9 @@ their $\pm 60\degree$ elevation pre-gate.  Their estimators
 (\mbox{ekf-rio}, unaided yaw; \mbox{ekf-yrio}, Manhattan-world radar
 yaw aiding) are re-run from their stock configurations on the same
 bags, and \emph{both} systems are evaluated with the identical causal
-protocol of Sec.~\ref{sec:setup} (live estimates, start-anchored
+protocol of \autoref{sec:setup} (live estimates, start-anchored
 alignment, same windows and ground truth).
-Table~\ref{tab:baselines} reports the headline metrics~(a) and their
+\autoref{tab:baselines} reports the headline metrics~(a) and their
 decomposition~(b).  On position our
 solver reaches the same order as the baselines (0.5--1.9\,m,
 0.6--1.3\% drift), with velocity RMSE 0.07--0.08\,m/s matching theirs.
@@ -1015,14 +1024,14 @@ entirely \emph{yaw}: our heading is anchored by a pseudo-magnetometer
 place of the MoCap yaw available on our own platform --- whereas
 ekf-yrio uses sensor-only Manhattan-world yaw and ekf-rio is unaided.
 On the heading-\emph{independent} roll and pitch the three systems are
-comparable ($0.25$--$0.74\degree$, Table~\ref{tab:baselines}(b)),
+comparable ($0.25$--$0.74\degree$, \autoref{tab:baselines}(b)),
 so the orientation column is not an attitude win; removing our heading
 aiding confirms this --- on flight\_1 our unaided yaw drifts to
 $9.9\degree$, matching unaided ekf-rio ($10.1\degree$), while roll/pitch
 and position are essentially unchanged.
 
 This position parity is what the default RANSAC prefilter
-(Sec.~\ref{sec:models}) buys, and it is the clearest single
+(\autoref{sec:models}) buys, and it is the clearest single
 demonstration of its effect.  A single-chip 2-TX array has limited
 elevation diversity, and a minority of returns carry an
 elevation-correlated Doppler bias.  Doer's \mbox{reve} rejects these
@@ -1035,7 +1044,7 @@ large systematic error (whole-trajectory ATE $9.6$\,m on flight\_1,
 $12$--$15\%$ vertical drift) that the baselines do not exhibit --- their
 vertical drift stays $\sim$0.2--0.3\,m; the RANSAC prefilter removes it
 at the source on all four flights, cutting whole-trajectory ATE to
-$0.24$--$0.76$\,m (Table~\ref{tab:baselines}(b)) and bringing
+$0.24$--$0.76$\,m (\autoref{tab:baselines}(b)) and bringing
 position to baseline parity.  We could not attribute the baselines'
 vertical accuracy to altitude aiding: an ablation disabling the
 barometer in ekf-yrio changes its vertical drift by $\le$0.04\,m (within
@@ -1045,7 +1054,7 @@ vertical estimates from radar and IMU alone --- by the same
 outlier-rejection mechanism.  The single-chip elevation bias is
 therefore real but not fundamental: it is an outlier-rejection gap,
 closed by the same RANSAC stage the baselines use.  Under
-whole-trajectory Umeyama alignment (Table~\ref{tab:baselines}(b))
+whole-trajectory Umeyama alignment (\autoref{tab:baselines}(b))
 all three systems agree to $\le$1\,m, consistent with the baselines'
 published full-alignment figures (they are faithfully reproduced) and
 confirming that our default front-end matches them.
@@ -1088,7 +1097,7 @@ glance: \emph{roll/pitch} is the heading-independent attitude RMSE
 (per-axis RMS, yaw excluded), so the large orientation gap in~(a) is yaw,
 not attitude; \emph{our drift} splits our position error into horizontal
 and vertical, both sub-1.3\% under the default RANSAC prefilter
-(Sec.~\ref{sec:models}; the footnote gives the prefilter-disabled figures
+(\autoref{sec:models}; the footnote gives the prefilter-disabled figures
 for contrast); \emph{whole-traj.\ ATE} re-evaluates every system under the
 standard EVO/KITTI Umeyama alignment (no scale) for cross-checking against
 published figures.}
@@ -1157,13 +1166,13 @@ windows where the finite-difference MoCap velocity reference itself
 is unreliable.  On backflips the orientation covariance is
 overconfident by ${\sim}3\times$ in standard deviation (unmodeled
 flip-time error), and only 6 of 50 windows survive the ground-truth
-quality mask (Sec.~\ref{sec:setup}).  Deployment recipe: emit the
+quality mask (\autoref{sec:setup}).  Deployment recipe: emit the
 estimator covariance with a per-regime inflation factor
 ($1\times$ gentle, $3\times$ aggressive), or calibrate online from
 innovation statistics.
 
 \subsection{Ablation Studies}
-Table~\ref{tab:ablations} summarizes key design choices.
+\autoref{tab:ablations} summarizes key design choices.
 
 \begin{table}[t]
 \centering
@@ -1223,11 +1232,11 @@ Configuration & Pos (m) & Ori (\degree) \\
   \textsuperscript{\S}C++ solver supports only 1-DOF pitch offset (roll/yaw
   unobservable from Doppler; free 3-angle optimization tested in Python
   solver showed 6--8\degree\ orientation runaway --- see
-  Sec.~\ref{sec:negative}).}\\
+  \autoref{sec:negative}).}\\
 \end{tabular}
 \end{table}
 
-\textbf{Key observations from Table~\ref{tab:ablations}.}
+\textbf{Key observations from \autoref{tab:ablations}.}
 Full-rate IMU (1\,kHz) improves position by $2.9\times$ over 200\,Hz,
 motivating the tight bias priors in \texttt{solver\_cpp.yaml}.
 Lever-arm correction helps racing ($8$--$11\%$ position) but has
@@ -1237,7 +1246,7 @@ term through orientation DOF.
 Schur marginalization reduces fast-racing settled position by 31\%
 (0.412\,m $\to$ 0.285\,m); for slow racing the optimal prior scale is
 $10^{-7}$ (near-zero), so both variants give equivalent results ---
-the benefit is captured in Table~\ref{tab:prior_scale} instead.
+the benefit is captured in \autoref{tab:prior_scale} instead.
 Window duration has little effect on slow racing (live 0.29--0.34\,m
 across 1.5--5\,s); on fast racing a 3\,s window modestly improves the
 live edge over 2\,s ($0.44\to0.39$\,m, $2.9\to2.8\degree$), so 3\,s is
@@ -1245,7 +1254,7 @@ the default --- balancing latency against accuracy.
 We lock pitch at its measured value for all sliding-window runs; even
 in the batch ablation, locking is marginally better than freeing it
 (0.157 vs.\ 0.169\,m on slow racing), consistent with the pitch being
-only weakly observable (Sec.~\ref{sec:backflips}).
+only weakly observable (\autoref{sec:backflips}).
 
 %==================================================================
 \section{Limitations and Negative Results}
@@ -1280,7 +1289,7 @@ The fixed-lag smoother initially appeared fundamentally unsuited to
 backflips: with the inconsistent prior and a (silently inactive)
 position anchor, the best result was 2.53\,m/10.8\degree\ settled.
 A chain of three fixes revised this verdict.
-(i)~The consistent unscaled prior (Sec.~\ref{sec:sw}) restores
+(i)~The consistent unscaled prior (\autoref{sec:sw}) restores
 inter-window information transfer.
 (ii)~A soft position anchor to the dead-reckoned initialization
 ($\lambda_{\mathrm{pos\text{-}init}}{=}0.5$ per CP) bounds the
@@ -1288,14 +1297,14 @@ position random walk that sparse, rate-inflated radar cannot prevent
 within a 3\,s window (without it position diverges to 8\,m; on racing
 bags the same anchor is \emph{harmful} --- it is a flip-regime rescue,
 not a general ingredient).
-(iii)~The dynamics-adaptive weighting law (Sec.~\ref{sec:models}) ---
+(iii)~The dynamics-adaptive weighting law (\autoref{sec:models}) ---
 in particular rate-adaptive gyroscope trust, which on this bag alone
 is worth $\sim$3\degree\ of orientation at zero position cost ---
 plus the flip-regime Doppler correction $b{=}{-}1.5$\,m/s.
 Together these reach \textbf{1.68\,m\,/\,4.8\degree\ settled and
 1.55\,m\,/\,6.3\degree\ live at $\sim$0.6\,s per window}
-(Table~\ref{tab:sw}; Fig.~\ref{fig:traj}).  The default RANSAC
-prefilter (Sec.~\ref{sec:models})
+(\autoref{tab:sw}; \autoref{fig:traj}).  The default RANSAC
+prefilter (\autoref{sec:models})
 is neutral here --- backflip frames are already sparse and mostly fall
 below its five-return floor, so they bypass it --- and the small change
 from the Huber front-end ($1.51\to1.55$\,m live) is within run-to-run
@@ -1326,7 +1335,7 @@ $z$-error curves and large negative $b$ flattens the drift, so we
 initially interpreted $b$ as the antenna-fixed elevation bias of the
 2-TX array.  A joint calibration experiment \emph{disproves} this
 interpretation: (i)~with extrinsic pitch \emph{locked} at its
-plateau value, level-flight racing degrades catastrophically under
+measured value, level-flight racing degrades catastrophically under
 any explicit $b$ (fast-racing live position
 0.39\,$\to$\,3.2\,$\to$\,6.6\,m for $b{=}0,-0.5,-1.0$) --- a true
 antenna-fixed bias would be tolerated, since nothing else can absorb
@@ -1350,7 +1359,7 @@ gives $36\degree$ on both racing bags, diverging from a saddle near
 $23\degree$).  The earlier ``self-calibrated $+2\degree$ absorbs the
 elevation bias'' reading is retired; we instead fix pitch at the
 physically measured as-built angle ($27.5\degree$, inclinometer;
-Sec.~\ref{sec:results}), a few degrees below the $30\degree$ CAD design
+\autoref{sec:results}), a few degrees below the $30\degree$ CAD design
 (the 3D-printed, loosely-fastened fixture accounts for the difference).
 
 \emph{Remaining gap.}
@@ -1370,7 +1379,7 @@ Our initial marginalization implementation selected all residuals
 touching marginalized \emph{or} boundary variables --- which, through
 the shared bias block, baked every IMU factor of the window into the
 Schur complement, conditioned on interior states, and double-counted
-factors re-added in the next window (Sec.~\ref{sec:sw}).  The
+factors re-added in the next window (\autoref{sec:sw}).  The
 resulting overconfident prior had to be deflated by a hand-tuned
 scale, and the required scale varied by orders of magnitude across
 flight regimes with a harmful intermediate region.  We document this
@@ -1378,8 +1387,8 @@ behaviour because the symptom pattern --- no universal prior weight,
 non-monotone sensitivity, robust losses on the prior acting backwards
 --- is a useful \emph{diagnostic for marginalization inconsistency} in
 sliding-window estimators generally.
-Table~\ref{tab:prior_scale} shows the sweep measured with the
-inconsistent prior; Fig.~\ref{fig:prior_scale}
+\autoref{tab:prior_scale} shows the sweep measured with the
+inconsistent prior; \autoref{fig:prior_scale}
 plots the orientation sweep.
 
 \begin{table}[t]
@@ -1429,7 +1438,7 @@ counter-productively down-weights the bag that needs the prior most,
 because aggressive dynamics produce larger prior residuals).
 
 \textbf{Resolution.}
-With the Markov-blanket factor-selection rule of Sec.~\ref{sec:sw},
+With the Markov-blanket factor-selection rule of \autoref{sec:sw},
 the prior is a true marginal: a single \emph{unscaled} prior
 (scale $=1$) is optimal or near-optimal on all three bags
 simultaneously, the prior's Mahalanobis residual at each solution is
@@ -1473,7 +1482,7 @@ degraded both bags and added $3\times$ runtime.
 
 \textbf{Full extrinsic optimization.}
 The C++ solver only supports the 1-DOF pitch offset $\delta_\text{pitch}$
-(Sec.~\ref{sec:state}), because Doppler cannot observe roll or yaw.
+(\autoref{sec:state}), because Doppler cannot observe roll or yaw.
 When tested in an earlier Python-based solver that allowed all three
 angles to optimize freely, roll and yaw drifted 5--7\degree,
 using the unobservable modes as a residual trash can and corrupting
@@ -1519,7 +1528,7 @@ $15\times$ the level-flight core), demonstrated by an asymmetric
 factor-split ablation; (2) ground truth itself degrades during flips
 (MoCap occlusion), bounding what can be measured there; and
 (3) cross-validation against the EKF-RIO family
-(Sec.~\ref{sec:baselines}) reveals a design-space split.  With our
+(\autoref{sec:baselines}) reveals a design-space split.  With our
 default RANSAC front-end --- the same single-chip outlier rejection
 \mbox{reve} uses --- our solver reaches position parity on their public
 flights ($0.5$--$1.9$\,m, same order as the baselines), matches their
