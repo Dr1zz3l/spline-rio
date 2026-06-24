@@ -136,7 +136,8 @@ metric (live edge); \ac{rpe} is the complementary per-segment view.
 Radar is essential.  Disabling it (\texttt{-{}-no-radar}) collapses the
 live-edge estimate to \ac{imu} dead-reckoning: position drift balloons to
 5.9\% on slow racing and diverges entirely on fast racing
-($>$90\% of distance), with velocity \ac{rmse} rising to 2.4 and
+($\approx$99.5\% of distance --- error on the order of the full path
+length), with velocity \ac{rmse} rising to 2.4 and
 8.0\,m/s as double-integrated accelerometer noise accumulates unbounded.
 The direct Doppler velocity constraints bound this to the
 \autoref{tab:sw} figures (0.6--0.9\% drift, 0.32--0.48\,m/s velocity)
@@ -209,9 +210,9 @@ aiding confirms this --- on flight\_1 our unaided yaw drifts to
 $9.9\degree$, matching unaided ekf-rio ($10.1\degree$), while roll/pitch
 and position are essentially unchanged.
 
-This same-order position is what the default \ac{ransac} prefilter
-(\autoref{sec:models}) buys, and it is the clearest single
-demonstration of its effect.  A single-chip 2-TX array has limited
+The default \ac{ransac} prefilter (\autoref{sec:models}) buys this
+same-order position --- its clearest single demonstration.
+A single-chip 2-TX array has limited
 elevation diversity, and a minority of returns carry an
 elevation-correlated Doppler bias.  Doer's \mbox{reve} rejects these
 with 3D \ac{ransac} (inlier $0.15$\,m/s); a Huber-robust least squares only
@@ -261,9 +262,11 @@ estimation fails outright on roughly half of all scans), there is no
 hardware radar trigger, and our racing-frame vibration (measured gyro
 white-noise PSD $2.1\degree/\mathrm{s}/\sqrt{\mathrm{Hz}}$ in flight)
 exceeds their process-noise parameter range, making propagation
-overconfident so the gate then rejects the few updates that survive ---
-a design-space split (\autoref{sec:conclusion}), not a defect of either
-method.
+overconfident so the gate then rejects the few updates that survive.
+This is a design-space split (\autoref{sec:conclusion}), not a defect of
+either method: their stack runs near sensor rate on dense clouds, ours
+spends \SI{0.35}{}--\SI{0.70}{\second} per window on sparse Doppler ---
+an accuracy-versus-latency trade.
 
 \begin{table*}[t]
 \caption{Cross-validation on the public ICINS-2021 flight
@@ -335,13 +338,15 @@ tangent space, marginalization prior included) and compute the
 normalized estimation error squared (\ac{nees}) against \ac{mocap};
 for a consistent estimator the \ac{nees} of each 3-DoF block is
 $\chi^2_3$-distributed with mean~3.
-On the racing flights the \emph{orientation} \ac{nees} mean is
-$0.7$--$0.9{\times}$ its consistent value (essentially calibrated, as the
-measurement weights approximate effective-noise whitening), and the
-velocity \ac{nees} is mildly overconfident (median $1.4$--$5.7$; the
-heavier-tailed mean is inflated by a few windows where the
-finite-difference \ac{mocap} velocity reference is itself unreliable,
-so we take the median).  Both are \emph{calibration checks}, not powered
+On the racing flights, summarized by the per-window median for
+\emph{both} channels, the \emph{orientation} \ac{nees} is $1.2$--$2.6$
+and the velocity \ac{nees} $1.4$--$5.4$ (consistent value~3):
+orientation is essentially calibrated --- slightly conservative on slow
+racing, near-exact on fast, as the weights approximate effective-noise
+whitening --- and velocity is calibrated to mildly overconfident.  We
+report the median, not the mean, because the means (velocity especially)
+are inflated by a few windows where the finite-difference \ac{mocap}
+velocity reference is unreliable.  Both are \emph{calibration checks}, not powered
 hypothesis tests: consecutive windows are temporally correlated, so the
 $\chi^2_3$ mean-3 expectation holds only heuristically.  On backflips the
 orientation covariance is overconfident
