@@ -953,19 +953,16 @@ The direct Doppler velocity constraints bound this to the
 Table~\ref{tab:sw} figures (0.6--0.9\% drift, 0.32--0.45\,m/s velocity)
 --- roughly an order-of-magnitude reduction in both.  Orientation
 improves more modestly, from 7.6\degree/6.8\degree\ (IMU-only) to
-1.9\degree/2.8\degree, because the 1\,kHz gyroscope already constrains
-it strongly.
+1.9\degree/2.8\degree, the 1\,kHz gyroscope already constraining it.
 
 \subsection{Held-Out Validation}
 \label{sec:heldout}
-All tuning in this paper used three bags (slow racing, fast racing,
-backflips).  To test generalization, the final configuration was run
-\emph{unmodified} on flights never used for any decision.
-On the held-out flights recorded with the same sensor configuration,
-accuracy matches or beats the tuning bags: a second, independent
-fast-racing flight reaches 0.37\,m\,/\,2.81\degree\ live
-(vs.\ 0.39\,m\,/\,2.84\degree\ on the tuning bag), and a circular
-trajectory reaches 0.88\,m\,/\,4.01\degree\ live.
+All tuning used three bags (slow/fast racing, backflips); the final
+configuration was then run \emph{unmodified} on flights never used for
+any decision.  A second, independent fast-racing flight reaches
+0.37\,m\,/\,2.81\degree\ live (vs.\ 0.39\,m\,/\,2.84\degree\ on the
+tuning bag), and a circular trajectory reaches
+0.88\,m\,/\,4.01\degree\ live.
 Five additional stress-tier bags from an earlier recording day use an
 older radar firmware with $12\times$ coarser Doppler quantization
 (0.604 vs.\ 0.049\,m/s), partially unusable accelerometer axes, and
@@ -1245,9 +1242,10 @@ Window duration has little effect on slow racing (live 0.29--0.34\,m
 across 1.5--5\,s); on fast racing a 3\,s window modestly improves the
 live edge over 2\,s ($0.44\to0.39$\,m, $2.9\to2.8\degree$), so 3\,s is
 the default --- balancing latency against accuracy.
-Pitch-only extrinsic optimization is the default;
-locking pitch to nominal is slightly better for slow racing (0.157 vs.\
-0.169\,m) but the optimizer correctly self-calibrates on fast/backflips bags.
+We lock pitch at its measured value for all sliding-window runs; even
+in the batch ablation, locking is marginally better than freeing it
+(0.157 vs.\ 0.169\,m on slow racing), consistent with the pitch being
+only weakly observable (Sec.~\ref{sec:backflips}).
 
 %==================================================================
 \section{Limitations and Negative Results}
@@ -1507,8 +1505,8 @@ velocity--orientation trade made explicit as a measured Pareto curve;
 and (3) \emph{characterized sensor systematics} --- including the
 finding that the apparent elevation bias under tumbling is a
 flight-regime error proxy, not an antenna constant, and that the
-extrinsic pitch is a calibration plateau best locked, not estimated
-online.  Notably, the largest accuracy gains came from diagnosis-led
+extrinsic pitch is weakly observable, best fixed at its measured value
+rather than estimated online.  Notably, the largest accuracy gains came from diagnosis-led
 re-weighting of existing measurements, not from added model capacity:
 a representation-level study showed the orientation spline already
 tracks \SI{10}{\radian\per\second} flips at the gyroscope noise floor,
