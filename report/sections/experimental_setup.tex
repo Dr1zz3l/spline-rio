@@ -22,6 +22,36 @@ Backflips\textsuperscript{*} & 18.1 & $\sim$4.3 (95\%) & $\sim$10.9 (95\%) & 181
 \end{tabular}
 \end{table}
 
+All three regimes run the \emph{same} sliding-window solver, weighting law,
+and front-end; \autoref{tab:config} collects the handful of per-regime knobs
+that differ, so that every reported number can be reproduced from one place.
+
+\begin{table}[t]
+\centering
+\caption{Per-Regime Sliding-Window Configuration}
+\label{tab:config}
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+Parameter & Slow & Fast & Backflips \\
+\midrule
+Position knot $\Delta t_p$ (ms)        & 5  & 40  & 10 \\
+Orientation knot $\Delta t_o$ (ms)     & 8  & 16  & 8 \\
+LM iteration cap                       & 12 & 400 & 400 \\
+Heading prior $\lambda_h$              & 10 & 0.6 & 10 \\
+Doppler elevation corr.\ $b$ (m/s)     & --- & --- & $-1.5$ \\
+Position-init anchor $\lambda_{p_0}$   & --- & --- & 0.5 \\
+\bottomrule
+\multicolumn{4}{@{}p{0.92\columnwidth}@{}}{\footnotesize Shared across all
+regimes: 3\,s window, 0.3\,s stride, unscaled Markov-blanket marginalization
+prior, the single dynamics-adaptive weighting law (\autoref{sec:models}),
+RANSAC ego-velocity prefilter (\SI{0.15}{\metre\per\second} inlier),
+sensor-only initialization, and frozen extrinsic pitch \SI{27.5}{\degree}.
+``---'' marks the shared default: uncapped-by-data iterations, and the
+flight-regime elevation correction / position tether off.}
+\end{tabular}
+\end{table}
+
 \textbf{\ac{imu} rate:} $\sim$993\,Hz (full rate, no downsampling for C++ solver).
 \textbf{Evaluation:} Start-anchored rigid alignment to \ac{mocap} ground
 truth: the alignment rotation $\mathbf{R}_\mathrm{align} =
@@ -64,6 +94,7 @@ cumulative-spline Jacobian struct; Ceres automatic differentiation was
 eliminated to avoid Jet-arithmetic overhead over the large set of
 spline control-point parameters per factor.
 In the sliding-window solver the linear solve and the
-marginalization-prior recompute (\texttt{compute\_prior}) are the
-dominant costs; Jacobian evaluation accounts for roughly 25--30\% of
-per-window wall time.
+marginalization-prior recompute (\texttt{compute\_prior}, evaluated
+\emph{every} LM iteration --- distinct from the ${\sim}10$\,ms one-time
+prior \emph{formation} of \autoref{sec:sw}) are the dominant costs;
+Jacobian evaluation accounts for roughly 25--30\% of per-window wall time.

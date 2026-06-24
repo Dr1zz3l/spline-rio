@@ -61,12 +61,18 @@ observability nullspace.  In continuous time,
 CLIC~\cite{lv2023clic} and
 LIO-MARS~\cite{quenzel2025liomars} marginalize spline knots leaving
 the window, and Hug et al.~\cite{hug2022continuous} apply Schur
-marginalization to visual-inertial splines.  Our contribution to this
-line is narrower and complementary to \ac{fej}: a factor-\emph{set}
-selection rule that exploits B-spline local support to make the
-marginal exactly closed (no double counting, no conditioning on
-interior states), and a documented symptom pattern by which the
-inconsistent variant can be recognized (\autoref{sec:prior_scale}).
+marginalization to visual-inertial splines.  These select the factors to
+marginalize by adjacency to the dropped knots, which is correct when the
+estimated states are all local to the window.  Our setting adds a
+\emph{global} shared \ac{imu} bias coupled to every \ac{imu} factor: that
+shared block is what tempts an adjacency rule to pull in far-edge factors
+and silently produce an over-confident, inconsistent prior.  Our
+contribution, narrower than and complementary to \ac{fej}, is the
+factor-\emph{set} selection rule that uses B-spline local support to keep
+the marginal exactly closed \emph{despite} the shared bias (no double
+counting, no conditioning on interior states), plus a documented symptom
+pattern by which the inconsistent variant can be recognized
+(\autoref{sec:prior_scale}).
 In the discrete-time UAV line, the \ac{ekf}-\ac{rio} family of Doer and
 Trommer~\cite{doer2020ekf} defines the state of practice.
 Absolute \ac{rmse} is not comparable across papers --- our own quantization

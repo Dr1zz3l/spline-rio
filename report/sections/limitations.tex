@@ -1,16 +1,32 @@
 \section{Limitations and Negative Results}
 \label{sec:limits}
 
+\subsection{Statistical Scope}
+\label{sec:stat_scope}
+Each flight regime is evaluated on a \emph{single} representative
+recording, so the headline numbers carry no run-to-run error bars.  The
+held-out flights (\autoref{sec:heldout}), the cross-platform validation
+(\autoref{sec:baselines}), and the deterministic, bit-identical re-runs
+broaden the evidence, but they do not substitute for repeated trials:
+re-runs add reproducibility, not statistical power.  Reporting
+mean\,$\pm$\,std over several recordings per regime is the natural
+strengthening, and is left to future data collection.
+
 \subsection{Heading Sensor Requirement}
 \label{sec:yaw}
 Yaw is a gauge freedom for Doppler: rotating the entire trajectory
 about the world gravity axis leaves all radial velocity measurements
 unchanged, so absolute heading cannot be recovered from radar and \ac{imu}
 alone.  A magnetometer resolves this and is standard on virtually all
-flight platforms; here \ac{mocap} yaw serves that role.  Without it, yaw
-drifts freely and position direction error accumulates.  This is
-therefore a sensor-architecture note rather than an open research
-problem.
+flight platforms; here \ac{mocap} yaw serves that role.  Because that
+\ac{mocap} yaw is noise- and bias-free --- unlike a real magnetometer ---
+the heading-aided orientation numbers are correspondingly optimistic;
+the heading-\emph{independent} roll/pitch decomposition
+(\autoref{tab:baselines}(b)) and the unaided-yaw check
+(\autoref{sec:baselines}) isolate attitude accuracy from this
+idealization.  Without it, yaw drifts freely and position direction
+error accumulates.  This is therefore a sensor-architecture note rather
+than an open research problem.
 
 \subsection{Extreme Dynamics: Backflips}
 \label{sec:backflips}
@@ -58,13 +74,11 @@ constraints (1.26 DoF/constraint); the per-window Jacobian is
 rank-deficient and the solver freezes near its initialization.
 At 8\,ms the window is well-conditioned (62.5\,Hz model bandwidth
 comfortably covers the 10--20\,Hz flip dynamics).
-We further caution that at $\Delta t_o{=}0.8$\,ms the \emph{batch}
-problem is bistable: repeated solves under small perturbations
-(e.g.\ a few ms of radar-timestamp shift) oscillate between
-$\sim$8\degree\ and $\sim$25\degree\ orientation regimes, and the
-final cost \emph{anti-correlates} with accuracy --- the
-underconstrained problem overfits with the wrong global orientation.
-Single-run comparisons at this density are not trustworthy.
+The same density is what makes the \emph{batch} problem bistable (the
+$\sim$8\degree/$\sim$25\degree\ oscillation noted above): the final cost
+\emph{anti-correlates} with accuracy --- the underconstrained problem
+overfits the wrong global orientation --- so single-run comparisons at
+this density are not trustworthy.
 
 \emph{Attributing the z-axis failure --- and what $b$ really is.}
 A visual trajectory check (numeric \ac{rmse} conceals it) showed the SW
@@ -106,10 +120,11 @@ physically measured as-built angle ($27.5\degree$, inclinometer;
 \emph{Remaining gap.}
 The residual $\sim$6\degree\ live orientation error during flips
 attenuates the reconstructed loop circles relative to ground truth.
-The radar contribution during flips is fundamentally limited by
-intra-frame motion smearing; we expect adaptive (non-uniform) knot
-placement and per-chirp timestamps to be the relevant levers, which
-we leave to future work.
+This is not a spline-bandwidth limit (\autoref{sec:negative}: denser
+knots do not help); the residual lever is the radar measurement model,
+whose intra-frame Doppler smearing during flips is best addressed by
+\emph{per-chirp timestamps} rather than knot density, which we leave to
+future work.
 
 
 \subsection{Prior Scale Sensitivity as a Symptom of Inconsistent
@@ -161,15 +176,12 @@ $10^{-8}$                                & 0.336 & 2.08 & 1.344 & 3.57 \\
 
 Slow racing is best served by a near-zero prior ($10^{-7}$): with
 gentle dynamics, each 3\,s window is self-sufficient and additional
-inter-window coupling is harmful.  Fast racing needs the prior
+inter-window coupling is harmful.  Fast racing instead needs the prior
 ($2{\times}10^{-4}$) for inter-window position continuity ---
-without it (scale$=10^{-7}$) fast racing live position degrades from
-0.825\,m to 1.279\,m.
-For slow racing, scale$=10^{-6}$ yields a local \emph{orientation}
-maximum (2.21\degree; worse than both 2$\times$10$^{-4}$ at 2.16\degree\
-and $10^{-7}$ at 2.08\degree), while position improves monotonically
-with decreasing scale.  This partial-constraint effect illustrates why
-no single scale is universally optimal.
+without it (scale$=10^{-7}$) fast-racing live position degrades from
+0.825\,m to 1.279\,m.  The two bags thus want opposite scales, and the
+non-monotone slow-racing orientation maximum at $10^{-6}$
+(\autoref{tab:prior_scale}) shows no single scale is universally optimal.
 
 The information asymmetry in the inconsistent $S$ (orientation
 eigenvalues $\sim$$5.5{\times}10^{14}$, position $\sim$$10^4$) meant
@@ -206,25 +218,43 @@ jumps in the settled trajectory disappear (settled velocity \ac{rmse}
 \subsection{Other Negative Results}
 \label{sec:negative}
 
+\textbf{Adaptive knot density.}
+We tested whether denser or non-uniform orientation knots reduce the
+residual backflip attitude error; they do not.  At $\Delta t_o{=}8$\,ms
+the orientation spline already represents the MoCap attitude to
+1.28\degree\ \ac{rmse} \emph{during} the flips, and its angular-velocity
+tracking of the gyro stream is 0.295\,rad/s RMS --- flat across
+$\Delta t_o\in\{16,8,4\}$\,ms and sitting at the rate-independent
+vibration floor (0.17\,rad/s).  The flip orientation gap is therefore
+\emph{not} a spline-bandwidth limit: the spline can represent the
+motion, but the optimizer does not rotate to it (the gyro residual
+correlates with $|\vom_b|$ at $+0.94$ against the \emph{solved}
+trajectory, and open-loop gyro dead-reckoning is 7.8\degree\ --- better
+than the fused 9\degree).  The lever is measurement weighting and
+robustness (\autoref{sec:backflips}), not knot density: the
+dynamics-adaptive gyro trust closes most of the gap, \emph{disproving}
+the adaptive-knot-density hypothesis for this regime and obviating the
+non-uniform-basis extension.
+
 \textbf{\ac{imu} preintegration.}
 Replacing per-sample gyro/accel factors with Forster
 TRO-2017~\cite{forster2017manifold} preintegrated factors at 100\,Hz
 reduces constraint density from 8:1 (samples per knot) to 1:1,
 degrading orientation \ac{rmse} from 1.02\degree\ to 6.40\degree\ and
 position \ac{rmse} from 0.169\,m to 0.288\,m on slow racing.
-The smaller Jacobian yields a faster iteration time,
-but the accuracy loss is unacceptable.
+The smaller Jacobian iterates faster, but the accuracy loss is
+unacceptable.
 
 \textbf{GNC (Graduated Non-Convexity).}
-Geman-McClure loss annealing~\cite{yang2020gnc} was tested on radar
-residuals.  It improved results only when extrinsics were incorrect
-(masking calibration errors as outliers); with correct calibration it
-degraded both bags and added $3\times$ runtime.
+Geman-McClure loss annealing~\cite{yang2020gnc} on radar residuals
+improved results only when extrinsics were incorrect (masking
+calibration errors as outliers); with correct calibration it degraded
+both bags and added $3\times$ runtime.
 
 \textbf{Full extrinsic optimization.}
-The C++ solver only supports the 1-DoF pitch offset $\delta_\text{pitch}$
-(\autoref{sec:state}), because Doppler cannot observe roll or yaw.
-When tested in an earlier Python-based solver that allowed all three
-angles to optimize freely, roll and yaw drifted 5--7\degree,
-using the unobservable modes as a residual trash can and corrupting
-orientation by 6--8\degree.  The C++ design avoids this by construction.
+The C++ solver exposes only the 1-DoF pitch offset $\delta_\text{pitch}$
+(\autoref{sec:state}): Doppler cannot observe roll or yaw, and an earlier
+Python solver that freed all three angles let roll and yaw drift
+5--7\degree\ into the unobservable modes as a residual trash can,
+corrupting orientation by 6--8\degree.  The C++ design avoids this by
+construction.

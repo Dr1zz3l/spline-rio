@@ -5,6 +5,32 @@ Each point checked **against the actual report source** (not taken on faith). Ve
 Ordered by priority. The three contradictions (#2, #3, #1) and the NEES/parity overclaims
 (#4, #6) are the must-fixes; #12 and a couple of minors are misreadings.
 
+## Implementation status (2026-06-24) — ALL must-fixes DONE
+
+All ADAPT/PARTIAL items are now in `report/` (modular `sections/*.tex`):
+- **#2** sensor-only made the default (`--mocap-accel-bias` opt-in); every headline number
+  re-run and replaced throughout (Table III, abstract, conclusion). Completeness grep clean.
+- **#3** adaptive-knot study added to Negative Results (VII-D); intro/conclusion wording matched;
+  VII-B future-work lever changed to per-chirp timestamps (adaptive knots dropped).
+- **#1** marginalization reframed around the shared-bias trap; [15]/standard selection contrasted;
+  spline order N=6/N=4 stated; diagnostic + re-centering led as the novel bits.
+- **#4** NEES: median reported for both channels, temporal-correlation + 6/50 backflip caveats,
+  abstract softened to "approximately calibrated."
+- **#6** "parity" removed (results + conclusion) → "same order of magnitude" / "trails ekf-yrio."
+- **#9** noise-free MoCap-yaw caveat added (Limitations VII-A heading-sensor).
+- **#7** real-time qualified to "aggressive racing at a 0.4 s stride."
+- **#8** backflips settled-velocity cell dropped to `---` with note.
+- **#10** consolidated per-regime configuration table added (Table II, §V).
+- **#5** dedicated "Statistical Scope" subsection (N=1 honest; re-runs = reproducibility,
+  not power). New flights declined for now (no data); flagged as the strongest future response.
+- **#11** reverse-port relabeled "sensor/stack-coupling characterization."
+- **#12** timing clarified: form-once (~10 ms) vs evaluate-per-iteration (`compute_prior`).
+- **Minors:** title hyphenated; metric ordering unified; tool-name typography; Dataset table
+  95th-pct footnote.
+
+Build: 12 pages, 0 undefined refs, 0 overfull. Trimmed to 12pp via redundancy cuts + tightened
+float spacing + bios commented out (optional for initial submission).
+
 ## Verdict summary
 
 | # | Concern | Verified? | Verdict |

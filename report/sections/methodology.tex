@@ -307,11 +307,14 @@ known), and double-counts factors that are re-added in the next window.
 The resulting prior is overconfident by orders of magnitude and must be
 deflated by a hand-tuned scale of $10^{-7}$--$2{\times}10^{-4}$
 depending on flight dynamics (\autoref{sec:prior_scale}).
-We instead exploit B-spline locality: a factor touching marginalized
-knot $i$ has support $[i, i{+}N{-}1] \subseteq$
-marg\,$\cup$\,boundary, so including \emph{only} residuals that touch a
-marginalized variable (plus the previous prior) yields an exactly
-closed, consistent marginal.  With this rule the prior is applied
+The shared global bias is the trap: it is what tempts pulling in the
+far-edge \ac{imu} factors.  We instead exploit the splines' local support
+of $N$ knots (quintic position $N{=}6$, cubic orientation $N{=}4$): a
+factor touching marginalized knot $i$ has support
+$[i, i{+}N{-}1] \subseteq$ marg\,$\cup$\,boundary, so including
+\emph{only} residuals that touch a marginalized variable --- rather than
+those touching marginalized \emph{or} boundary variables --- (plus the
+previous prior) yields an exactly closed, consistent marginal.  With this rule the prior is applied
 \textbf{unscaled} (scale $=1$) across all flight regimes, and its
 Mahalanobis residual at the solution drops from $10^{6}$--$10^{12}$
 to $\mathcal{O}(1)$ --- the prior agrees with the incoming data.
