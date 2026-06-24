@@ -66,13 +66,14 @@ UNIV="--set marg_prior_scale=1.0 --set lambda_gyro_omega_sigma=4.0 --set lambda_
 ../.venv/bin/python3 validate_live_solver.py fast_racing_best_velocity --mocap-yaw --cpp --sliding-window \
   $UNIV --set dt_pos=0.04 --set dt_ori=0.016 --set lock_extrinsics=1 \
   --set-ext 'rotation_euler_deg=[180.0,27.5,0.0]'
-# → 0.447/2.66° settled, 0.501m/3.24° live, vel 0.41, ~0.35s/window
-# Locked pitch 27.5° beats in-solver pitch calibration (ROADMAP 4.2: pitch was a
-# plateau; locking improves fast pos −21%). DO NOT add radar_zbias_fixed on racing
-# even with locked pitch (b=−0.5 → 3.3m): b is a flip-regime proxy, not physical.
+# → 0.285/2.31° settled, 0.39m/2.84° live, vel 0.32, ~0.35s/window (RANSAC default)
+# Pitch locked at the measured 27.5° (inclinometer 27–28°). Locking vs in-solver
+# self-cal is RMSE-neutral (the old "locking beats by −21%" was a pre-RANSAC artifact,
+# retracted); we freeze because pitch is weakly observable (self-cal init-dependent).
+# DO NOT add radar_zbias_fixed on racing (b=−0.5 → 3.3m): b is a flip-regime proxy, not physical.
 ../.venv/bin/python3 validate_live_solver.py slow_racing_best_velocity --mocap-yaw --cpp --sliding-window \
   $UNIV --set max_iterations=12 --set lambda_heading=10.0
-# → live: 0.303m/1.97°, vel 0.46, drift 0.63%, 0.70s
+# → live: 0.30m/1.94°, vel 0.45, drift 0.63%, 0.70s (RANSAC default)
 #   (mapping variant: drop iter cap + λh → settled 0.28m/1.2°, yaw ~0.7°, 1.6s/window)
 # DO NOT add lambda_pos_init_prior (tether) on racing: poisons fast position (1.5m!)
 # and slow full-iter yaw — it is a backflips-only rescue (radar sparsity in flips).
@@ -82,7 +83,7 @@ UNIV="--set marg_prior_scale=1.0 --set lambda_gyro_omega_sigma=4.0 --set lambda_
 ../.venv/bin/python3 validate_live_solver.py backflips_best_velocity --mocap-yaw --cpp --sliding-window \
   $UNIV --set dt_ori=0.008 --set lock_gyro_bias=0 --set lambda_pos_init_prior=0.5 \
   --set radar_zbias_fixed=-1.5 --set-ext 'rotation_euler_deg=[180.0,27.5,0.0]'
-# → settled 1.64m/4.98°, live 1.51m/6.29°, vel 2.29, ~0.6s/window
+# → settled 1.68m/4.82°, live 1.55m/6.26°, vel 2.35, ~0.6s/window (RANSAC default)
 # b=−1.5 (ROADMAP 4.2): b is a FLIP-REGIME radar-error proxy, not a physical
 # elevation bias (racing explodes under any b even with locked pitch; backflips
 # improves monotonically past the WLS-measured −0.5). Curve continues to −2.0
@@ -96,13 +97,13 @@ UNIV="--set marg_prior_scale=1.0 --set lambda_gyro_omega_sigma=4.0 --set lambda_
 # accel_soft_sigma: ω-dependent ACCEL down-weighting (mirror of the radar soft gate) —
 # accel distorts orientation mid-flip (ROADMAP Part 5 Tier-1 #6).
 # Backflips-only extras: tether λ=0.5 (radar sparsity in flips; POISON on racing — fast
-# pos 0.5→1.5m, slow mapping yaw 0.7→2.5°); locked pitch 27.5° (25.5° was wrong);
+# pos 0.5→1.5m, slow mapping yaw 0.7→2.5°); locked pitch 27.5° (measured as-built; 25.5° was a stale seed);
 # λ_ori_accel REMOVED (bit-identical under stiff gyro).
 # omega_soft_sigma: ω-dependent radar down-weighting w=1/(1+(|ω|/ω₀)²) — beats the hard
 # ω-gate on orientation without discarding data (ROADMAP Part 3c)
 # radar_zbias_fixed: per-point elevation bias v_corr = v − b·u_z (ROADMAP Part 4b).
-# DO NOT apply on racing bags — their calibrated pitch_delta (+2°) already absorbs the
-# z-bias for level flight; b=-0.5/-1.0 degrades fast batch 0.76→2.6/5.4m.
+# DO NOT apply on racing bags — b degrades them (b=-0.5/-1.0 → fast batch 0.76→2.6/5.4m);
+# on racing it is a regime proxy with no benefit (the "+2° pitch absorbs z-bias" reading is retired).
 # NOTE: lambda_pos_init_prior was never plumbed before 2026-06-12 (see SW_DEVELOPMENT §7
 # correction); the old Phase 3 command silently ran with tether=0.
 # bags.yaml retains dt_ori=0.0008 for batch; --set dt_ori=0.008 overrides for SW
@@ -150,7 +151,7 @@ python analysis/codegen/derive_jacobians_symforce.py   # Overwrites analysis/cod
 | `lib/imu_preintegration.py` | Forster TRO-2017 on-manifold preintegration (--preintegrate flag) |
 | `codegen/generated_jacobians.py` | SymForce-generated residuals + Jacobians for radar, accel, gyro factors |
 | `lib/rosbag_loader/loader.py` | Unified API to load 7 ROS topics into typed dataclasses |
-| `config/extrinsics.yaml` | Extrinsics: [180, **25.5** (init), 0] deg — SW runs lock **27.5°**; translation [0.08, 0.02, -0.01] m |
+| `config/extrinsics.yaml` | **As-built pitch measured 27–28°, frozen 27.5°** (deployed via `--set-ext`); yaml keeps 25.5° only as a stale self-cal seed. roll 180°, yaw 0°; translation [0.08, 0.02, -0.01] m |
 | `config/bags.yaml` | Bag aliases → paths, flipped bag set, per-bag timing windows + solver_overrides |
 | `config/solver.yaml` | Python solver hyperparameters (default) |
 | `config/solver_cpp.yaml` | C++ solver overrides loaded on `--cpp` |
@@ -270,6 +271,9 @@ Per-bag config auto-selected via `bags.yaml` solver_overrides:
 | backflips | **1.817m** | 1.951 | **8.31°** | locked 25.5° |
 
 ### C++ sliding window (--mocap-yaw --cpp --sliding-window)
+
+> **Pre-universal, per-bag-tuned prior — superseded by the universal + RANSAC-default
+> headline below (2026-06-12/14). Kept for reference only.**
 
 | Bag | Settled pos | Settled ori | Live pos | Live vel | Live ori | marg_prior_scale |
 |-----|-------------|-------------|----------|----------|----------|-----------------|
