@@ -181,8 +181,8 @@ VINS-Mono~\cite{qin2018vins} pioneered Schur complement
 marginalization for visual-inertial systems, propagating information
 from dropped keyframes as a dense Gaussian prior. We apply the same
 principle to continuous-time B-spline control points and document
-the practical challenges of prior scaling when information asymmetry
-spans ten orders of magnitude.
+the practical challenges of prior scaling when the marginal's
+orientation and position information differ by ten orders of magnitude.
 
 \textbf{Closest related work.}
 Continuous-time radar-inertial odometry was introduced by
@@ -225,10 +225,11 @@ interior states), and a documented symptom pattern by which the
 inconsistent variant can be recognized (Sec.~\ref{sec:prior_scale}).
 In the discrete-time UAV line, the EKF-RIO family of Doer and
 Trommer~\cite{doer2020ekf} defines the state of practice.
-Rather than comparing numbers across papers --- our own quantization
+Absolute RMSE is not comparable across papers --- our own quantization
 ablation (Sec.~\ref{sec:heldout}) shows firmware configuration alone
-changes Doppler resolution by $12\times$ --- we cross-validate against
-this line directly: Sec.~\ref{sec:baselines} runs our system on the
+changes Doppler resolution by $12\times$ --- so rather than quote their
+numbers we cross-validate against this line directly:
+Sec.~\ref{sec:baselines} runs our system on the
 public ICINS-2021 flight datasets of~\cite{doer2021yrio} and re-evaluates
 their EKF estimators under our causal metrics on the same data, and
 reports the regime-dependent result of porting their filters to our
