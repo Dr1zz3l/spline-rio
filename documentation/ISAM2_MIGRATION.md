@@ -166,5 +166,32 @@ bug: a sign/convention error would make the C++ optimum a NON-stationary point
 and gtsam would move far. Python FD solve is ~20-60 s/window (unrepresentative;
 the timing verdict is C++ Phase 3, per the plan).
 
-Next: Phase 0c (ISAM2 incremental + BOTH bias models; clique-size-vs-length;
-the constant-vs-random-walk bias decision).
+- `test_phase0c.py`: ISAM2 incremental smoothing fed stride-by-stride (full
+  smoothing, no marginalization yet), both bias models, with a Bayes-tree clique
+  analysis. IMU decimated to ~250 Hz (preserves the bias-coupling connectivity
+  that drives fill-in while keeping the Python FD solve tractable; structure
+  depends on connectivity, not factor count). Init at the C++ solution to isolate
+  STRUCTURAL fill-in from the convergence transient.
+
+Phase 0c status: **DONE -> bias decision = RANDOM-WALK** (2026-06-25).
+  - The tree is **banded**: max clique size **12** vars (mean 11), bounded, no
+    growth with trajectory length, identical for both bias models.
+  - **The shared-bias fill-in is REAL and measured.** Constant bias: `b0` appears
+    in **ALL 402 cliques** (it threads the entire Bayes tree). Random-walk:
+    each per-stride `b_k` is local (`b0` in only 67/402, decaying as later `b_k`
+    take over). Max clique size hides it (bias is +1 var/clique), but `b0`'s
+    tree-wide degree is what keeps raw-ISAM2 `reElim` ~ total and will block clean
+    marginalization in 0d.
+  - ISAM2 incremental tracks C++ to <1 deg ori at 250 Hz (inflated by decimation
+    + omitted heading; revisit full-rate in 0d). Estimate is bias-model-
+    independent (0.675 vs 0.674 deg) -> the bias choice is purely structural.
+  - **DECISION: random-walk bias** (per-stride `B(k)` + between-factor). Matches
+    Girod's per-state bias and standard VIO; the localized coupling is what makes
+    fixed-lag marginalization bounded in 0d/Phase 2.
+  - Caveat noted for 0d: raw ISAM2 with COLAMD does not keep the leading edge near
+    the root, so `reElim` is large in full smoothing regardless of bias model. The
+    fixed-lag smoother's constrained ordering + marginalization (0d) is what turns
+    the localized random-walk bias into bounded per-update cost.
+
+Next: Phase 0d (IncrementalFixedLagSmoother + the NEES/FEJ gate; full-rate
+accuracy, conditioning, and the consistency caveat land here).

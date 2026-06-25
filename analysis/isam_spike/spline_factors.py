@@ -238,12 +238,13 @@ def make_radar_factor(prob, t, u_sensor, v_meas, noise):
     return CustomFactor(noise, keys, err)
 
 
-def make_accel_factor(prob, t, z_acc, noise):
+def make_accel_factor(prob, t, z_acc, noise, bias_key=None):
+    bias_key = B(0) if bias_key is None else bias_key
     ko, uo = prob.ori_active(t)
     kp, N0, N1, N2 = prob.pos_active(t)
     ori_keys = [R(ko - 3 + l) for l in range(N_ORI)]
     pos_keys = [P(kp - prob.pos_degree + l) for l in range(N_POS)]
-    keys = ori_keys + pos_keys + [B(0)]
+    keys = ori_keys + pos_keys + [bias_key]
     inv_dt = prob.inv_dt_ori
     z_acc = np.asarray(z_acc, float)
 
@@ -260,16 +261,17 @@ def make_accel_factor(prob, t, z_acc, noise):
     def err(this, values, H):
         R4 = [values.atRot3(k).matrix() for k in ori_keys]
         P6 = [np.asarray(values.atVector(k), float) for k in pos_keys]
-        bias = np.asarray(values.atVector(B(0)), float)
+        bias = np.asarray(values.atVector(bias_key), float)
         return _fd_fill(H, residual_fn, R4, P6, bias, has_pos=True, has_bias=True)
 
     return CustomFactor(noise, keys, err)
 
 
-def make_gyro_factor(prob, t, z_gyro, noise):
+def make_gyro_factor(prob, t, z_gyro, noise, bias_key=None):
+    bias_key = B(0) if bias_key is None else bias_key
     ko, uo = prob.ori_active(t)
     ori_keys = [R(ko - 3 + l) for l in range(N_ORI)]
-    keys = ori_keys + [B(0)]
+    keys = ori_keys + [bias_key]
     inv_dt = prob.inv_dt_ori
     z_gyro = np.asarray(z_gyro, float)
 
@@ -281,10 +283,21 @@ def make_gyro_factor(prob, t, z_gyro, noise):
 
     def err(this, values, H):
         R4 = [values.atRot3(k).matrix() for k in ori_keys]
-        bias = np.asarray(values.atVector(B(0)), float)
+        bias = np.asarray(values.atVector(bias_key), float)
         return _fd_fill(H, residual_fn, R4, None, bias, has_pos=False, has_bias=True)
 
     return CustomFactor(noise, keys, err)
+
+
+def make_bias_between(key0, key1, noise):
+    """Random-walk bias link: r = bias1 - bias0 (drives the per-stride bias)."""
+    def err(this, values, H):
+        b0 = np.asarray(values.atVector(key0), float)
+        b1 = np.asarray(values.atVector(key1), float)
+        if H is not None:
+            H[0] = -np.eye(6); H[1] = np.eye(6)
+        return b1 - b0
+    return CustomFactor(noise, [key0, key1], err)
 
 
 # ----------------------------------------------------------------------------
@@ -335,14 +348,17 @@ def make_angaccel_factor(prob, i, noise):
     return CustomFactor(noise, ori_keys, err)
 
 
-def make_bias_prior(prob, b0, noise):
+def make_bias_prior(prob, b0, noise, bias_key=None):
     """r = bias - b0 (per-component weights live in the noise model)."""
+    bias_key = B(0) if bias_key is None else bias_key
+    b0 = np.asarray(b0, float)
+
     def err(this, values, H):
-        b = np.asarray(values.atVector(B(0)), float)
+        b = np.asarray(values.atVector(bias_key), float)
         if H is not None:
             H[0] = np.eye(6)
-        return b - np.asarray(b0, float)
-    return CustomFactor(noise, [B(0)], err)
+        return b - b0
+    return CustomFactor(noise, [bias_key], err)
 
 
 def make_vec_prior(key, ref, noise):
