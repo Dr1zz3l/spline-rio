@@ -1,6 +1,11 @@
 \section{Related Work}
 \label{sec:related}
 
+A recent survey~\cite{harlow2024survey} catalogues the rapidly growing use
+of mmWave radar in robotics across motion estimation, localization, and
+mapping; we focus on the radar-inertial odometry thread most relevant to
+single-chip aerial fusion.
+
 \textbf{Radar ego-velocity estimation.}
 Doppler-based ego-velocity estimation from mmWave radar was
 demonstrated by Kellner et al.~\cite{kellner2014instantaneous} and
@@ -41,38 +46,44 @@ continuously inside an \ac{rio} estimator with online spatio-temporal
 calibration.  Single-chip radar-inertial estimation has itself
 received recent attention: Huang et al.~\cite{huang2024lessismore}
 exploit radar cross-section and Doppler physics to make a sparse
-single-chip cloud usable, in a discrete-time sliding-window
-optimization, but on ground-robot and handheld platforms rather
-than aerial tumbling flight.
+single-chip cloud usable in a discrete-time sliding-window
+optimization, evaluated on ground-robot and handheld platforms.
 Our setting differs from all of these in sensor and
 regime: a \emph{single-chip} radar (10--60 points per frame,
 2-TX elevation array) on a quadrotor in aggressive racing and
 attitude-tumbling flight up to \SI{10}{\radian\per\second}, a
 regime in which, as \autoref{sec:backflips} shows, the radar
 measurement model itself degrades in ways invisible on ground
-vehicles.
+vehicles and in benign aerial navigation.
+
+\textbf{Single-chip \ac{rio} on aerial platforms.}
+Single-chip radar-inertial fusion has been shown on multirotors, but only
+for benign flight.  Michalczyk et al.~\cite{michalczyk2022ekf} use a
+discrete-time \ac{ekf} with scan-to-scan point matching and Doppler (a
+factor-graph reformulation follows in~\cite{michalczyk2024fg}); Girod et
+al.~\cite{girod2024brio} run a real-time onboard M-estimator smoother on a
+quadrotor in cities and forests, but cap velocity at
+\SI{2}{\metre\per\second} and anchor the vertical channel with a
+barometer.  None uses a continuous-time spline, addresses aggressive or
+tumbling flight, or, as we do, recovers the vertical channel from radar
+and \ac{imu} alone (\autoref{sec:baselines}).
 
 \textbf{Sliding-window marginalization and consistency.}
 That na\"ive sliding-window marginalization is inconsistent is long
-established in discrete time: Dong-Si and
-Mourikis~\cite{dongsi2012consistency} analyze which retained states
-may legitimately connect to marginalized ones, and
-\ac{fej} methods fix linearization points to preserve the
-observability nullspace.  In continuous time,
-CLIC~\cite{lv2023clic} and
-LIO-MARS~\cite{quenzel2025liomars} marginalize spline knots leaving
-the window.  These select the factors to
-marginalize by adjacency to the dropped knots, which is correct when the
-estimated states are all local to the window.  Our setting adds a
-\emph{global} shared \ac{imu} bias coupled to every \ac{imu} factor: that
-shared block is what tempts an adjacency rule to pull in far-edge factors
-and silently produce an over-confident, inconsistent prior.  Our
-contribution, narrower than and complementary to \ac{fej}, is the
-factor-\emph{set} selection rule that uses B-spline local support to keep
-the marginal exactly closed \emph{despite} the shared bias (no double
-counting, no conditioning on interior states), plus a documented symptom
-pattern by which the inconsistent variant can be recognized
-(\autoref{sec:prior_scale}).
+established in discrete time~\cite{dongsi2012consistency}, where \ac{fej}
+methods fix linearization points to preserve the observability nullspace.
+In continuous time, CLIC~\cite{lv2023clic} and
+LIO-MARS~\cite{quenzel2025liomars} marginalize spline knots leaving the
+window by adjacency to the dropped knots; this is correct when the
+estimated states are all local to the window, but not when a
+\emph{global} shared \ac{imu} bias couples every \ac{imu} factor and
+tempts the adjacency rule to pull in far-edge factors, producing an
+over-confident prior.  Our contribution, narrower than and complementary
+to \ac{fej}, is a factor-\emph{set} selection rule that exploits B-spline
+local support to keep the marginal exactly closed despite this shared
+bias, together with a diagnostic symptom pattern for the inconsistent
+variant; both are developed in \autoref{sec:sw} and
+\autoref{sec:prior_scale}.
 In the discrete-time UAV line, the \ac{ekf}-\ac{rio} family of Doer and
 Trommer~\cite{doer2020ekf} defines the state of practice.
 Absolute \ac{rmse} is not comparable across papers: our own quantization
