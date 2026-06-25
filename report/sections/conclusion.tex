@@ -49,3 +49,14 @@ racing-frame vibration, reject up to 99.7\% of radar updates and
 dead-reckon on slow racing (degrading, not diverging, on the faster
 flight).  Each stack is engineered for its own regime: a low-vibration
 carrier versus sparse Doppler on an aggressive platform.
+
+\emph{Future directions} follow from these results.  An incremental,
+iSAM2-style back-end would turn the demonstrated real-time feasibility
+(\autoref{sec:sw_results}) into the onboard margins a deployed factor
+source needs.  Per-chirp radar timestamps target the residual during-flip
+orientation error, which our negative results place in the measurement
+model rather than the spline (\autoref{sec:backflips}).  Repeated
+recordings per regime would replace single-flight evaluation with powered
+statistics (\autoref{sec:stat_scope}), and the heading weight could be
+auto-adapted from a yaw-observability proxy rather than set per regime
+(\autoref{sec:models}).
