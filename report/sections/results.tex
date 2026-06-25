@@ -79,8 +79,8 @@ consistency rather than as a deployment claim: per-window solve time is set
 by window length and knot density, not the stride, and at 3\,s only fast
 racing approaches the 0.3\,s budget on a laptop CPU.  Real time is
 nonetheless within reach.  Pushing the window and stride to \emph{barely}
-reach it per regime costs almost nothing (\autoref{tab:realtime},
-\autoref{fig:realtime}): fast is real-time at the 0.3\,s stride with a 2\,s
+reach it per regime costs almost nothing (\autoref{tab:realtime}):
+fast is real-time at the 0.3\,s stride with a 2\,s
 window, slow and backflips at a 0.5\,s stride (1.5\,s and 2\,s windows),
 live accuracy stays within run-to-run noise of the evaluation configuration
 (backflips even improves, $6.35\to5.56\degree$), and racing remains under
@@ -109,12 +109,10 @@ orientation (yaw 0.61\degree) at 2.1\,s per window.
 
 \begin{table}[t]
 \centering
-\caption{\textcolor{red}{[Choose this table \emph{or}
-  \autoref{fig:realtime}.] Evaluation configuration (3\,s/0.3\,s, used
-  throughout the paper) vs.\ the per-regime real-time point (solve time
-  below the stride).  Reaching real time is accuracy-neutral and improves
-  backflips.  Live-edge \ac{rmse}; solve times carry $\sim$20\% run-to-run
-  variance.}}
+\caption{Evaluation configuration (3\,s/0.3\,s, used throughout the paper)
+  vs.\ the per-regime real-time point (solve time below the stride).
+  Reaching real time is accuracy-neutral and improves backflips.  Live-edge
+  \ac{rmse}; solve times carry $\sim$20\% run-to-run variance.}
 \label{tab:realtime}
 \small
 \setlength{\tabcolsep}{3pt}
@@ -136,19 +134,6 @@ Regime & Win./str.\ (s) & Solve (s) & Live pos (m) & Live ori (\degree) \\
 \bottomrule
 \end{tabular}
 \end{table}
-
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=0.86\columnwidth]{figures/realtime_sweep.pdf}
-  \caption{\textcolor{red}{[Choose this figure \emph{or}
-    \autoref{tab:realtime}.] Per-window solve time vs.\ window length per
-    regime; a configuration is real-time when its solve time falls below
-    the stride.  Stars mark the per-regime real-time operating point:
-    shrinking the window puts fast under a 0.3\,s stride and slow and
-    backflips under a 0.5\,s stride, at negligible accuracy cost
-    (\autoref{tab:realtime}).  Solve times carry $\sim$20\% variance.}}
-  \label{fig:realtime}
-\end{figure}
 
 \begin{figure*}[t]
   \centering
