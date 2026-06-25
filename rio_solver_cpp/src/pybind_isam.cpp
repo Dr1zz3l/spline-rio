@@ -46,6 +46,8 @@ PYBIND11_MODULE(rio_isam, m) {
         .def_readwrite("use_qr", &IsamConfig::use_qr)
         .def_readwrite("fej", &IsamConfig::fej)
         .def_readwrite("warm_start_align", &IsamConfig::warm_start_align)
+        .def_readwrite("adapt_noise_stride", &IsamConfig::adapt_noise_stride)
+        .def_readwrite("adapt_noise_alpha", &IsamConfig::adapt_noise_alpha)
         .def_readwrite("lambda_gyro_omega_sigma", &IsamConfig::lambda_gyro_omega_sigma)
         .def_readwrite("lambda_gyro_omega_pow", &IsamConfig::lambda_gyro_omega_pow)
         .def_readwrite("omega_soft_sigma", &IsamConfig::omega_soft_sigma)

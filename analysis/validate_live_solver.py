@@ -701,6 +701,8 @@ def _solve_cpp_isam(initial_state, solver_radar_frames, imu_data,
     cfg.radar_intensity_weight = solver_cfg.get('radar_intensity_weight', 0.0)
     cfg.lambda_pos_init_prior = solver_cfg.get('lambda_pos_init_prior', 0.0)
     cfg.warm_start_align = bool(int(solver_cfg.get('warm_start_align', 1)))
+    cfg.adapt_noise_stride = int(solver_cfg.get('adapt_noise_stride', 0))
+    cfg.adapt_noise_alpha = solver_cfg.get('adapt_noise_alpha', 0.3)
 
     ext = rio_isam.ExtrinsicConfig()
     euler = extrinsics_cfg.get('rotation_euler_deg', [180.0, 25.5, 0.0])

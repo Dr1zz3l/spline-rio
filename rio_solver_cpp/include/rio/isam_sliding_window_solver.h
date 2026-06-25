@@ -44,6 +44,10 @@ struct IsamConfig {
     int    extra_iters{0};        // extra empty ISAM2 updates/stride to converge
                                   // (roll recovery from the P1-P3 init; the Ceres
                                   // SW re-solves each window to convergence)
+    int    adapt_noise_stride{0}; // NIS-adaptive noise: every N strides, set each
+                                  // sensor's sigma = std of its residuals at the
+                                  // solution (data-driven whitening; 0 = off)
+    double adapt_noise_alpha{0.3};// EMA smoothing for the sigma estimates
     bool   use_qr{true};                    // QR vs Cholesky (conditioning)
     bool   fej{false};                      // pin marginalized-coupled linpoints
     bool   warm_start_align{true};          // align entering knots to solved
@@ -99,6 +103,14 @@ private:
     std::map<int, std::array<double, 4>> live_ori_;
     std::map<int, std::array<double, 3>> live_pos_;
     int num_active_{0};
+
+    // NIS-adaptive noise: current per-sensor effective sigma (EMA), data-driven.
+    double sigma_g_{0.0}, sigma_a_{0.0}, sigma_r_{0.0};
+    int stride_count_{0};
+    gtsam::Key bkey_last_{0};
+    void adapt_noise(const gtsam::Values& est,
+                     const std::vector<RadarFrame>& radar,
+                     const std::vector<ImuSample>& imu);
 
     // noise models
     gtsam::SharedNoiseModel n_acc_, n_gyr_, n_radar_, n_snap_, n_aacc_, n_heading_,

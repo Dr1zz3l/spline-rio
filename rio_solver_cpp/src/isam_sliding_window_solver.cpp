@@ -68,6 +68,10 @@ IsamSolver::IsamSolver(const IsamConfig& cfg, const ExtrinsicConfig& ext)
         nm::mEstimator::Huber::Create(cfg.huber_delta),
         nm::Isotropic::Sigma(1, 1.0));
 
+    sigma_g_ = 1.0 / std::sqrt(cfg.lambda_gyro);   // NIS-adaptive starting points
+    sigma_a_ = 1.0 / std::sqrt(cfg.lambda_accel);
+    sigma_r_ = 1.0;
+
     gtsam::ISAM2Params p;
     p.relinearizeThreshold = cfg.relinearize_threshold;
     p.relinearizeSkip = cfg.relinearize_skip;
@@ -355,8 +359,74 @@ double IsamSolver::update(
         for (int i = 0; i < 6; ++i) last_bias_[i] = b[i];
     }
     num_active_ = static_cast<int>(smoother_->timestamps().size());
+    bkey_last_ = bkey;
+    if (cfg_.adapt_noise_stride > 0 && (++stride_count_ % cfg_.adapt_noise_stride == 0))
+        adapt_noise(est, radar, imu);
     first_ = false;
     return dt;
+}
+
+// NIS-adaptive noise: set each sensor's sigma = std of its residuals at the
+// current solution (data-driven whitening, ROADMAP 4c). Updates the BASE noise
+// models used by the non-omega-weighted (racing) factors.
+void IsamSolver::adapt_noise(const gtsam::Values& est,
+                             const std::vector<RadarFrame>& radar,
+                             const std::vector<ImuSample>& imu) {
+    auto get_ori = [&](int ko, double q[N_ORI][4], const double* qp[N_ORI]) {
+        for (int j = 0; j < N_ORI; ++j) {
+            Key k = RK(ko - 3 + j); if (!est.exists(k)) return false;
+            const Eigen::Quaterniond qq = est.at<Rot3>(k).toQuaternion();
+            q[j][0] = qq.x(); q[j][1] = qq.y(); q[j][2] = qq.z(); q[j][3] = qq.w(); qp[j] = q[j];
+        } return true;
+    };
+    auto get_pos = [&](int kp, double c[N_POS][3], const double* cp[N_POS]) {
+        for (int j = 0; j < N_POS; ++j) {
+            Key k = PK(kp - 5 + j); if (!est.exists(k)) return false;
+            const Vector3 v = est.at<Vector3>(k); c[j][0] = v[0]; c[j][1] = v[1]; c[j][2] = v[2]; cp[j] = c[j];
+        } return true;
+    };
+    Eigen::Matrix<double, 6, 1> bias = est.exists(bkey_last_) ? est.at<Vector6>(bkey_last_) : Vector6::Zero();
+
+    std::vector<double> rg, ra, rr;
+    for (size_t i = 0; i < imu.size(); i += 10) {
+        if (!in_domain(imu[i].timestamp)) continue;
+        int ko, kp; double uo, up; ori_active(imu[i].timestamp, ko, uo); pos_active(imu[i].timestamp, kp, up);
+        double q[N_ORI][4]; const double* qp[N_ORI]; double c[N_POS][3]; const double* cp[N_POS];
+        if (!get_ori(ko, q, qp)) continue;
+        auto rgy = gtsam_factors::gyro_residual_gtsam(qp, bias.data(),
+            Eigen::Vector3d(imu[i].gx, imu[i].gy, imu[i].gz), uo, inv_dt_ori_, false).residual;
+        for (int k = 0; k < 3; ++k) rg.push_back(rgy[k]);
+        if (get_pos(kp, c, cp)) {
+            auto ray = gtsam_factors::accel_residual_gtsam(qp, cp, bias.data(),
+                Eigen::Vector3d(imu[i].ax, imu[i].ay, imu[i].az), uo, inv_dt_ori_, up, inv_dt_pos_, false).residual;
+            for (int k = 0; k < 3; ++k) ra.push_back(ray[k]);
+        }
+    }
+    for (const auto& f : radar) {
+        if (f.points.empty() || !in_domain(f.timestamp)) continue;
+        int ko, kp; double uo, up; ori_active(f.timestamp, ko, uo); pos_active(f.timestamp, kp, up);
+        double q[N_ORI][4]; const double* qp[N_ORI]; double c[N_POS][3]; const double* cp[N_POS];
+        if (!get_ori(ko, q, qp) || !get_pos(kp, c, cp)) continue;
+        for (const auto& pt : f.points) {
+            Eigen::Vector3d xyz(pt.x, pt.y, pt.z); double rng = xyz.norm(); if (rng < cfg_.min_range) continue;
+            rr.push_back(gtsam_factors::radar_residual_gtsam(qp, cp, R_bs_ * (xyz / rng), pt.v, t_bs_,
+                uo, inv_dt_ori_, up, inv_dt_pos_, false).residual);
+        }
+    }
+    auto stdev = [](const std::vector<double>& v) {
+        if (v.size() < 8) return -1.0;
+        double m = 0; for (double x : v) m += x; m /= v.size();
+        double s = 0; for (double x : v) s += (x - m) * (x - m); return std::sqrt(s / v.size());
+    };
+    const double a = cfg_.adapt_noise_alpha;
+    double sg = stdev(rg), sa = stdev(ra), sr = stdev(rr);
+    if (sg > 0) sigma_g_ = (1 - a) * sigma_g_ + a * std::max(sg, 1e-3);
+    if (sa > 0) sigma_a_ = (1 - a) * sigma_a_ + a * std::max(sa, 1e-3);
+    if (sr > 0) sigma_r_ = (1 - a) * sigma_r_ + a * std::max(sr, 1e-3);
+    n_gyr_ = nm::Isotropic::Sigma(3, sigma_g_);
+    n_acc_ = nm::Isotropic::Sigma(3, sigma_a_);
+    n_radar_ = nm::Robust::Create(nm::mEstimator::Huber::Create(cfg_.huber_delta),
+                                  nm::Isotropic::Sigma(1, sigma_r_));
 }
 
 std::vector<std::pair<int, std::array<double, 4>>> IsamSolver::ori_knots() const {

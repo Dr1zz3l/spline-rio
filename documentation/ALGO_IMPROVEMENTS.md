@@ -28,6 +28,19 @@ why it helps HERE, value/effort, and grounding.
    consistency (NEES) story. The incremental smoother produces the innovation
    covariance every update -> classic adaptive-Kalman (Mehra) covariance estimation
    ONLINE/real-time; noise self-tunes per-flight. Moderate effort.
+   **PROTOTYPED (2026-06-25, `adapt_noise_stride` in IsamSolver): partial success.**
+   Sets each sensor sigma = std of its residuals at the solution (EMA). From a
+   deliberately-WRONG start (lambda_gyro=1, lambda_accel=1) on slow_racing it adapts
+   directionally -- pos 1.59->0.68m, vel 2.03->1.48 -- but does NOT recover the
+   hand-tuned 0.165m/1.39deg (ori 1.87->2.80). Confirms ROADMAP 4a/4c: hand-tuned
+   ~= std-whitening but the velocity<->orientation BALANCE matters, plus a
+   chicken-and-egg (residuals at a bad solution -> loose sigma -> bad solution).
+   Naive whitening insufficient. Promising directions to make it competitive:
+   (a) iterate-to-fixed-point (re-solve + re-estimate until sigma stabilizes, not
+   one EMA pass); (b) per-sensor robust-vs-std choice (gyro full-std, radar core);
+   (c) the Mehra innovation-covariance form (uses the smoother's predicted cov,
+   avoids the bad-solution feedback); (d) keep a fixed relative prior on the
+   trade-off and only adapt the global scale.
 2. Type-II ML / evidence maximization (empirical Bayes): maximize the factor-graph
    marginal likelihood over the hyperparameters; GTSAM gives the info matrix so the
    evidence gradient w.r.t. log-noise is computable. Higher effort.
