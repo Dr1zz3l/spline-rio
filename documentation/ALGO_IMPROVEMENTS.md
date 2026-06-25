@@ -163,11 +163,14 @@ not the smear.
 1. **Data-driven radar gate** (replace hand-tuned omega_soft_sigma): the flip radar
    residual core IS ~2.47 m/s (measured) -> set the radar noise from the measured
    flip-time residual std rather than a hand-tuned ω-gate. Connects to NIS-adaptive.
-2. **radar_pos_split for iSAM2** (Ceres has it, iSAM2 doesn't): the gated-out radar's
-   complementary weight (1-w) feeds a POSITION-ONLY factor (frozen R,ω at warm-start)
-   -> radar velocity informs position during flips without dragging orientation.
-   Keeps the radar instead of discarding it. (Backflips pos already good via tether,
-   so marginal there; cleaner model.)
+2. **radar_pos_split for iSAM2 -- IMPLEMENTED + tested (2026-06-26): marginal/mixed.**
+   RadarPosOnlyFactor (frozen R,omega at warm-start; residual linear in pos CPs).
+   Backflips sweep: split 0 -> 1.0 improves POSITION 1.722 -> 1.668m (-54mm) as
+   designed (radar velocity informs position during flips), velocity neutral, but
+   WORSENS orientation +0.8deg (10.74 -> 11.54) via the accel pos<->ori coupling.
+   Small position win at a small ori cost, and pos was already good (tether) -> net
+   marginal. Feature kept (off by default). Confirms: the backend is well-optimized;
+   remaining wins are research-grade (selective FEJ, GP/WNOA, plane mapping).
 3. **Plane mapping** (D-section): the real absolute-position win (structured env).
 
 ## E. Other

@@ -24,6 +24,7 @@
 #include <rio/gtsam/radar_factor_math.h>
 #include <rio/gtsam/reg_factor_math.h>
 #include <rio/gtsam/heading_factor_math.h>
+#include <rio/gtsam/radar_pos_only_factor_math.h>
 
 namespace rio {
 namespace gtsam_factors {
@@ -164,6 +165,34 @@ public:
         if (H) { auto& Hs = *H; Hs.resize(3); for (int i = 0; i < 3; ++i) Hs[i] = r.d_r_d_knot[i]; }
         return r.residual;
     }
+};
+
+// ------------------------------------------------ Radar position-only (1D)
+class RadarPosOnlyFactor : public gtsam::NoiseModelFactor {
+public:
+    RadarPosOnlyFactor(const gtsam::SharedNoiseModel& m, const gtsam::KeyVector& keys,
+                       const Eigen::Matrix3d& R_ws, const Eigen::Vector3d& omega_ws,
+                       const Eigen::Vector3d& u_body, double v_meas, const Eigen::Vector3d& t_bs,
+                       double u_pos, double inv_dt_pos)
+        : gtsam::NoiseModelFactor(m, keys), R_ws_(R_ws), omega_ws_(omega_ws),
+          u_body_(u_body), v_meas_(v_meas), t_bs_(t_bs), u_p_(u_pos), idt_p_(inv_dt_pos) {}
+
+    gtsam::Vector unwhitenedError(
+        const gtsam::Values& x,
+        boost::optional<std::vector<gtsam::Matrix>&> H = boost::none) const override {
+        double cp[N_POS][3]; const double* cpp[N_POS];
+        for (int i = 0; i < N_POS; ++i) {
+            const gtsam::Vector3 c = x.at<gtsam::Vector3>(keys()[i]);
+            cp[i][0] = c[0]; cp[i][1] = c[1]; cp[i][2] = c[2]; cpp[i] = cp[i];
+        }
+        auto r = radar_pos_only_residual_gtsam(cpp, R_ws_, omega_ws_, u_body_, v_meas_, t_bs_,
+                                               u_p_, idt_p_, bool(H));
+        if (H) { auto& Hs = *H; Hs.resize(N_POS); for (int i = 0; i < N_POS; ++i) Hs[i] = r.d_r_d_cp[i]; }
+        return (gtsam::Vector(1) << r.residual).finished();
+    }
+private:
+    Eigen::Matrix3d R_ws_; Eigen::Vector3d omega_ws_, u_body_; double v_meas_;
+    Eigen::Vector3d t_bs_; double u_p_, idt_p_;
 };
 
 // ---------------------------------------------------------------- Heading (1D)

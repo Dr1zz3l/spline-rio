@@ -36,6 +36,9 @@ struct IsamConfig {
     double radar_zbias_fixed{0.0};        // v_corr = v - b*u_sensor.z()
     double radar_intensity_weight{0.0};   // per-point w_int=clamp((I/I_med)^a,0.25,4)
     double lambda_pos_init_prior{0.0};    // per-CP tether to the (aligned) init
+    double radar_pos_split{0.0};          // gated radar's (1-w) weight -> position-
+                                          // only factor (frozen R,w): keep radar
+                                          // velocity for position during flips
     double boundary_sigma{1e-3};           // strong gauge anchor on first knots
     double min_range{0.2};
     double lag{1.5};

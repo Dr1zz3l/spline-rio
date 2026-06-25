@@ -55,7 +55,8 @@ PYBIND11_MODULE(rio_isam, m) {
         .def_readwrite("accel_soft_sigma", &IsamConfig::accel_soft_sigma)
         .def_readwrite("radar_zbias_fixed", &IsamConfig::radar_zbias_fixed)
         .def_readwrite("radar_intensity_weight", &IsamConfig::radar_intensity_weight)
-        .def_readwrite("lambda_pos_init_prior", &IsamConfig::lambda_pos_init_prior);
+        .def_readwrite("lambda_pos_init_prior", &IsamConfig::lambda_pos_init_prior)
+        .def_readwrite("radar_pos_split", &IsamConfig::radar_pos_split);
 
     py::class_<ExtrinsicConfig>(m, "ExtrinsicConfig")
         .def(py::init<>())

@@ -273,6 +273,20 @@ double IsamSolver::update(
 
         double w_omega = 1.0;
         if (cfg_.omega_soft_sigma > 0.0) { double q = gmag_near(f.timestamp) / cfg_.omega_soft_sigma; w_omega = 1.0 / (1.0 + q * q); }
+        // radar_pos_split: warm-start R, omega (frozen) for the position-only factor
+        Eigen::Matrix3d R_ws = Eigen::Matrix3d::Identity(); Eigen::Vector3d w_ws = Eigen::Vector3d::Zero();
+        const bool do_split = (cfg_.radar_pos_split > 0.0 && w_omega < 1.0);
+        if (do_split) {
+            double qk[N_ORI][4]; const double* qp[N_ORI];
+            for (int j = 0; j < N_ORI; ++j) {
+                const int idx = std::max(0, std::min(ko - 3 + j, n_ori_ - 1));
+                const Eigen::Quaterniond qq = (align_R3 * quat_to_rot3(init_ori_[idx])).toQuaternion();
+                qk[j][0] = qq.x(); qk[j][1] = qq.y(); qk[j][2] = qq.z(); qk[j][3] = qq.w(); qp[j] = qk[j];
+            }
+            R_ws = analytic::rotation_with_jacobian_manual<N_ORI>(qp, uo, inv_dt_ori_, nullptr).matrix();
+            w_ws = analytic::body_velocity_with_jacobian_manual<N_ORI>(qp, uo, inv_dt_ori_, nullptr);
+        }
+        gtsam::KeyVector pkeys(keys.begin() + N_ORI, keys.end());   // 6 pos CPs
         double inv_med_I = 0.0;
         if (cfg_.radar_intensity_weight > 0.0) {
             std::vector<double> ints;
@@ -295,6 +309,16 @@ double IsamSolver::update(
                             gtsam::noiseModel::mEstimator::Huber::Create(cfg_.huber_delta),
                             gtsam::noiseModel::Isotropic::Sigma(1, 1.0 / std::sqrt(std::max(w, 1e-6))));
             g.add(gtsam_factors::RadarFactor(nr, keys, u_body, v_c, t_bs_, uo, inv_dt_ori_, up, inv_dt_pos_));
+            // complementary position-only factor (radar velocity -> position, frozen ori)
+            if (do_split) {
+                const double ws = (1.0 - w_omega) * cfg_.radar_pos_split * w_int;
+                if (ws > 1e-6) {
+                    auto ns = gtsam::noiseModel::Robust::Create(
+                        gtsam::noiseModel::mEstimator::Huber::Create(cfg_.huber_delta),
+                        gtsam::noiseModel::Isotropic::Sigma(1, 1.0 / std::sqrt(ws)));
+                    g.add(gtsam_factors::RadarPosOnlyFactor(ns, pkeys, R_ws, w_ws, u_body, v_c, t_bs_, up, inv_dt_pos_));
+                }
+            }
         }
     }
     if (use_heading)
