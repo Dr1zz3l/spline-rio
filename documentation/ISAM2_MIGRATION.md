@@ -374,7 +374,25 @@ validate_live_solver.py <bag> --mocap-yaw --cpp --isam --no-plot \
     deployed Ceres SW on slow_racing (both accuracy AND speed: 202ms vs ~700ms).
   - fast_racing matches batch; the SW's better settled pos (0.31m) comes from its
     bag-specific deployment tuning (dt_pos=40ms, locked pitch, universal weighting)
-    which iSAM2 can also take via --set (not yet swept).
+    which iSAM2 can also take via --set.
+
+**Per-bag tuning transfers to iSAM2 (CONFIRMED, not just claimed).** Re-running
+fast_racing with the SW deployment grid (`--set dt_pos=0.04 --set dt_ori=0.016
+--set-ext rotation_euler_deg=[180,27.5,0]`) -- no new code, just --set knobs:
+  | fast_racing | dense (dt_pos 5ms) | deployment (dt_pos 40ms) |
+  |---|---|---|
+  | pos / vel / ori | 0.604 / 0.733 / 2.54 | **0.574 / 0.227 / 2.27** |
+  | ms/update (active vars) | 236 (600) | **88 (174)** |
+  Coarsening (dt_pos=5ms is over-dense for fast, per CLAUDE.md) improved EVERY
+  axis AND cut time 2.7x. So the per-bag sweep is free accuracy+speed, not cosmetic.
+
+**extra_iters auto-tuning (deferred optimization).** Currently a FIXED 3 extra
+ISAM2 passes/stride (the whole 65->200ms cost on the dense slow grid). They are
+only needed at the leading edge (un-converged new knots, e.g. roll from the P1-P3
+init); interior knots converged strides ago. An early-stop loop (iterate while
+FixedLagSmootherResult error-reduction > thresh, like LM) would give 0-1 passes on
+easy strides, 3+ on hard ones. Lower priority now: with a tuned grid even fixed
+extra_iters=3 is 88ms (see fast above).
 
 **Remaining Phase 3:** backflips (needs the universal weighting ported:
 omega-adaptive gyro, radar/accel omega-soft-gates, radar z-bias -- the features
