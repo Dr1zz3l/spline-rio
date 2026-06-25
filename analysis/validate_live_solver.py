@@ -2278,6 +2278,24 @@ def main():
         rot_errors = np.array(rot_errors)
         rot_rmse   = np.sqrt(np.mean(rot_errors**2))
 
+        # GT-aware orientation RMSE: exclude GLITCHED MoCap samples. The backflips
+        # GT has 52 dropout gaps (<=126ms) + FD angular-velocity spikes to ~88000
+        # rad/s (physical flip max ~14), concentrated at flip peaks -> the raw RMSE
+        # is inflated by GT garbage, not estimator error. Mask any sample adjacent
+        # to an unphysical FD rate or a dropout gap, report RMSE over clean GT.
+        _dtev = np.diff(eval_times)
+        _meddt = float(np.median(_dtev)) if len(_dtev) else 1.0
+        _wmoc = np.array([np.linalg.norm(
+            Rotation.from_matrix(mocap_rot_eval[i].T @ mocap_rot_eval[i + 1]).as_rotvec())
+            / max(_dtev[i], 1e-6) for i in range(len(_dtev))]) if len(_dtev) else np.zeros(0)
+        _bad_edge = (_wmoc > 30.0) | (_dtev > 3.0 * _meddt) if len(_dtev) else np.zeros(0, bool)
+        _gt_clean = np.ones(len(eval_times), bool)
+        if len(_dtev):
+            _gt_clean[:-1] &= ~_bad_edge
+            _gt_clean[1:] &= ~_bad_edge
+        rot_rmse_clean = float(np.sqrt(np.mean(rot_errors[_gt_clean] ** 2))) if _gt_clean.any() else rot_rmse
+        n_gt_excl = int((~_gt_clean).sum())
+
         # Euler per-axis errors (unwrapped, branch-snapped to MoCap)
         mocap_euler_raw = Rotation.from_matrix(mocap_rot_eval).as_euler('xyz')
         est_euler_raw   = Rotation.from_matrix(estimated_rotations_aligned).as_euler('xyz')
@@ -2415,6 +2433,9 @@ def main():
         print(f"  Per-axis ori RMSE: roll={np.sqrt(np.mean(euler_diff[:,0]**2)):.3f}  "
               f"pitch={np.sqrt(np.mean(euler_diff[:,1]**2)):.3f}  "
               f"yaw={np.sqrt(np.mean(euler_diff[:,2]**2)):.3f} deg")
+        if n_gt_excl > 0:
+            print(f"  Orientation RMSE (clean GT): {rot_rmse_clean:.4f} deg  "
+                  f"(excluded {n_gt_excl}/{len(eval_times)} = {100*n_gt_excl/len(eval_times):.1f}% glitched MoCap samples)")
 
         if WHOLE_TRAJ_ALIGN:
             # EXTRA report: whole-trajectory Umeyama SE(3) (no scale) alignment of the

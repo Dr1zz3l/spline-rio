@@ -131,6 +131,18 @@ the failure and the two metrics decouple. Actions:
     likely well below 10.7deg. This is the right backflips metric refinement (the
     measurement model/metric, not estimator tuning, is the lever -- consistent with
     the project's own negative results).
+  - **GT-aware metric DONE + result (2026-06-25):** confirmed the mocap degradation
+    is REAL (52 dropout gaps <=126ms; FD-omega spikes to 88000 rad/s vs ~14 physical).
+    Added a clean-GT orientation RMSE to validate_live_solver.py (masks samples
+    adjacent to unphysical FD rate / gap). BUT it changed NOTHING: 0.5% excluded,
+    10.74 -> 10.75 deg. The degradation does NOT inflate the orientation metric,
+    because the FD spikes are quaternion SIGN FLIPS (q == -q -> same rotation
+    matrix, and the RMSE is matrix-based/sign-invariant) and gaps remove samples
+    rather than corrupt them. => the backflips 10.7deg is GENUINE estimator error
+    (also DISPROVEN: flattening, via the trajectory plot). Residual mocap
+    smoothing-LAG during flips may add a few deg (undetectable), but the bulk is
+    real. The remaining lever is the estimator (spline-omega gate vs gyro-mag
+    proxy) or accepting that single-chip 10 rad/s orientation is just hard.
 
 ## E. Other
 - Learned radar front-end (static/dynamic + ground/structure classification) to
