@@ -70,9 +70,6 @@ for col, (bag, title) in enumerate(BAGS):
     b = np.load(bag_dir / f'traj_arrays_{bag}_{MOCAP_TAG}_batch.npz')
     s = np.load(bag_dir / f'traj_arrays_{bag}_{MOCAP_TAG}_sw.npz')
     gt, live = b['mocap'], s['live']
-    allX = np.concatenate([gt[:, 0], live[:, 0]])
-    allY = np.concatenate([gt[:, 1], live[:, 1]])
-    allZ = np.concatenate([gt[:, 2], live[:, 2]])
 
     for row, (xi, yi, yl) in enumerate(PROJ):
         ax = axes[row, col]
@@ -83,20 +80,16 @@ for col, (bag, title) in enumerate(BAGS):
         ax.set_ylabel(yl, labelpad=1)
         ax.grid(True, alpha=0.3)
         ax.tick_params(length=2, pad=1.5)
+        # Equal data-to-print scaling via the data limits (not the box): every
+        # panel fills its grid cell, so all panels are the SAME width and the
+        # shared Y axis is scaled identically across a column's two rows; the
+        # vertical (X / Z) limits expand as needed to keep 1 m square.
+        ax.set_aspect('equal', adjustable='datalim')
+        ax.margins(0.06)
         if row == 0:
             ax.set_title(title, fontweight='bold', pad=3)
-            ax.set_ylim(allX.min() - 0.2, allX.max() + 0.2)
         else:
             ax.set_xlabel('Y (m)', labelpad=1)
-            ax.set_ylim(allZ.min() - 0.10, allZ.max() + 0.10)
-        # equal data-to-print scaling (isometric): shrink the box to the data so
-        # 1 m reads the same horizontally and vertically.  Limits set above are
-        # kept; the large shared Y range keeps every panel width-limited (and so
-        # the same width), preserving column alignment.
-        ax.set_aspect('equal', adjustable='box')
-    # widen the shared Y (horizontal) axis by ~0.5 m so the top-row trajectory
-    # is not clipped at the loop extremes
-    axes[0, col].set_xlim(allY.min() - 0.25, allY.max() + 0.25)
 
 # single shared legend at the bottom
 handles = [Line2D([0], [0], color=C_MOCAP, lw=1.8, ls='-'),
