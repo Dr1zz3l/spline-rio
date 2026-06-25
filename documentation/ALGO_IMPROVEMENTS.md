@@ -48,14 +48,22 @@ why it helps HERE, value/effort, and grounding.
    consistency, NOT mocap -> avoid overfit). Uses eval_bags.py infra. Least elegant.
 
 ## C. Theoretically-optimal formulations  [TOP-3 #3]
-1. **GP / WNOA motion prior instead of B-spline + min-snap (TOP-3 #3, big one).**
-   A white-noise-on-acceleration/jerk Gaussian-process trajectory is MAP-optimal
-   continuous-time under a stated stochastic motion model (Barfoot/Anderson;
-   steam_icp, cited in the report). (i) Replaces hand-tuned lambda_snap_pos /
-   lambda_ori_accel with ONE physically-meaningful, estimable process-noise Q;
-   (ii) block-tridiagonal information matrix BY CONSTRUCTION (sparser/faster than
-   the spline). The principled version of what the spline approximates. Large
-   effort (different state rep); Burnett reports 74-139 ms/window, <=5 GN iters.
+1. **GP / WNOA motion prior instead of B-spline + min-snap (DEFERRED -- do NOT
+   undo splines yet; user 2026-06-25).** A white-noise-on-acceleration/jerk
+   Gaussian-process trajectory is MAP-optimal continuous-time under a stated
+   stochastic motion model (Barfoot/Anderson; steam_icp, cited in the report).
+   STILL continuous-time (query any t via exact GP interpolation Lambda(t)x_k +
+   Psi(t)x_{k+1}); REPLACES the spline -- variables become physical (pose,
+   body-velocity) "GP states" at sparse times instead of abstract control points.
+   KEY INSIGHT: a min-snap smoothing spline IS, up to details, the MAP of a
+   white-noise-on-jerk GP -- so our quintic+lambda_snap is already an IMPLICIT GP
+   with the smoothness added as a hand-tuned penalty. Making it explicit:
+   (i) replaces lambda_snap_pos + lambda_ori_accel with ONE physical, estimable Q
+   (serves auto-tuning); (ii) block-tridiagonal info matrix BY CONSTRUCTION
+   (sparser/faster); (iii) directly estimates velocity (our good metric). Large
+   effort (re-derive every factor in GP-state terms; SO(3) GP per Anderson&Barfoot
+   2015 is involved -- keep the R^3 pos + SO(3) ori split). Burnett: 74-139 ms/win,
+   <=5 GN iters. Tractable first half: the R^3 POSITION GP alone. **PARKED for later.**
 2. **Optimal robust loss from the estimated residual distribution.** Radar residuals
    are heavy-tailed (documented). ML-optimal loss is -log p(r): fit a Student-t to
    the residuals, use its NLL (DOF is estimable). Replaces hand-picked huber_delta;
@@ -77,6 +85,13 @@ why it helps HERE, value/effort, and grounding.
    ceiling at peak ~12-15 rad/s over 4ms is only ~3 deg, below the ~5.7 deg backflips
    ori gap -> not the lever even if recoverable. The TDM-MIMO rotation angle-bias is
    real but also unfixable from the computed cloud (needs virtual-array phase).
+   FIRMWARE NOTE (user asked): the launch file does NOT flash -- mmWaveQuickConfig
+   sends the .cfg over the serial CLI to the already-flashed TI SDK demo at runtime.
+   Reflashing custom firmware can't help either: a coherent Doppler detection has no
+   per-point time (the Doppler FFT integrates all 48 chirps); per-chirp range-only
+   detection would recover timing but DESTROY the velocity measurement the system
+   relies on. Only a frame-level DSP hardware timestamp is achievable (removes host
+   USB-latency jitter) -- low value (offset already calibrated, not the ori lever).
 2. **Radar landmark / PLANE mapping for absolute position (HIGH value, feasible).**
    Doppler+IMU CANNOT observe absolute position (documented hard limit -> the drift).
    The environment is highly structured: a cuboid hall (one side ~20% longer) inside
@@ -105,6 +120,17 @@ the failure and the two metrics decouple. Actions:
     appear?) + joint pos/ori; decouple "circle drift" (low-freq) from "flip
     tracking". Connects to the report's NEES/decomposition.
   - Cheap, high diagnostic value; should precede further backflips-ori tuning.
+  - **DONE (2026-06-25, plot diagnostic):** the iSAM2 backflips estimate DOES flip
+    (trajectory traces the petal/flower loops; estimate omega spikes match mocap;
+    pitch RMSE 8deg is incompatible with flattening, which would give ~150deg).
+    The "flies the circle without the flips" hypothesis is DISPROVEN. BUT the 10.7deg
+    ori RMSE is dominated by TRANSIENT SPIKES at the flip peaks (orientation-error-
+    per-axis plot) -- exactly where rotation is fastest AND mocap GT is most degraded
+    (occlusion/FD spikes, CLAUDE.md). => Next: recompute ori RMSE EXCLUDING the
+    occlusion-masked / degraded-GT flip-peak samples; the "real" estimator error is
+    likely well below 10.7deg. This is the right backflips metric refinement (the
+    measurement model/metric, not estimator tuning, is the lever -- consistent with
+    the project's own negative results).
 
 ## E. Other
 - Learned radar front-end (static/dynamic + ground/structure classification) to
