@@ -176,6 +176,14 @@ holds yaw near $3.9\degree$ at $\lambda_\psi{=}0.6$, so raising it to
 $10$ buys only $0.6\degree$ of yaw yet degrades settled position
 ($0.31\to0.43$\,m) through the orientation--velocity coupling; we
 therefore keep it light.
+$\lambda_\psi$ is thus the one weight \emph{not} folded into the
+runtime-adaptive law above, and at present it is set once per flight
+type rather than auto-weighted.  It cannot key off $|\vom|$, since gentle
+(slow racing) and tumbling (backflips) flight need the same strong prior
+at opposite rates while translation-rich fast racing needs a weak one;
+keying it instead off a yaw-observability proxy such as translational
+excitation, and adapting it to real magnetometer noise in place of the
+idealized \ac{mocap} heading, is left to future work.
 
 \subsection{Regularization}
 \label{sec:reg}
