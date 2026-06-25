@@ -60,7 +60,10 @@ C_LIVE  = '#D55E00'   # vermillion (SW live edge, dashed)
 PROJ = [(1, 0, 'X (m)'),
         (1, 2, 'Z (m)')]
 
-fig, axes = plt.subplots(2, 3, figsize=(7.2, 3.7), sharex='col')
+# Row heights proportional to the vertical data range (X on top, Z below) so the
+# isometric (equal-aspect) boxes pack with little whitespace.
+fig, axes = plt.subplots(2, 3, figsize=(7.2, 3.1), sharex='col',
+                         gridspec_kw={'height_ratios': [1.6, 1.0]})
 
 for col, (bag, title) in enumerate(BAGS):
     bag_dir   = PLOTS_ROOT / bag / 'live_solver'
@@ -79,9 +82,6 @@ for col, (bag, title) in enumerate(BAGS):
                 ls='none', zorder=5)
         ax.set_ylabel(yl, labelpad=1)
         ax.grid(True, alpha=0.3)
-        # Panels fill their cells (no equal-aspect box shrink), so they stay the
-        # same width and the shared x-ticks line up across the two rows.  Limits
-        # are set explicitly: top row vertical = X, bottom = Z (trimmed).
         ax.tick_params(length=2, pad=1.5)
         if row == 0:
             ax.set_title(title, fontweight='bold', pad=3)
@@ -89,6 +89,11 @@ for col, (bag, title) in enumerate(BAGS):
         else:
             ax.set_xlabel('Y (m)', labelpad=1)
             ax.set_ylim(allZ.min() - 0.10, allZ.max() + 0.10)
+        # equal data-to-print scaling (isometric): shrink the box to the data so
+        # 1 m reads the same horizontally and vertically.  Limits set above are
+        # kept; the large shared Y range keeps every panel width-limited (and so
+        # the same width), preserving column alignment.
+        ax.set_aspect('equal', adjustable='box')
     # widen the shared Y (horizontal) axis by ~0.5 m so the top-row trajectory
     # is not clipped at the loop extremes
     axes[0, col].set_xlim(allY.min() - 0.25, allY.max() + 0.25)
