@@ -109,3 +109,18 @@ target_link_libraries(test_spline PRIVATE
     fmt::fmt
 )
 add_test(NAME test_spline COMMAND test_spline)
+
+# GTSAM-tangent factor math (no GTSAM dependency: validates the convention/chain
+# of the Phase-1 factors via numerical diff + Ceres residual parity).
+add_executable(test_gtsam_factor_math tests/test_gtsam_factor_math.cpp)
+target_include_directories(test_gtsam_factor_math PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${BASALT_HEADERS_DIR}/include
+    ${SOPHUS_DIR}
+)
+target_link_libraries(test_gtsam_factor_math PRIVATE
+    Eigen3::Eigen
+    Ceres::ceres
+    fmt::fmt
+)
+add_test(NAME test_gtsam_factor_math COMMAND test_gtsam_factor_math)
