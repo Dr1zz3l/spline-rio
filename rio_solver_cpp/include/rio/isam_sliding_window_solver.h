@@ -44,6 +44,9 @@ struct IsamConfig {
     int    extra_iters{0};        // extra empty ISAM2 updates/stride to converge
                                   // (roll recovery from the P1-P3 init; the Ceres
                                   // SW re-solves each window to convergence)
+    double extra_iters_rtol{0.0}; // early-stop the extra updates when the relative
+                                  // error reduction < rtol (0 = always do all
+                                  // extra_iters; >0 reclaims compute on easy strides)
     int    adapt_noise_stride{0}; // NIS-adaptive noise: every N strides, set each
                                   // sensor's sigma = std of its residuals at the
                                   // solution (data-driven whitening; 0 = off)

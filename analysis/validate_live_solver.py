@@ -691,6 +691,7 @@ def _solve_cpp_isam(initial_state, solver_radar_frames, imu_data,
     cfg.min_range = solver_cfg.get('min_range', 0.2)
     cfg.lag = solver_cfg.get('window_duration', 1.5)
     cfg.extra_iters = int(solver_cfg.get('extra_iters', 3))
+    cfg.extra_iters_rtol = solver_cfg.get('extra_iters_rtol', 0.0)
     cfg.bias_rw_sigma = solver_cfg.get('bias_rw_sigma', 1e-3)
     # universal weighting (aggressive dynamics / backflips); 0 = off
     cfg.lambda_gyro_omega_sigma = solver_cfg.get('lambda_gyro_omega_sigma', 0.0)

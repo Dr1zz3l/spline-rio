@@ -173,8 +173,16 @@ not the smear.
 ## E. Other
 - Learned radar front-end (static/dynamic + ground/structure classification) to
   beat RANSAC's crude filtering, esp. elevation-biased single-chip returns.
-- extra_iters -> trust-region / early-stop (iterate to a convergence criterion,
-  not a fixed count) -- reclaim compute on easy strides.
+- extra_iters -> trust-region / early-stop. **TRIED (extra_iters_rtol, 2026-06-26):
+  cost-based early-stop DOESN'T WORK.** On slow_racing it always stops after 1
+  iteration (any rtol 0.001-0.05 -> 116ms but ori 2.65deg vs 219ms/1.33deg for the
+  full 6). Reason: the global error is dominated by the dense gyro/radar residuals
+  (converge in 1 step), while ORIENTATION (a tiny fraction of total error) keeps
+  refining over iters 2-6 -- the same curved-valley soft-mode behavior that makes
+  Ceres LM need ~28 iters (RESEARCH_NOTES §9). A cost criterion can't see the
+  orientation converging. Would need a DELTA-based stop (update-step norm, which
+  stays large for soft modes even as cost plateaus) -- not exposed by
+  FixedLagSmootherResult. extra_iters stays a FIXED count. Feature left in (off).
 
 ---
 
