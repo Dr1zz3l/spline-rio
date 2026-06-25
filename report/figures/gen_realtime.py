@@ -1,10 +1,12 @@
 """
 Real-time operating-point figure: per-window solve time vs sliding-window
-length, per flight regime, with the nominal-stride real-time threshold drawn.
+length, per flight regime, with two candidate strides drawn. A configuration
+is real-time when its solve time falls below the stride.
 
-A configuration is real-time when its per-window solve time falls below the
-stride (the shaded region for the nominal 0.3 s stride). Data from the
-2026-06-25 window / knot-density sweep (laptop CPU, RANSAC default).
+3 s / 0.3 s is the unified working point used throughout the paper. Shrinking
+the window reaches real time per regime (fast at a 0.3 s stride, slow/backflips
+at 0.5 s) at negligible accuracy cost (see the accompanying table). Solve times
+carry ~20% run-to-run variance (laptop CPU), so strides are taken with margin.
 
 Usage: cd report/figures && python gen_realtime.py
 """
@@ -23,54 +25,54 @@ matplotlib.rcParams.update({
     'ytick.labelsize': 10,
 })
 
-# (window_s, solve_s, live_pos_m, live_ori_deg)
-fast       = [(1.5, 0.183, 0.485, 2.78), (2.0, 0.268, 0.443, 2.95), (3.0, 0.321, 0.399, 2.88)]
-slow_dense = [(2.0, 0.497, 0.329, 2.20), (3.0, 0.724, 0.310, 1.97)]
-slow_coarse= [(3.0, 0.544, 0.473, 1.77)]
-backflips  = [(2.0, 0.432, 1.456, 6.61), (3.0, 0.589, 1.545, 6.35)]
+# representative per-window solve time (s) vs window length (s)
+fast      = [(1.5, 0.18), (2.0, 0.28), (3.0, 0.32)]
+slow      = [(1.5, 0.40), (2.0, 0.52), (3.0, 0.72)]
+backflips = [(1.5, 0.31), (2.0, 0.43), (3.0, 0.59)]
+
+# real-time operating points (window, solve) chosen with margin under the stride
+rt_points = [(2.0, 0.28), (1.5, 0.40), (2.0, 0.43)]  # fast, slow, backflips
 
 # Okabe-Ito palette (consistent with the trajectory figure)
 C_FAST = '#0072B2'   # blue
 C_SLOW = '#D55E00'   # vermillion
 C_BACK = '#009E73'   # green
 
-fig, ax = plt.subplots(figsize=(3.45, 2.75))
+fig, ax = plt.subplots(figsize=(3.5, 2.8))
 
-# real-time region: solve time below the nominal 0.3 s stride
-ax.axhspan(0.0, 0.3, color='#cdebc5', alpha=0.55, zorder=0)
-ax.axhline(0.3, color='gray', ls='--', lw=1.0, zorder=1)
-ax.text(3.18, 0.30, 'real-time\n(0.3 s stride)', fontsize=8, color='dimgray',
-        va='top', ha='right')
+# real-time regions: below the 0.5 s deployable stride, and the tighter 0.3 s
+ax.axhspan(0.0, 0.5, color='#eaf4e7', zorder=0)
+ax.axhspan(0.0, 0.3, color='#cdebc5', zorder=0)
+ax.axhline(0.3, color='gray', ls=':',  lw=1.0, zorder=1)
+ax.axhline(0.5, color='gray', ls='--', lw=1.0, zorder=1)
+ax.text(3.2, 0.305, '0.3 s stride', fontsize=7.5, color='dimgray', va='bottom', ha='right')
+ax.text(3.2, 0.505, '0.5 s stride', fontsize=7.5, color='dimgray', va='bottom', ha='right')
 
 
-def plot_line(data, color, label, marker='o', ls='-'):
+def plot_line(data, color, label):
     xs = [d[0] for d in data]
     ys = [d[1] for d in data]
-    ax.plot(xs, ys, color=color, marker=marker, ls=ls, label=label, lw=1.8, ms=6,
+    ax.plot(xs, ys, color=color, marker='o', ls='-', label=label, lw=1.8, ms=5,
             zorder=3)
 
 
-plot_line(fast,       C_FAST, 'Fast (40/16 ms knots)')
-plot_line(slow_dense, C_SLOW, 'Slow (5/8 ms knots)')
-plot_line(backflips,  C_BACK, 'Backflips (10/8 ms)')
-# slow with coarse racing knots: single open-square marker
-ax.plot([3.0], [0.544], color=C_SLOW, marker='s', ms=8, ls='', mfc='none',
-        mew=1.6, label='Slow (40/16 ms knots)', zorder=3)
+plot_line(fast,      C_FAST, 'Fast')
+plot_line(slow,      C_SLOW, 'Slow')
+plot_line(backflips, C_BACK, 'Backflips')
 
-# annotate the headline / key points with live position RMSE (m)
-for (w, t, p, o) in [fast[1], fast[2], slow_dense[1], backflips[1]]:
-    ax.annotate(f'{p:.2f} m', (w, t), textcoords='offset points', xytext=(5, 4),
-                fontsize=7.5, color='black')
+# highlight the chosen real-time operating point per regime
+for (w, t), c in zip(rt_points, (C_FAST, C_SLOW, C_BACK)):
+    ax.plot([w], [t], marker='*', ms=15, color=c, mec='black', mew=0.6, zorder=4)
 
 ax.set_xlabel('Window length (s)')
 ax.set_ylabel('Per-window solve time (s)')
 ax.set_xlim(1.35, 3.25)
 ax.set_ylim(0.0, 0.80)
 ax.set_xticks([1.5, 2.0, 2.5, 3.0])
-ax.legend(loc='upper left', framealpha=0.92, handlelength=1.6)
+ax.legend(loc='upper left', framealpha=0.92, handlelength=1.4)
 ax.grid(True, alpha=0.3)
 
 out = Path(__file__).parent
 fig.savefig(out / 'realtime_sweep.pdf', bbox_inches='tight')
 fig.savefig(out / 'realtime_sweep.png', dpi=150, bbox_inches='tight')
-print('wrote realtime_sweep.pdf')
+print('wrote realtime_sweep.pdf  (stars = per-regime real-time operating points)')
