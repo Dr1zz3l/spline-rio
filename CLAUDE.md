@@ -11,8 +11,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `documentation/Forward Model.md` | Math reference: sensor forward models, coordinate frames, Doppler sign convention |
 | `documentation/Backward Model.md` | Math reference: state parameterization (cumulative SO(3) B-spline), factor-graph MAP, Ceres LM, Schur-complement marginalization |
 | `documentation/FINDINGS.md` | Foundational calibration findings: body frame, time offsets, Doppler sign fix (§11), extrinsics |
-| `documentation/RESEARCH_NOTES.md` | Design rationale: solver perf profile, Doppler unwrapping, preintegration investigation, BandedSchurSolver post-mortem, SW timing analysis |
+| `documentation/RESEARCH_NOTES.md` | Design rationale: solver perf profile, Doppler unwrapping, preintegration investigation, BandedSchurSolver post-mortem, SW timing analysis, real-time/speedup path (§1/§7-§10; absorbed the deleted `Realtime_Options.md`) |
 | `documentation/SW_DEVELOPMENT.md` | SW solver development history: phase ablations, sweep tables, backflips analysis, marg_prior_scale tuning |
+| `documentation/ROADMAP.md` | Design-rationale **archive** (2026-06-11 audit, largely executed): the "ROADMAP Part X / N.M" targets that CLAUDE.md's inline comments reference. Open item: iSAM2 back-end |
 | `analysis/lib/rosbag_loader/README.md` | Rosbag loader API and ROS topic reference |
 | `rio_solver_cpp/README.md` | C++ Ceres solver: build instructions, Phase status, Python API |
 

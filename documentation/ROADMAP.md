@@ -1,5 +1,14 @@
 # ROADMAP — Speed & Performance Improvement Plan (2026-06-11)
 
+> **Status (2026-06-25): largely executed — retained as a design-rationale
+> archive.** The consistency/marginalization fixes, the iteration-count and
+> `marg_prior_scale` resolutions, the universal weighting config, and the
+> RANSAC front-end are all landed (see CLAUDE.md "Current Results" and
+> `RESEARCH_NOTES.md`). This file is the archive that CLAUDE.md's inline
+> "ROADMAP Part X / N.M" references point into; the remaining open item is the
+> iSAM2 back-end (paper future work). Real-time deployment analysis previously
+> in `Realtime_Options.md` (deleted) lives in `RESEARCH_NOTES.md` §1/§7-§10.
+>
 > Outcome of a full audit of the SW solver (`sliding_window_solver.cpp`), driver
 > (`validate_live_solver.py`), docs, and a survey of 2024–2026 literature.
 > Goal: real-time-capable continuous-time B-spline RIO + publishable contribution.

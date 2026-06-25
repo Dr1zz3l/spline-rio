@@ -1,6 +1,6 @@
 # Cover Letter — IEEE Transactions on Robotics
 
-**Manuscript:** *Continuous-Time Radar-Inertial Odometry with B-Spline Sliding Window
+**Manuscript:** *Continuous-Time Radar-Inertial Odometry with B-Spline Sliding-Window
 Optimization*
 **Authors:** Timo Weiss, Lukas Pries (Technical University of Munich)
 **Type:** Regular Paper
@@ -56,5 +56,5 @@ Timo Weiss and Lukas Pries
 Technical University of Munich (TUM)
 
 ---
-*TODO before submitting: confirm corresponding-author email, add ORCID iDs, and (if the
-flight video is included) reference it here.*
+*Corresponding author: Timo Weiss (timo.weiss@tum.de). TODO before submitting: add ORCID
+iDs, and confirm the supplementary flight video is attached (referenced above).*
