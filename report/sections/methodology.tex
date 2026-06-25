@@ -175,7 +175,12 @@ position.  On fast racing, the rich translational excitation already
 holds yaw near $3.9\degree$ at $\lambda_\psi{=}0.6$, so raising it to
 $10$ buys only $0.6\degree$ of yaw yet degrades settled position
 ($0.31\to0.43$\,m) through the orientation--velocity coupling; we
-therefore keep it light.
+therefore keep it light.  On backflips the anchor instead stabilizes the
+whole attitude through the flip: dropping $\lambda_\psi$ to $0.6$ inflates
+settled orientation from $5.0\degree$ to $6.8\degree$ (all three axes
+degrade), so it stays at $10$.  The per-regime weight is therefore not
+monotone in dynamics, which is why it cannot be replaced by an
+$|\vom|$-keyed rule.
 $\lambda_\psi$ is thus the one weight \emph{not} folded into the
 runtime-adaptive law above, and at present it is set once per flight
 type rather than auto-weighted.  It cannot key off $|\vom|$, since gentle
