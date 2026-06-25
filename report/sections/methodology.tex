@@ -167,6 +167,15 @@ most platforms; here simulated by \ac{mocap} yaw).  The residual $r_\psi = \psi_
 is added at $\sim$100\,Hz, with $\lambda_\psi = 0.6$ by default and
 raised to $10$ on the heading-critical bags (slow racing, backflips;
 \autoref{tab:sw} footnote).
+A weight sweep shows the split is a yaw-observability/position trade.
+On slow racing, gentle dynamics leave yaw radar-unconstrained, so the
+weak default ($\lambda_\psi{=}0.6$) lets yaw drift to $4.3\degree$
+(orientation $2.0\to4.2\degree$) while a strong prior costs almost no
+position.  On fast racing, the rich translational excitation already
+holds yaw near $3.9\degree$ at $\lambda_\psi{=}0.6$, so raising it to
+$10$ buys only $0.6\degree$ of yaw yet degrades settled position
+($0.31\to0.43$\,m) through the orientation--velocity coupling; we
+therefore keep it light.
 
 \subsection{Regularization}
 \label{sec:reg}

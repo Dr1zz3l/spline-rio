@@ -399,6 +399,10 @@ Configuration & Pos (m) & Ori (\degree) \\
 \quad \textbf{3.0\,s (default)} & \textbf{0.293 / 0.310} & \textbf{1.53 / 1.97} \\
 \quad 5.0\,s & 0.313 / 0.341 & 1.49 / 2.03 \\
 \midrule
+\multicolumn{3}{l}{\textit{SW window dur.\ (fast\_racing SW, settled / live edge)}} \\
+\quad 2.0\,s & 0.380 / 0.443 & 2.31 / 2.95 \\
+\quad \textbf{3.0\,s (default)} & \textbf{0.312 / 0.399} & \textbf{2.35 / 2.88} \\
+\midrule
 \multicolumn{3}{l}{\textit{Marginalization (fast\_racing SW, settled)}\textsuperscript{\ddag}} \\
 \quad None (boundary prior only) & 0.412 & 2.71 \\
 \quad \textbf{Schur complement} & \textbf{0.312} & \textbf{2.35} \\
@@ -439,10 +443,11 @@ Schur marginalization reduces fast-racing settled position by 24\%
 (0.412\,m $\to$ 0.312\,m); for slow racing the optimal prior scale is
 $10^{-7}$ (near-zero), so both variants give equivalent results;
 the benefit is captured in \autoref{tab:prior_scale} instead.
-Window duration has little effect on slow racing (live 0.30--0.34\,m
-across 1.5--5\,s); on fast racing a 3\,s window modestly beats a 2\,s
-one (a confirmed observability limit, \autoref{sec:backflips}), so 3\,s
-is the default, balancing latency against accuracy.
+Window duration has little effect on either racing regime: slow stays at
+live 0.30--0.34\,m across 1.5--5\,s, and fast gives essentially equal
+orientation at 2\,s and 3\,s (settled 2.31\degree\ vs 2.35\degree) with
+3\,s modestly better on position (live drift 0.98 vs 0.88\%).  We keep
+3\,s as the default for that small position gain, trading latency.
 We lock pitch at its measured value for all sliding-window runs; even
 in the batch ablation, locking is marginally better than freeing it
 (0.157 vs.\ 0.169\,m on slow racing), consistent with the pitch being

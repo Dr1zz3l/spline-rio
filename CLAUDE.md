@@ -315,8 +315,11 @@ backflips vel 2.59. Pre-universal specialized bests: fast 0.639/2.55|0.728/2.88;
 slow live 0.287/1.63|0.303/1.92; backflips 1.80/5.29|1.77/6.37 (vel 2.58).
 Backflips vel↔ori gate trade: no-gates λg era = vel 1.80 at ori 7.62° (ROADMAP).
 dt_pos AND dt_ori were over-dense for fast; slow keeps dt_ori=0.008.
-Window must stay 3.0s for fast (2.0s → roll/yaw ~11° even with consistent prior — confirmed
-observability limit, not a prior artifact). Iteration caps must be ≥ natural count for the
+Window 3.0s vs 2.0s for fast is now NEARLY NEUTRAL at the headline dt_pos=40ms config
+(2026-06-25 re-run: 2.0s settled 0.380/2.31°, live 0.443/2.95° vs 3.0s settled 0.312/2.35°,
+live 0.399/2.88° — ori flat, 3.0s modestly better position). The old "2.0s → roll/yaw ~11°
+observability limit" was a dt_pos=5ms/pre-RANSAC artifact; coarsening dt_pos to 40ms removed it.
+3.0s kept as default only for the small position gain. Iteration caps must be ≥ natural count for the
 chosen dt_pos (slow@20ms needs ~16; capping at 12 explodes position).
 
 Note: settled vel for slow_racing is 0.886 m/s — eval artifact from near-zero prior causing
