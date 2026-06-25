@@ -25,6 +25,7 @@ struct IsamConfig {
     double lambda_accel{0.01}, lambda_gyro{4.0};
     double huber_delta{1.0};               // radar Huber (raw m/s)
     double lambda_snap_pos{2e-5}, lambda_ori_accel{0.1};
+    double lambda_heading{0.6};
     double lambda_bias_prior{10000.0};
     double bias_rw_sigma{1e-3};
     double boundary_sigma{1e-3};           // strong gauge anchor on first knots
@@ -85,7 +86,7 @@ private:
     int num_active_{0};
 
     // noise models
-    gtsam::SharedNoiseModel n_acc_, n_gyr_, n_radar_, n_snap_, n_aacc_,
+    gtsam::SharedNoiseModel n_acc_, n_gyr_, n_radar_, n_snap_, n_aacc_, n_heading_,
                             n_bias_prior_, n_bias_rw_, n_boundary_r_, n_boundary_p_;
 };
 

@@ -92,6 +92,11 @@ int main() {
       rio::gtsam_factors::AngAccelFactor f(N3, ks);
       check("angaccel", f, v); }
 
+    // Heading: [ori0..3]
+    { gtsam::KeyVector ks(ori.begin(), ori.begin() + NO);
+      rio::gtsam_factors::HeadingFactor f(N1, ks, 0.6 * nd(rng), u_o, idt_o);
+      check("heading", f, v); }
+
     std::printf("%s\n", g_fail ? "FAILED" : "ALL PASS");
     return g_fail ? 1 : 0;
 }

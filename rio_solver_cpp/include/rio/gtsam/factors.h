@@ -23,6 +23,7 @@
 #include <rio/gtsam/accel_factor_math.h>
 #include <rio/gtsam/radar_factor_math.h>
 #include <rio/gtsam/reg_factor_math.h>
+#include <rio/gtsam/heading_factor_math.h>
 
 namespace rio {
 namespace gtsam_factors {
@@ -163,6 +164,26 @@ public:
         if (H) { auto& Hs = *H; Hs.resize(3); for (int i = 0; i < 3; ++i) Hs[i] = r.d_r_d_knot[i]; }
         return r.residual;
     }
+};
+
+// ---------------------------------------------------------------- Heading (1D)
+class HeadingFactor : public gtsam::NoiseModelFactor {
+public:
+    HeadingFactor(const gtsam::SharedNoiseModel& m, const gtsam::KeyVector& keys,
+                  double yaw_ref, double u_ori, double inv_dt_ori)
+        : gtsam::NoiseModelFactor(m, keys), yaw_(yaw_ref), u_(u_ori), inv_dt_(inv_dt_ori) {}
+
+    gtsam::Vector unwhitenedError(
+        const gtsam::Values& x,
+        boost::optional<std::vector<gtsam::Matrix>&> H = boost::none) const override {
+        double q[N_ORI][4]; const double* qp[N_ORI];
+        for (int i = 0; i < N_ORI; ++i) { rot3_to_xyzw(x.at<gtsam::Rot3>(keys()[i]), q[i]); qp[i] = q[i]; }
+        auto r = heading_residual_gtsam(qp, yaw_, u_, inv_dt_, bool(H));
+        if (H) { auto& Hs = *H; Hs.resize(N_ORI); for (int i = 0; i < N_ORI; ++i) Hs[i] = r.d_r_d_knot[i]; }
+        return (gtsam::Vector(1) << r.residual).finished();
+    }
+private:
+    double yaw_, u_, inv_dt_;
 };
 
 }  // namespace gtsam_factors

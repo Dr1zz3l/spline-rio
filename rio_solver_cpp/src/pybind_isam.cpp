@@ -34,6 +34,7 @@ PYBIND11_MODULE(rio_isam, m) {
         .def_readwrite("huber_delta", &IsamConfig::huber_delta)
         .def_readwrite("lambda_snap_pos", &IsamConfig::lambda_snap_pos)
         .def_readwrite("lambda_ori_accel", &IsamConfig::lambda_ori_accel)
+        .def_readwrite("lambda_heading", &IsamConfig::lambda_heading)
         .def_readwrite("lambda_bias_prior", &IsamConfig::lambda_bias_prior)
         .def_readwrite("bias_rw_sigma", &IsamConfig::bias_rw_sigma)
         .def_readwrite("boundary_sigma", &IsamConfig::boundary_sigma)

@@ -303,9 +303,38 @@ lib dir + `-Wl,--disable-new-dtags` (old DT_RPATH, which IS transitive).
     => ~4.6x real-time margin (the Ceres SW barely hit 300 ms). THE MIGRATION
     GOAL, achieved.
   - Active vars plateau at 601 (marginalization bounds the problem, confirmed in C++).
-  - Accuracy poor (6.1 deg mean ori / 0.6 m pos vs Ceres batch) because the
-    HEADING PRIOR is not wired yet -> yaw anchored only at the start, drifts over
-    25s (the 0d confound, full-blown). Next: add the heading factor (+ FEJ).
+  - Accuracy poor (6.1 deg mean ori / 0.6 m pos vs Ceres batch).
+
+**Accuracy investigation (2026-06-25) -- timing/structure SOLVED, accuracy is the
+open item.** Added heading factor (`HeadingFactor`, verified vs gtsam numerics)
+and warm-start alignment (align entering knots to the solved boundary, mirroring
+the Ceres SW). Diagnostic sweep on slow_racing (vs Ceres BATCH, which is
+1.08 deg/0.20 m vs mocap):
+  | config | ori mean | pos mean |
+  |---|---|---|
+  | P1-P3 init, lambda_h 0.6 | 6.0 deg | 568 mm |
+  | + lambda_h 10 / 50 | 4.5 / 3.9 deg | 560 / 626 mm |
+  | + warm-start align | 4.8 deg | 584 mm |
+  | **cpp (optimal) init, lag 1.5** | 5.1 deg | 768 mm |
+  | **cpp init, lag 30 (full smoother)** | **3.9 deg** | **303 mm** |
+  - Tight bias RW (1e-6) and tight relinearize (1e-3): NO effect -> not bias-wander
+    or under-relinearization.
+  - KEY CLUE: even FULL-smoothing from the OPTIMAL init drifts to 3.9 deg/303 mm
+    from Ceres. So gtsam's converged solution here differs from Ceres's by ~4 deg,
+    even though Phase 0b showed <0.06 deg agreement over a 1 s FIXED-boundary
+    window. The difference is the GAUGE/CONVERGENCE regime: 0b pinned BOTH ends +
+    solved to LM convergence; here only the START is anchored (+ heading) and
+    ISAM2 does gated incremental GN, not full re-optimization.
+  - Prioritized candidates for the next debugging pass (accuracy only; timing is
+    done): (1) **FEJ** (0d mandated it; the long-horizon drift matches the 0d NEES
+    degradation); (2) ISAM2 convergence -- force extra relinearization / multiple
+    updates so past states re-optimize like batch; (3) gauge/boundary -- the
+    Ceres SW's exact boundary + the missing gravity-direction factor (lambda 1e-3);
+    (4) compare against the SW (also fixed-lag, 0.30 m/1.97 deg live) rather than
+    the global BATCH -- a fixed-lag method should be benchmarked against fixed-lag.
+
+**Phase 2 status: backend WORKS + is REAL-TIME (4.6x margin, bounded); accuracy
+(~4-6 deg vs ~2 deg target) is the focused remaining work.**
 
 ## Phase 0 verdict: PROCEED to the C++ port (Phases 1-3), with random-walk bias
 and FEJ as firm requirements.

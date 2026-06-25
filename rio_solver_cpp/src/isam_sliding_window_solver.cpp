@@ -51,6 +51,8 @@ IsamSolver::IsamSolver(const IsamConfig& cfg, const ExtrinsicConfig& ext)
     n_gyr_   = sig(3, 1.0 / std::sqrt(cfg.lambda_gyro));
     n_snap_  = sig(3, 1.0 / std::sqrt(cfg.lambda_snap_pos));
     n_aacc_  = sig(3, 1.0 / std::sqrt(cfg.lambda_ori_accel));
+    n_heading_ = (cfg.lambda_heading > 0) ? sig(1, 1.0 / std::sqrt(cfg.lambda_heading))
+                                          : gtsam::SharedNoiseModel();
     n_bias_prior_ = sig(6, 1.0 / std::sqrt(cfg.lambda_bias_prior));
     n_bias_rw_    = sig(6, cfg.bias_rw_sigma);
     n_boundary_r_ = sig(3, cfg.boundary_sigma);
@@ -108,23 +110,51 @@ bool IsamSolver::in_domain(double t_abs) const {
 double IsamSolver::update(
     const std::vector<RadarFrame>& radar,
     const std::vector<ImuSample>& imu,
-    const std::vector<std::pair<double, double>>& /*heading*/,
+    const std::vector<std::pair<double, double>>& heading,
     double t_now) {
 
     gtsam::NonlinearFactorGraph g;
     gtsam::Values v;
     KTMap ts;
 
+    // --- warm-start alignment: rigidly align entering knots to the current
+    // solved boundary (else new knots enter at stale P1-P3 dead-reckoned values
+    // -> a seam the limited per-update iterations cannot fix). Mirrors the Ceres
+    // SW warm_start_align (methodology.tex).
+    Eigen::Matrix3d align_R = Eigen::Matrix3d::Identity();
+    Eigen::Vector3d align_t = Eigen::Vector3d::Zero();
+    if (!first_) {
+        const gtsam::Values cur = smoother_->calculateEstimate();
+        for (auto it = added_ori_.rbegin(); it != added_ori_.rend(); ++it)
+            if (cur.exists(RK(*it))) {
+                align_R = cur.at<Rot3>(RK(*it)).matrix()
+                          * quat_to_rot3(init_ori_[*it]).matrix().transpose();
+                break;
+            }
+        for (auto it = added_pos_.rbegin(); it != added_pos_.rend(); ++it)
+            if (cur.exists(PK(*it))) {
+                const Vector3 pe = cur.at<Vector3>(PK(*it));
+                align_t = pe - Vector3(init_pos_[*it][0], init_pos_[*it][1], init_pos_[*it][2]);
+                break;
+            }
+    }
+    const Rot3 align_R3((Eigen::Quaterniond(align_R)).normalized());
+
     auto ensure = [&](int ko, int kp) {
         for (int j = ko - 3; j <= ko; ++j)
             if (j >= 0 && j < n_ori_) {
-                if (!added_ori_.count(j)) { v.insert(RK(j), quat_to_rot3(init_ori_[j])); added_ori_.insert(j); }
+                if (!added_ori_.count(j)) {
+                    v.insert(RK(j), align_R3 * quat_to_rot3(init_ori_[j]));
+                    added_ori_.insert(j);
+                }
                 ts[RK(j)] = t_now;
             }
         for (int i = kp - 5; i <= kp; ++i)
             if (i >= 0 && i < n_pos_) {
                 if (!added_pos_.count(i)) {
-                    v.insert(PK(i), Vector3(init_pos_[i][0], init_pos_[i][1], init_pos_[i][2]));
+                    v.insert(PK(i), Vector3(init_pos_[i][0] + align_t[0],
+                                            init_pos_[i][1] + align_t[1],
+                                            init_pos_[i][2] + align_t[2]));
                     added_pos_.insert(i);
                 }
                 ts[PK(i)] = t_now;
@@ -163,6 +193,14 @@ double IsamSolver::update(
         ori_active(f.timestamp, ko, uo); pos_active(f.timestamp, kp, up);
         ensure(ko, kp);
     }
+    const bool use_heading = n_heading_ && !heading.empty();
+    if (use_heading)
+        for (const auto& h : heading) {
+            if (!in_domain(h.first)) continue;
+            int ko, kp; double uo, up;
+            ori_active(h.first, ko, uo); pos_active(h.first, kp, up);
+            ensure(ko, kp);
+        }
 
     // --- gauge anchor on the very first knots ---
     if (first_) {
@@ -202,6 +240,14 @@ double IsamSolver::update(
             g.add(gtsam_factors::RadarFactor(n_radar_, keys, u_body, pt.v, t_bs_, uo, inv_dt_ori_, up, inv_dt_pos_));
         }
     }
+    if (use_heading)
+        for (const auto& h : heading) {
+            if (!in_domain(h.first)) continue;
+            int ko; double uo; ori_active(h.first, ko, uo);
+            gtsam::KeyVector keys;
+            for (int j = 0; j < N_ORI; ++j) keys.push_back(RK(ko - 3 + j));
+            g.add(gtsam_factors::HeadingFactor(n_heading_, keys, h.second, uo, inv_dt_ori_));
+        }
 
     // --- regularizers (only when all member knots present) ---
     if (!added_pos_.empty()) {

@@ -40,17 +40,29 @@ def main():
     cfg.lambda_accel = c['lambda_accel']; cfg.lambda_gyro = c['lambda_gyro']
     cfg.huber_delta = c['huber_delta']; cfg.lambda_snap_pos = c['lambda_snap_pos']
     cfg.lambda_ori_accel = c['lambda_ori_accel']
+    cfg.lambda_heading = c['lambda_heading']
     cfg.lambda_bias_prior = c['lambda_bias_prior_accel']
-    cfg.lag = 1.5
+    cfg.lag = float(os.environ.get('LAG', '1.5'))
+    if os.environ.get('RELIN'):
+        cfg.relinearize_threshold = float(os.environ['RELIN'])
+    if os.environ.get('BIAS_RW'):
+        cfg.bias_rw_sigma = float(os.environ['BIAS_RW'])
+    if os.environ.get('LH'):
+        cfg.lambda_heading = float(os.environ['LH'])
 
     ext = rio_isam.ExtrinsicConfig()
     ext.roll_deg, ext.pitch_deg, ext.yaw_deg = [float(x) for x in prob.ext_euler_deg]
     ext.tx, ext.ty, ext.tz = [float(x) for x in prob.t_bs]
 
     solver = rio_isam.IsamSolver(cfg, ext)
-    solver.initialize(prob.init_pos_cps.astype(float),
-                      prob.init_ori_quats.astype(float),
-                      prob.init_biases.astype(float), float(prob.t_ref))
+    # INIT_CPP=1 diagnostic: seed knots from the Ceres solution (near-optimal) to
+    # isolate factor/smoother correctness from warm-start quality.
+    if os.environ.get('INIT_CPP'):
+        ip = prob.d['cpp_pos_cps'].astype(float); iq = prob.d['cpp_ori_knots'].astype(float)
+        print('[INIT_CPP] seeding from Ceres solution')
+    else:
+        ip = prob.init_pos_cps.astype(float); iq = prob.init_ori_quats.astype(float)
+    solver.initialize(ip, iq, prob.init_biases.astype(float), float(prob.t_ref))
 
     imu = prob.d['imu']; rts = prob.d['radar_ts']; rs = prob.d['radar_split']
     rp = prob.d['radar_pos']; rv = prob.d['radar_vel']; ri = prob.d['radar_int']
