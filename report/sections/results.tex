@@ -72,25 +72,32 @@ this is expected because subsequent windows refine previous estimates.
 With the consistent prior, settled velocity is smooth across stride
 boundaries (the earlier inconsistent prior produced position jumps
 that inflated the settled velocity derivative).
-We use a single 3\,s window and 0.3\,s stride as the \emph{working point}
-throughout this paper, for consistency across tables and plots rather than
-because it is real-time: per-window solve time is set by the window length
-and knot density, not the stride, and at 3\,s only fast racing approaches
-the 0.3\,s budget on a laptop CPU.  As a check, pushing the window and
-stride to \emph{barely} reach real time per regime costs almost nothing
-(\autoref{tab:realtime}, \autoref{fig:realtime}): fast is real-time at the
-0.3\,s stride with a 2\,s window, and slow and backflips at a 0.5\,s stride
-(1.5\,s and 2\,s windows), with live accuracy within run-to-run noise of
-the working point.  Backflips even improves
-(1.55$\to$1.50\,m, 6.35$\to$5.56\degree), and racing stays under 1\% drift.
-Solve times carry $\sim$20\% run-to-run variance, so the strides are taken
-with margin.  For comfortable onboard margins the lever is the linear
-solve: a banded Schur factorization is numerically unstable at our
-conditioning, leaving incremental smoothing, not batch re-solve, the route.
-Girod et al.~\cite{girod2024brio} reach onboard real time with exactly such
-an iSAM2 back-end on a discrete-time graph; combining incremental inference
-with our continuous-time B-spline, where the shared global bias induces a
-Bayes-tree fill-in, is the natural next step we leave to future work.
+We report all tables, plots, and the cross-validation of
+\autoref{sec:baselines} at a single \emph{evaluation configuration}
+(3\,s window, 0.3\,s stride), chosen for best accuracy and cross-table
+consistency rather than as a deployment claim: per-window solve time is set
+by window length and knot density, not the stride, and at 3\,s only fast
+racing approaches the 0.3\,s budget on a laptop CPU.  Real time is
+nonetheless within reach.  Pushing the window and stride to \emph{barely}
+reach it per regime costs almost nothing (\autoref{tab:realtime},
+\autoref{fig:realtime}): fast is real-time at the 0.3\,s stride with a 2\,s
+window, slow and backflips at a 0.5\,s stride (1.5\,s and 2\,s windows),
+live accuracy stays within run-to-run noise of the evaluation configuration
+(backflips even improves, $6.35\to5.56\degree$), and racing remains under
+1\% drift.  Solve times carry $\sim$20\% run-to-run variance, so the strides
+are taken with margin.
+
+Deployment, though, asks for more than \emph{barely} real-time.  This
+estimator is designed as one factor source in a larger fusion graph
+(\autoref{sec:nees}), sharing compute with a parallel visual or lidar
+pipeline, so a tuned, no-margin operating point on a dedicated CPU is a
+feasibility demonstration, not a deployment budget.  The margin must come
+from the back-end: a banded Schur factorization is numerically unstable at
+our conditioning, so the route is incremental smoothing, not batch
+re-solve.  Girod et al.~\cite{girod2024brio} reach comfortable onboard rates
+with exactly such an iSAM2 back-end (on a discrete-time graph); porting our
+continuous-time B-spline onto it, where the shared global bias induces a
+Bayes-tree fill-in, is the deployment path we leave to future work.
 The dominant cost reductions were: the consistent prior removing
 the marginalization re-linearization ($\sim$0.6\,s), coarsening
 $\Delta t_p$ from 5\,ms to 40\,ms for aggressive flight (which
@@ -103,7 +110,7 @@ orientation (yaw 0.61\degree) at 2.1\,s per window.
 \begin{table}[t]
 \centering
 \caption{\textcolor{red}{[Choose this table \emph{or}
-  \autoref{fig:realtime}.] Unified working point (3\,s/0.3\,s, used
+  \autoref{fig:realtime}.] Evaluation configuration (3\,s/0.3\,s, used
   throughout the paper) vs.\ the per-regime real-time point (solve time
   below the stride).  Reaching real time is accuracy-neutral and improves
   backflips.  Live-edge \ac{rmse}; solve times carry $\sim$20\% run-to-run
@@ -116,15 +123,15 @@ orientation (yaw 0.61\degree) at 2.1\,s per window.
 Regime & Win./str.\ (s) & Solve (s) & Live pos (m) & Live ori (\degree) \\
 \midrule
 \multirow{2}{*}{Fast}
-  & 3.0/0.3 (working)   & 0.32 & 0.399 & 2.88 \\
+  & 3.0/0.3 (eval.)   & 0.32 & 0.399 & 2.88 \\
   & 2.0/0.3 (real-time) & 0.28 & 0.443 & 2.95 \\
 \midrule
 \multirow{2}{*}{Slow}
-  & 3.0/0.3 (working)   & 0.72 & 0.310 & 1.97 \\
+  & 3.0/0.3 (eval.)   & 0.72 & 0.310 & 1.97 \\
   & 1.5/0.5 (real-time) & 0.40 & 0.301 & 1.98 \\
 \midrule
 \multirow{2}{*}{Backflips}
-  & 3.0/0.3 (working)   & 0.59 & 1.545 & 6.35 \\
+  & 3.0/0.3 (eval.)   & 0.59 & 1.545 & 6.35 \\
   & 2.0/0.5 (real-time) & 0.43 & \textbf{1.499} & \textbf{5.56} \\
 \bottomrule
 \end{tabular}
