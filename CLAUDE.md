@@ -74,7 +74,8 @@ UNIV="--set marg_prior_scale=1.0 --set lambda_gyro_omega_sigma=4.0 --set lambda_
 ../.venv/bin/python3 validate_live_solver.py slow_racing_best_velocity --mocap-yaw --cpp --sliding-window \
   $UNIV --set max_iterations=12 --set lambda_heading=10.0
 # → live: 0.30m/1.94°, vel 0.45, drift 0.63%, 0.70s (RANSAC default)
-#   (mapping variant: drop iter cap + λh → settled 0.28m/1.2°, yaw ~0.7°, 1.6s/window)
+#   (mapping variant: drop iter cap + λh → settled ~0.31m/1.14°, yaw 0.61°, 2.1s/window
+#    [sensor-only, RANSAC default; pre-RANSAC/MoCap-aided was 1.22°/yaw 0.71°/1.64s])
 # DO NOT add lambda_pos_init_prior (tether) on racing: poisons fast position (1.5m!)
 # and slow full-iter yaw — it is a backflips-only rescue (radar sparsity in flips).
 # Per-window diagnostics printed: cost0, jac/res/lin/other timing, iter count, prior cond/rank, tr(S⁻¹)/tr(H⁻¹)
@@ -286,7 +287,7 @@ Per-bag config auto-selected via `bags.yaml` solver_overrides:
 RANSAC, seeded `default_rng(0)` (bit-identical reproduction), runs once at frame load
 (NOT per window → no timing impact), frames <5 returns bypass. It hard-rejects
 elevation-biased single-chip returns before the solve. Verdict (RANSAC vs Huber):
-fast_racing live pos −22% (0.50→0.39m), vel 0.41→0.32, ori 3.24→2.84°; slow/backflips
+fast_racing live pos −20% (0.50→0.40m), vel 0.41→0.32, ori 3.24→2.88°; slow/backflips
 neutral (within +3%); ICINS whole-traj ATE order-of-magnitude (9.6→0.46, 2.9→0.24,
 10.9→0.76, 5.5→0.46m); held-out + old-firmware kept-% 46–75% (no starvation), old-fw
 backflips ori 10.7→8.1°/9.1°. Config UNCHANGED (universality preserved). Both papers
