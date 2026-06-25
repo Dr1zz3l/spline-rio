@@ -193,5 +193,47 @@ Phase 0c status: **DONE -> bias decision = RANDOM-WALK** (2026-06-25).
     fixed-lag smoother's constrained ordering + marginalization (0d) is what turns
     the localized random-walk bias into bounded per-update cost.
 
-Next: Phase 0d (IncrementalFixedLagSmoother + the NEES/FEJ gate; full-rate
-accuracy, conditioning, and the consistency caveat land here).
+- `test_phase0d.py`: IncrementalFixedLagSmoother (random-walk bias, lag 1.5s) fed
+  stride-by-stride; the lag marginalizes knots older than t_now - lag. Probes
+  conditioning (QR + Cholesky), bounded cost (active-var plateau), and
+  consistency vs a full-smoothing ISAM2 (the exact reference, no marginalization)
+  including a live-edge NEES.
+
+Phase 0d status: **GATE = GREEN to proceed, FEJ now MANDATED for Phase 2**
+(2026-06-25). Hard de-risk items pass; the consistency caveat is empirically
+confirmed (not a failure: the plan routes FEJ into Phase 2 on exactly this).
+  - **Conditioning: PASS.** Both QR and Cholesky survive every stride, no
+    `IndeterminantLinearSystemException`. gtsam marginalization runs stably at our
+    cond(H) ~ 5.5e10 (where the hand-rolled BandedSchur died, `RESEARCH_NOTES §8`).
+    QR is the safe default (cond(J) = sqrt(cond(H))).
+  - **Bounded cost: PASS.** Active variables grow during fill (107 -> 599) then
+    PLATEAU at ~600 (601/600/601/597/...) for all subsequent strides; update time
+    plateaus flat. Fixed-lag marginalization caps the problem size independent of
+    trajectory length. (Absolute ~7.4 s/update is Python-FD-inflated, dominated by
+    re-linearizing FD CustomFactors during marginalization; the real number is C++
+    Phase 3.)
+  - **Consistency: FEJ caveat CONFIRMED.** vs the exact full-smoother, live-edge
+    NEES (dof 3, 95% band ~[0.2, 9.3]): **2.1 at 3.6 s -> 14.1 at 4.5 s**, with
+    drift growing 1.5 -> 3.0 deg. Marginalization consistency degrades with
+    horizon WITHOUT FEJ. This validates Caveat 2: iSAM2 fluid relinearization
+    after marginalization injects spurious information into the weakly-observable
+    gauge; the covariance becomes overconfident. => **Phase 2 must implement FEJ**
+    (pin the linearization points of marginalized-coupled boundary + bias vars).
+  - **Confound (likely OVERSTATES the inconsistency):** the spike omits heading
+    priors (yaw anchored only at the start pin), so the yaw nullspace is freer
+    than in the real system (lambda_heading > 0 anchors it throughout). With
+    heading the NEES degradation would be milder. FEJ remains the principled fix
+    (absolute position is unobservable even with heading), so it stays mandated;
+    a heading-on consistency refinement is a cheap follow-up that does not change
+    the gate decision.
+  - **Deferred to C++ (Phase 3, by design):** full-rate accuracy vs the SW
+    headline and rigorous FEJ on/off NEES-vs-mocap. The Python FD spike cannot run
+    the full trajectory at 1 kHz, gtsam has no FEJ flag (the real on/off test needs
+    the C++ implementation), and 0b already showed gtsam reproduces the Ceres
+    optimum, so accuracy parity is expected once full-rate.
+
+**Phase 0 verdict: PROCEED to the C++ port (Phases 1-3), with random-walk bias
+and FEJ as firm requirements.** The spike de-risked the two things that could have
+killed the migration (conditioning under marginalization; unbounded cost) and
+turned the FEJ caveat from a theoretical worry into a measured, must-fix design
+requirement.
