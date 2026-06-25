@@ -52,11 +52,14 @@ matplotlib.rcParams.update({
 C_MOCAP = '#0072B2'   # blue       (ground truth, solid)
 C_LIVE  = '#D55E00'   # vermillion (SW live edge, dashed)
 
-# rows: (x-index, y-index, xlabel, ylabel)
-PROJ = [(0, 1, 'X (m)', 'Y (m)'),
-        (1, 2, 'Y (m)', 'Z (m)')]
+# Both rows share Y on the horizontal axis: top is Y-X (X-Y rotated 90 deg so
+# Y is at the bottom), bottom is Y-Z.  This makes both rows the same width and
+# packs the panels (top row becomes wide, not tall).
+# rows: (x-index, y-index, ylabel)
+PROJ = [(1, 0, 'X (m)'),
+        (1, 2, 'Z (m)')]
 
-fig, axes = plt.subplots(2, 3, figsize=(7.2, 3.7))
+fig, axes = plt.subplots(2, 3, figsize=(7.2, 3.7), sharex='col')
 
 for col, (bag, title) in enumerate(BAGS):
     bag_dir   = PLOTS_ROOT / bag / 'live_solver'
@@ -64,19 +67,20 @@ for col, (bag, title) in enumerate(BAGS):
     s = np.load(bag_dir / f'traj_arrays_{bag}_{MOCAP_TAG}_sw.npz')
     gt, live = b['mocap'], s['live']
 
-    for row, (xi, yi, xl, yl) in enumerate(PROJ):
+    for row, (xi, yi, yl) in enumerate(PROJ):
         ax = axes[row, col]
         ax.plot(gt[:, xi], gt[:, yi], color=C_MOCAP, lw=1.5, ls='-', zorder=3)
         ax.plot(live[:, xi], live[:, yi], color=C_LIVE, lw=1.5, ls='--', zorder=4)
         ax.plot(gt[0, xi], gt[0, yi], color=C_MOCAP, marker='s', markersize=4.5,
                 ls='none', zorder=5)
-        ax.set_xlabel(xl, labelpad=1)
         ax.set_ylabel(yl, labelpad=1)
         ax.grid(True, alpha=0.3)
         ax.set_aspect('equal')
         ax.tick_params(length=2, pad=1.5)
         if row == 0:
             ax.set_title(title, fontweight='bold', pad=3)
+        else:
+            ax.set_xlabel('Y (m)', labelpad=1)
 
 # single shared legend at the bottom
 handles = [Line2D([0], [0], color=C_MOCAP, lw=1.8, ls='-'),

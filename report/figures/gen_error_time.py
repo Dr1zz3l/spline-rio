@@ -35,13 +35,13 @@ TAG = 'mocap-init_mocap-heading'
 
 matplotlib.rcParams.update({
     # authored ~13in, displayed full text width ~7.16in (figure*, ~0.55x);
-    # fonts sized for ~10pt on page
-    'font.size':       18,
-    'axes.labelsize':  18,
-    'axes.titlesize':  17,
-    'xtick.labelsize': 15,
-    'ytick.labelsize': 15,
-    'legend.fontsize': 15,
+    # fonts kept near body text (~8pt on page) and not clipping
+    'font.size':       14,
+    'axes.labelsize':  14,
+    'axes.titlesize':  13,
+    'xtick.labelsize': 12,
+    'ytick.labelsize': 12,
+    'legend.fontsize': 13,
     'lines.linewidth': 1.8,
     'figure.dpi':      150,
 })
