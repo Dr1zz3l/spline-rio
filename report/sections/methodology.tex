@@ -13,18 +13,19 @@ obtained as analytical derivatives of the spline.
 
 \textbf{Orientation.}
 We use the \emph{cumulative} SO(3) B-spline
-formulation~\cite{sommer2020efficient}:
+formulation~\cite{sommer2020efficient,usenko2020basalt}:
 \begin{equation}
-  \vR(t) = \vR_{\mathrm{base}}[k{-}3]
-           \prod_{j=k-3}^{k} \Exp\!\bigl(\tilde{B}_j(t)\,\vOm_j\bigr),
+  \vR(t) = \vR_{k-3}
+           \prod_{j=k-2}^{k} \Exp\!\bigl(\tilde{B}_j(t)\,
+           \Log(\vR_{j-1}^{-1}\vR_{j})\bigr),
   \label{eq:ori_spline}
 \end{equation}
-where $k$ is the active knot index for time $t$,
-$\vOm_j \in \so$ are incremental rotation control points
-(standard $\Exp$/$\Log$ map convention),
-$\tilde{B}_j(t)$ are cumulative cubic basis functions, and
-$\vR_{\mathrm{base}}$ is the left anchor rotation.  Knot spacing
-is $\Delta t_o = 8$\,ms (slow racing; see \autoref{tab:config}).
+where $k$ is the active knot index, the $\vR_i \in \SO$ are \emph{absolute}
+rotation knots (the optimization variables; basalt
+convention~\cite{usenko2020basalt}), $\Log(\vR_{j-1}^{-1}\vR_j)$ are their
+relative increments, and $\tilde{B}_j(t)$ are cumulative cubic basis
+functions.  Knot spacing is $\Delta t_o = 8$\,ms (slow racing; see
+\autoref{tab:config}).
 Body-frame angular velocity $\vom_b(t)$
 is obtained as a closed-form derivative of~\eqref{eq:ori_spline}
 directly from \texttt{evaluate\_lie()} without numerical

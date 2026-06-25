@@ -22,12 +22,13 @@ inter-sample interpolation or rigid-keyframe approximation is required.
 The trajectory is a B-spline (\autoref{sec:state}): the position is a
 quintic uniform B-spline with control points
 $\{\mathbf{P}_i\}\subset\mathbb{R}^3$, and the orientation a cumulative
-$\SO$ B-spline with incremental control points $\{\vOm_j\}\subset\so$.
+$\SO$ B-spline with \emph{absolute} rotation knots
+$\{\vR_i\}\subset\SO$ (basalt convention~\cite{usenko2020basalt}).
 This renders the otherwise infinite-dimensional trajectory
 finite-dimensional; the control points and the \ac{imu} biases form the
 estimated state
 \begin{equation}
-  \mathcal{X} = \bigl\{\,\mathbf{P}_i,\ \vOm_j,\ \vb_a,\ \vb_g\,\bigr\}.
+  \mathcal{X} = \bigl\{\,\mathbf{P}_i,\ \vR_i,\ \vb_a,\ \vb_g\,\bigr\}.
   \label{eq:state}
 \end{equation}
 The batch solve additionally frees the single observable extrinsic degree
