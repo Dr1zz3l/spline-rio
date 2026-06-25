@@ -100,5 +100,6 @@ PYBIND11_MODULE(rio_isam, m) {
         .def("ori_knots", &IsamSolver::ori_knots)
         .def("pos_cps", &IsamSolver::pos_cps)
         .def("biases", &IsamSolver::biases)
-        .def("num_active", &IsamSolver::num_active);
+        .def("num_active", &IsamSolver::num_active)
+        .def("num_fixed", &IsamSolver::num_fixed);
 }

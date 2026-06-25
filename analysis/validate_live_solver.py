@@ -703,6 +703,8 @@ def _solve_cpp_isam(initial_state, solver_radar_frames, imu_data,
     cfg.warm_start_align = bool(int(solver_cfg.get('warm_start_align', 1)))
     cfg.adapt_noise_stride = int(solver_cfg.get('adapt_noise_stride', 0))
     cfg.adapt_noise_alpha = solver_cfg.get('adapt_noise_alpha', 0.3)
+    cfg.relinearize_threshold = solver_cfg.get('relinearize_threshold', 0.01)
+    cfg.relinearize_skip = int(solver_cfg.get('relinearize_skip', 1))
 
     ext = rio_isam.ExtrinsicConfig()
     euler = extrinsics_cfg.get('rotation_euler_deg', [180.0, 25.5, 0.0])
@@ -752,7 +754,7 @@ def _solve_cpp_isam(initial_state, solver_radar_frames, imu_data,
     if dts:
         tail = dts[len(dts) // 3:]
         print(f"  [--isam] {len(dts)} strides, {1000*np.mean(tail):.0f}ms/update mean "
-              f"({1000*np.max(tail):.0f}ms max), active vars {solver.num_active()}")
+              f"({1000*np.max(tail):.0f}ms max), active vars {solver.num_active()}, FEJ-fixed vars {solver.num_fixed()}")
 
     ori_full = all_ori_quats.copy()
     pos_full = all_pos_cps.copy()

@@ -429,6 +429,10 @@ void IsamSolver::adapt_noise(const gtsam::Values& est,
                                   nm::Isotropic::Sigma(1, sigma_r_));
 }
 
+int IsamSolver::num_fixed() const {
+    return smoother_ ? static_cast<int>(smoother_->getISAM2().getFixedVariables().size()) : 0;
+}
+
 std::vector<std::pair<int, std::array<double, 4>>> IsamSolver::ori_knots() const {
     std::vector<std::pair<int, std::array<double, 4>>> out;
     for (const auto& kv : live_ori_) out.emplace_back(kv.first, kv.second);

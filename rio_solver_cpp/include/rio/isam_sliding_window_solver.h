@@ -77,6 +77,7 @@ public:
     std::vector<std::pair<int, std::array<double, 3>>> pos_cps() const;
     std::array<double, 6> biases() const { return last_bias_; }
     int num_active() const { return num_active_; }
+    int num_fixed() const;   // FEJ: variables whose linearization is frozen by marg
 
 private:
     bool ori_active(double t_abs, int& k, double& u) const;

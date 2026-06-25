@@ -420,6 +420,46 @@ Result (backflips, full deployment config via --set, mocap eval):
 **Phase 3 status: racing DONE (matches/beats batch+SW at real-time); backflips
 position/velocity DONE, orientation is the open refinement (spline-omega gate).**
 
+## ROOT CAUSE of the backflips orientation gap (2026-06-26): FEJ-freeze staleness
+
+Head-to-head, matched 1.5s window: slow_racing iSAM2 0.165/1.39 BEATS Ceres SW
+0.292/1.51 (all metrics); backflips iSAM2 1.72/2.14/10.7deg vs SW 1.56/3.54/6.3deg
+(pos/vel match, ori ~4deg worse). The orientation gap is FAST-DYNAMICS-SPECIFIC.
+
+**Diagnosis (all verified):**
+1. lag=30 (NO marginalization, full smoother) -> 7.3deg; lag=1.5 (marg) -> 10.7deg.
+   **The marginalization is the cause** (~3.4 of the 4.4deg gap).
+2. **GTSAM's IFLS already does FEJ automatically**: marginalizeLeaves adds the
+   marginal boundary to fixedVariables_, and relinearization ERASES fixed vars
+   from relinKeys (ISAM2-impl.h:389). Confirmed: 10 FEJ-fixed vars active in
+   backflips (IsamSolver::num_fixed()). So "just do FEJ" is already on.
+3. FEJ FREEZES the marginal (its linear approx + the boundary Jacobian) at
+   marg-time. Under the strong nonlinearity of a 10 rad/s flip, the frozen marginal
+   goes STALE as the trajectory keeps refining around it.
+4. Smoking gun: extra_iters MORE -> WORSE (8 -> 12deg): the active knots converge
+   HARDER onto the stale frozen marginal. And raising relinearize_threshold is
+   catastrophic (0.5 -> 71deg): a GLOBAL freeze also freezes the leading-edge flip
+   knots that MUST relinearize -> wrong tool (FEJ must be SELECTIVE, which GTSAM
+   already is).
+5. The Ceres SW avoids it by RE-LINEARIZING its Schur prior fresh (re-centered)
+   every window -> never stale -> 6.3deg.
+
+**=> It is a FREEZE-vs-RELINEARIZE trade-off, not a bug / missing FEJ.** FEJ-freeze
+is consistent + great for MILD dynamics (iSAM2 beats SW on racing) but stale for
+STRONG nonlinearity (loses on continuous flips). Inherent to incremental FEJ
+marginalization vs windowed re-linearizing marginalization.
+
+**Fix options (none trivial; backflips is CONTINUOUS flips so no quiet segment to
+marginalize in):**
+  (a) Adaptive/no marginalization in high-|omega| segments -> full-smooth the flips
+      (7.3deg) but slow / unbounded for pure-backflips.
+  (b) SELECTIVE FEJ: don't fix the (observable, nonlinear) ORIENTATION boundary,
+      only the (unobservable) position/yaw nullspace -> re-linearize orientation.
+      GTSAM fixes all marginal vars uniformly -> needs custom marginalization.
+  (c) Re-linearizing marginal (Ceres-style) in GTSAM -> not natively supported.
+  (d) Accept it: iSAM2 wins racing, trails on the hardest flip orientation -- a
+      characterized, regime-dependent property.
+
 ## Phase 0 verdict: PROCEED to the C++ port (Phases 1-3), with random-walk bias
 and FEJ as firm requirements.
  The spike de-risked the two things that could have
