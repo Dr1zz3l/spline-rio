@@ -77,3 +77,4 @@ paper/*.blg
 paper/*.fls
 paper/*.fdb_latexmk
 paper/IEEEtran_HOWTO.pdf
+rio_solver_cpp/gtsam_vendored_install/

@@ -283,6 +283,30 @@ Phase 2/3:**
 Remaining (minor, lands in Phase 2 wiring): heading prior (1D yaw factor on ori
 knots) and boundary anchors (built-in `gtsam::PriorFactor<Rot3/Vector3/Vector6>`).
 
+## Phase 2 progress (C++ IncrementalFixedLagSmoother backend)
+
+`IsamSolver` (`include/rio/isam_sliding_window_solver.h` + `src/...cpp`) +
+`rio_isam` pybind module. Fed NON-overlapping strides (the lag handles the
+window); random-walk bias; reuses the Phase-1 factor wrappers. Driven by
+`analysis/isam_spike/validate_isam_cpp.py` over the captured slow_racing problem.
+
+**GTSAM had to be built from source (vendored):** apt `libgtsam-dev` ships NO
+`gtsam_unstable` (no `IncrementalFixedLagSmoother`) AND is baseline-x86-64 (the
+Eigen ABI mismatch). Source build (4.2.1, `gtsam_vendored_install/`, gitignored)
+with `GTSAM_BUILD_UNSTABLE=ON` + `-march=native` + system Eigen fixes both.
+Build gotcha: it links a bundled `libmetis-gtsam.so` via `DT_RUNPATH` (not
+transitive), so GTSAM-linked targets need `BUILD/INSTALL_RPATH` to the vendored
+lib dir + `-Wl,--disable-new-dtags` (old DT_RPATH, which IS transitive).
+
+**First end-to-end run (slow_racing, full 25.6s @ 997 Hz IMU, no heading yet):**
+  - **Timing: mean 64.9 ms/update, max 84.6 ms** vs the 300 ms stride budget
+    => ~4.6x real-time margin (the Ceres SW barely hit 300 ms). THE MIGRATION
+    GOAL, achieved.
+  - Active vars plateau at 601 (marginalization bounds the problem, confirmed in C++).
+  - Accuracy poor (6.1 deg mean ori / 0.6 m pos vs Ceres batch) because the
+    HEADING PRIOR is not wired yet -> yaw anchored only at the start, drifts over
+    25s (the 0d confound, full-blown). Next: add the heading factor (+ FEJ).
+
 ## Phase 0 verdict: PROCEED to the C++ port (Phases 1-3), with random-walk bias
 and FEJ as firm requirements.
  The spike de-risked the two things that could have
