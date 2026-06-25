@@ -42,6 +42,7 @@ PYBIND11_MODULE(rio_isam, m) {
         .def_readwrite("lag", &IsamConfig::lag)
         .def_readwrite("relinearize_threshold", &IsamConfig::relinearize_threshold)
         .def_readwrite("relinearize_skip", &IsamConfig::relinearize_skip)
+        .def_readwrite("extra_iters", &IsamConfig::extra_iters)
         .def_readwrite("use_qr", &IsamConfig::use_qr)
         .def_readwrite("fej", &IsamConfig::fej);
 

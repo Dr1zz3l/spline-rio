@@ -325,16 +325,38 @@ the Ceres SW). Diagnostic sweep on slow_racing (vs Ceres BATCH, which is
     window. The difference is the GAUGE/CONVERGENCE regime: 0b pinned BOTH ends +
     solved to LM convergence; here only the START is anchored (+ heading) and
     ISAM2 does gated incremental GN, not full re-optimization.
-  - Prioritized candidates for the next debugging pass (accuracy only; timing is
-    done): (1) **FEJ** (0d mandated it; the long-horizon drift matches the 0d NEES
-    degradation); (2) ISAM2 convergence -- force extra relinearization / multiple
-    updates so past states re-optimize like batch; (3) gauge/boundary -- the
-    Ceres SW's exact boundary + the missing gravity-direction factor (lambda 1e-3);
-    (4) compare against the SW (also fixed-lag, 0.30 m/1.97 deg live) rather than
-    the global BATCH -- a fixed-lag method should be benchmarked against fixed-lag.
+**ACCURACY RESOLVED (2026-06-25).** A per-axis breakdown + a 2x2 (init x lag)
+sweep pinned the cause -- and it was NOT FEJ/marginalization:
+  | config | roll | pitch | yaw | pos |
+  |---|---|---|---|---|
+  | cpp init, lag 1.5 (marg, good init) | 0.32 | 0.20 | 0.22 | 232mm |
+  | P1-P3 init, lag 30 (full smoother) | 2.97 | 0.89 | 0.67 | 205mm |
+  | P1-P3 init, lag 1.5 (deployment) | **5.79** | 2.23 | 1.75 | 584mm |
+  - The "cpp init, lag 1.5" row = **0.40 deg** proves the FIXED-LAG MARGINALIZATION
+    is fine from a good init (FEJ was NOT the blocker -- 0d's long-horizon NEES
+    degradation does not bite at this mission length / this anchoring).
+  - The error was **roll recovery from the P1-P3 init**: roll is constrained only
+    by the weak accel factor (lambda 0.01), and ISAM2 does ONE gated GN step per
+    update, NOT full convergence like the Ceres SW (which re-solves each window to
+    ~28 iters). So roll stayed near the bad init.
+  - **Fix: `extra_iters` (extra empty ISAM2 updates/stride)** -> re-linearize +
+    re-solve the marked variables, mirroring the SW's per-window convergence.
 
-**Phase 2 status: backend WORKS + is REAL-TIME (4.6x margin, bounded); accuracy
-(~4-6 deg vs ~2 deg target) is the focused remaining work.**
+**Phase 2 HEADLINE (slow_racing, P1-P3 init, lag 1.5, lambda_h 10, extra_iters 3):**
+  - **Accuracy: 0.51 deg ori (roll 0.41 / pitch 0.31 / yaw 0.21), 225 mm pos vs
+    Ceres BATCH** -- i.e. matches the global optimum (Ceres batch is itself
+    1.08 deg/0.20 m vs mocap). BETTER accuracy than the deployed Ceres SW
+    (1.97 deg/0.30 m live).
+  - **Timing: 220 ms/update mean (353 ms max)** at full dt_pos=5ms, lag full,
+    active vars bounded at 601. Under the 300 ms stride budget on the mean.
+    (extra_iters trades the 65ms->220ms; the coarser deployment dt_pos configs
+    leave more margin, and "iterate only when needed" is an obvious optimization.)
+
+**Phase 2 status: DONE for slow_racing -- backend works, matches batch accuracy,
+real-time, bounded.** Remaining: Phase 3 (fast_racing + backflips captures +
+configs + 3-bag benchmark), `--isam` flag in the driver, optional extra_iters
+auto-tuning. The two iSAM2 risks (conditioning, bounded cost) and the accuracy
+question are all now positively resolved.
 
 ## Phase 0 verdict: PROCEED to the C++ port (Phases 1-3), with random-walk bias
 and FEJ as firm requirements.

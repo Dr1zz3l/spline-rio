@@ -40,7 +40,8 @@ def main():
     cfg.lambda_accel = c['lambda_accel']; cfg.lambda_gyro = c['lambda_gyro']
     cfg.huber_delta = c['huber_delta']; cfg.lambda_snap_pos = c['lambda_snap_pos']
     cfg.lambda_ori_accel = c['lambda_ori_accel']
-    cfg.lambda_heading = c['lambda_heading']
+    cfg.lambda_heading = 10.0      # deployment (live) heading weight, not batch 0.6
+    cfg.extra_iters = 3            # converge roll/pitch from the P1-P3 init
     cfg.lambda_bias_prior = c['lambda_bias_prior_accel']
     cfg.lag = float(os.environ.get('LAG', '1.5'))
     if os.environ.get('RELIN'):
@@ -49,6 +50,8 @@ def main():
         cfg.bias_rw_sigma = float(os.environ['BIAS_RW'])
     if os.environ.get('LH'):
         cfg.lambda_heading = float(os.environ['LH'])
+    if os.environ.get('EXTRA'):
+        cfg.extra_iters = int(os.environ['EXTRA'])
 
     ext = rio_isam.ExtrinsicConfig()
     ext.roll_deg, ext.pitch_deg, ext.yaw_deg = [float(x) for x in prob.ext_euler_deg]
@@ -109,8 +112,13 @@ def main():
     ts = np.linspace(ta, tb, 200)
     Re, pe = sample_traj(prob, ori_full, pos_full, ts)
     Rc, pc = sample_traj(prob, prob.d['cpp_ori_knots'], prob.d['cpp_pos_cps'], ts)
-    d_ori = np.degrees([np.linalg.norm(sf.so3_log(a.T @ b)) for a, b in zip(Re, Rc)])
+    ori_vecs = np.array([np.degrees(sf.so3_log(a.T @ b)) for a, b in zip(Re, Rc)])  # roll/pitch/yaw err
+    d_ori = np.linalg.norm(ori_vecs, axis=1)
     d_pos = np.linalg.norm(pe - pc, axis=1)
+    rms = np.sqrt((ori_vecs ** 2).mean(axis=0))
+    dpv = pe - pc
+    print(f"  per-axis ori RMS: roll={rms[0]:.2f} pitch={rms[1]:.2f} yaw={rms[2]:.2f} deg  | "
+          f"pos RMS xy={1000*np.sqrt((dpv[:,:2]**2).sum(1).mean()):.0f}mm z={1000*np.sqrt((dpv[:,2]**2).mean()):.0f}mm")
 
     print(f"\nstrides={nstr}  knots estimated: {len(got_o)} ori, {len(got_p)} pos")
     half = len(times_upd) // 3

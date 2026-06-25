@@ -275,6 +275,11 @@ double IsamSolver::update(
     // --- solve ---
     auto t0 = std::chrono::steady_clock::now();
     smoother_->update(g, v, ts);
+    // Extra empty updates: ISAM2 does one gated GN step per update; the Ceres SW
+    // re-solves each window to convergence. Extra passes re-linearize + re-solve
+    // the marked variables (recovers roll/pitch from the weak-accel P1-P3 init).
+    for (int e = 0; e < cfg_.extra_iters; ++e)
+        smoother_->update();
     const gtsam::Values est = smoother_->calculateEstimate();
     auto t1 = std::chrono::steady_clock::now();
     const double dt = std::chrono::duration<double>(t1 - t0).count();

@@ -33,6 +33,9 @@ struct IsamConfig {
     double lag{1.5};
     double relinearize_threshold{0.01};
     int    relinearize_skip{1};
+    int    extra_iters{0};        // extra empty ISAM2 updates/stride to converge
+                                  // (roll recovery from the P1-P3 init; the Ceres
+                                  // SW re-solves each window to convergence)
     bool   use_qr{true};                    // QR vs Cholesky (conditioning)
     bool   fej{false};                      // pin marginalized-coupled linpoints
 };
