@@ -72,11 +72,25 @@ this is expected because subsequent windows refine previous estimates.
 With the consistent prior, settled velocity is smooth across stride
 boundaries (the earlier inconsistent prior produced position jumps
 that inflated the settled velocity derivative).
-Per-window solve times are 0.35--0.70\,s on a laptop CPU.  At the default
-0.3\,s stride (at which all \autoref{tab:sw} accuracy is reported) the
-system is therefore \emph{not} real-time.  Only fast racing reaches real
-time, and only at a coarser 0.4\,s stride (its 0.35\,s solve fits that
-budget); slow racing at 0.70\,s/window does not, at any practical stride.
+Per-window solve time is set by window length and knot density, not the
+stride, and a configuration is real-time when that time fits the stride;
+\autoref{tab:realtime} and \autoref{fig:realtime} sweep this on a laptop
+CPU.  Fast racing reaches real time \emph{at the nominal 0.3\,s stride}
+with a 2\,s window (0.27\,s/window) at a 10\% live-position cost
+(0.40$\to$0.44\,m) and unchanged orientation; backflips reach it at a
+$\sim$0.45\,s stride (2\,s window) at no accuracy cost.  Slow racing is
+the costly case: its gentle flight returns more radar points per frame, so
+the linear solve dominates (0.72\,s/window), and neither a shorter window
+(0.50\,s) nor coarser knots (0.54\,s, though live position then degrades
+to 0.47\,m) meets the 0.3\,s budget; it is real-time only at a
+$\sim$0.5\,s stride.  The linear solve is the lever: a banded Schur
+factorization is numerically unstable at our conditioning, so the route to
+onboard rates is incremental smoothing rather than batch re-solve.  Girod
+et al.~\cite{girod2024brio} already reach real-time single-chip \ac{rio}
+onboard with exactly such an iSAM2 back-end, albeit on a discrete-time
+graph; combining incremental inference with our continuous-time B-spline,
+where the shared global bias induces a Bayes-tree fill-in, is the natural
+next step and we leave it to future work.
 The dominant cost reductions were: the consistent prior removing
 the marginalization re-linearization ($\sim$0.6\,s), coarsening
 $\Delta t_p$ from 5\,ms to 40\,ms for aggressive flight (which
@@ -85,6 +99,47 @@ improves orientation), and warm-start alignment removing the
 live-edge seam.  For a mapping-oriented profile (full iterations,
 no warm-start alignment) slow racing settles to 1.14\degree\
 orientation (yaw 0.61\degree) at 2.1\,s per window.
+
+\begin{table}[t]
+\centering
+\caption{\textcolor{red}{[Choose this table \emph{or}
+  \autoref{fig:realtime}.] Real-time operating points: per-window solve
+  time vs.\ window length and knot density, with live-edge \ac{rmse}
+  (laptop CPU, \ac{ransac} default).  A configuration is real-time when
+  its solve time fits the stride.}}
+\label{tab:realtime}
+\small
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{@{}llccc@{}}
+\toprule
+Bag & Window & Solve (s) & Live pos (m) & Live ori (\degree) \\
+\midrule
+\multirow{2}{*}{Fast}
+  & 2.0\,s           & \textbf{0.27} & 0.443 & 2.95 \\
+  & 3.0\,s (default) & 0.32          & 0.399 & 2.88 \\
+\midrule
+\multirow{2}{*}{Slow}
+  & 2.0\,s           & 0.50          & 0.329 & 2.20 \\
+  & 3.0\,s (default) & 0.72          & 0.310 & 1.97 \\
+\midrule
+\multirow{2}{*}{Backflips}
+  & 2.0\,s           & \textbf{0.43} & 1.456 & 6.61 \\
+  & 3.0\,s (default) & 0.59          & 1.545 & 6.35 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.86\columnwidth]{figures/realtime_sweep.pdf}
+  \caption{\textcolor{red}{[Choose this figure \emph{or}
+    \autoref{tab:realtime}.] Per-window solve time vs.\ window length per
+    regime; a configuration is real-time when it falls in the shaded
+    region (below the nominal 0.3\,s stride).  Annotations give live
+    position \ac{rmse}.  Fast racing is real-time at a 2\,s window; slow
+    and backflips need a larger stride.}}
+  \label{fig:realtime}
+\end{figure}
 
 \begin{figure*}[t]
   \centering
