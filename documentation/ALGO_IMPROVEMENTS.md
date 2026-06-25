@@ -144,6 +144,32 @@ the failure and the two metrics decouple. Actions:
     real. The remaining lever is the estimator (spline-omega gate vs gyro-mag
     proxy) or accepting that single-chip 10 rad/s orientation is just hard.
 
+## D2. Radar smear "fix before gating" -- DEAD END (magnitude-verified 2026-06-26)
+User asked: can we fix the smearing before the gating (so we keep the radar)?
+Computed the intra-frame smear velocity error (|v|*|omega|*tau_burst, tau=4ms) on
+backflips: median 0.066, p95 0.12, max 0.21 m/s during flips. Compare:
+  - Doppler quantization bin: 0.63 m/s (smear = 10% of ONE bin)
+  - flip radar residual core: 2.47 m/s (smear = 2.7% of it!)
+  - z-velocity bias: 0.5-0.65 m/s
+=> the geometric smear is NEGLIGIBLE (2.7% of the actual flip radar noise). The
+ω-gate is NOT compensating for smear; it compensates for the BROAD radar
+degradation during flips (multipath, z-bias amplification, static-world violation,
+sparsity). "Fixing the smear" would change nothing. Combined with D1 (smear
+unrecoverable from coherent detections anyway), the deskew/smear avenue is fully
+closed. The radar-modeling lever is the BROAD flip-noise (data-driven gate, below),
+not the smear.
+
+## D3. Radar improvements that ARE real (post-smear-dead-end)
+1. **Data-driven radar gate** (replace hand-tuned omega_soft_sigma): the flip radar
+   residual core IS ~2.47 m/s (measured) -> set the radar noise from the measured
+   flip-time residual std rather than a hand-tuned ω-gate. Connects to NIS-adaptive.
+2. **radar_pos_split for iSAM2** (Ceres has it, iSAM2 doesn't): the gated-out radar's
+   complementary weight (1-w) feeds a POSITION-ONLY factor (frozen R,ω at warm-start)
+   -> radar velocity informs position during flips without dragging orientation.
+   Keeps the radar instead of discarding it. (Backflips pos already good via tether,
+   so marginal there; cleaner model.)
+3. **Plane mapping** (D-section): the real absolute-position win (structured env).
+
 ## E. Other
 - Learned radar front-end (static/dynamic + ground/structure classification) to
   beat RANSAC's crude filtering, esp. elevation-biased single-chip returns.
