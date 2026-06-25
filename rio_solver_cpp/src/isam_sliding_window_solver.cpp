@@ -1,9 +1,11 @@
 #include <rio/isam_sliding_window_solver.h>
 #include <rio/gtsam/factors.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <memory>
+#include <vector>
 
 #include <gtsam/geometry/Rot3.h>
 #include <gtsam/inference/Symbol.h>
@@ -28,6 +30,10 @@ static Key BK(int i) { return Symbol('b', i); }
 
 static Rot3 quat_to_rot3(const std::array<double, 4>& q) {  // q = xyzw
     return Rot3(Eigen::Quaterniond(q[3], q[0], q[1], q[2]).normalized());
+}
+
+static gtsam::SharedNoiseModel sf_iso3(double lam) {
+    return nm::Isotropic::Sigma(3, 1.0 / std::sqrt(std::max(lam, 1e-30)));
 }
 
 IsamSolver::IsamSolver(const IsamConfig& cfg, const ExtrinsicConfig& ext)
@@ -123,7 +129,7 @@ double IsamSolver::update(
     // SW warm_start_align (methodology.tex).
     Eigen::Matrix3d align_R = Eigen::Matrix3d::Identity();
     Eigen::Vector3d align_t = Eigen::Vector3d::Zero();
-    if (!first_) {
+    if (!first_ && cfg_.warm_start_align) {
         const gtsam::Values cur = smoother_->calculateEstimate();
         for (auto it = added_ori_.rbegin(); it != added_ori_.rend(); ++it)
             if (cur.exists(RK(*it))) {
@@ -152,10 +158,18 @@ double IsamSolver::update(
         for (int i = kp - 5; i <= kp; ++i)
             if (i >= 0 && i < n_pos_) {
                 if (!added_pos_.count(i)) {
-                    v.insert(PK(i), Vector3(init_pos_[i][0] + align_t[0],
-                                            init_pos_[i][1] + align_t[1],
-                                            init_pos_[i][2] + align_t[2]));
+                    const Vector3 anchor(init_pos_[i][0] + align_t[0],
+                                         init_pos_[i][1] + align_t[1],
+                                         init_pos_[i][2] + align_t[2]);
+                    v.insert(PK(i), anchor);
                     added_pos_.insert(i);
+                    // position tether to the RAW P1-P3 init (radar-velocity-
+                    // integrated, drift-resistant -- NOT the aligned value, which
+                    // would follow the drift). Backflips: radar sparsity in flips.
+                    if (cfg_.lambda_pos_init_prior > 0.0)
+                        g.add(gtsam::PriorFactor<Vector3>(
+                            PK(i), Vector3(init_pos_[i][0], init_pos_[i][1], init_pos_[i][2]),
+                            sf_iso3(cfg_.lambda_pos_init_prior)));
                 }
                 ts[PK(i)] = t_now;
             }
@@ -213,18 +227,38 @@ double IsamSolver::update(
                 PK(i), Vector3(init_pos_[i][0], init_pos_[i][1], init_pos_[i][2]), n_boundary_p_)); }
     }
 
-    // --- sensor factors ---
+    // |omega| proxy = gyro-measurement magnitude (close to the spline rate the
+    // Ceres SW gates on, but available without a build-time spline eval).
+    auto gmag = [](const ImuSample& s) { return std::sqrt(s.gx*s.gx + s.gy*s.gy + s.gz*s.gz); };
+    auto gmag_near = [&](double t) {
+        double best = 1e18, m = 0.0;
+        for (const auto& s : imu) { double d = std::abs(s.timestamp - t); if (d < best) { best = d; m = gmag(s); } }
+        return m;
+    };
+
+    // --- IMU sensor factors (omega-adaptive gyro + accel soft-gate) ---
     for (size_t i = 0; i < imu.size(); ++i) {
         if (imu_ko[i] < 0) continue;
+        const double wn = gmag(imu[i]);
+        double w_g = 1.0;
+        if (cfg_.lambda_gyro_omega_sigma > 0.0)
+            w_g = 1.0 + std::pow(wn / cfg_.lambda_gyro_omega_sigma, cfg_.lambda_gyro_omega_pow);
+        double w_acc = 1.0;
+        if (cfg_.accel_soft_sigma > 0.0) { double q = wn / cfg_.accel_soft_sigma; w_acc = 1.0 / (1.0 + q * q); }
+        auto ng = (w_g == 1.0) ? n_gyr_ : sf_iso3(cfg_.lambda_gyro * w_g);
+        auto na = (w_acc == 1.0) ? n_acc_ : sf_iso3(cfg_.lambda_accel * w_acc);
+
         gtsam::KeyVector ko, kg;
         for (int j = 0; j < N_ORI; ++j) { ko.push_back(RK(imu_ko[i] - 3 + j)); kg.push_back(RK(imu_ko[i] - 3 + j)); }
         for (int j = 0; j < N_POS; ++j) ko.push_back(PK(imu_kp[i] - 5 + j));
         ko.push_back(bkey); kg.push_back(bkey);
-        g.add(gtsam_factors::AccelFactor(n_acc_, ko,
+        g.add(gtsam_factors::AccelFactor(na, ko,
             Eigen::Vector3d(imu[i].ax, imu[i].ay, imu[i].az), imu_uo[i], inv_dt_ori_, imu_up[i], inv_dt_pos_));
-        g.add(gtsam_factors::GyroFactor(n_gyr_, kg,
+        g.add(gtsam_factors::GyroFactor(ng, kg,
             Eigen::Vector3d(imu[i].gx, imu[i].gy, imu[i].gz), imu_uo[i], inv_dt_ori_));
     }
+
+    // --- radar (omega soft-gate + per-point intensity + z-bias) ---
     for (const auto& f : radar) {
         if (f.points.empty() || !in_domain(f.timestamp)) continue;
         int ko, kp; double uo, up;
@@ -232,12 +266,31 @@ double IsamSolver::update(
         gtsam::KeyVector keys;
         for (int j = 0; j < N_ORI; ++j) keys.push_back(RK(ko - 3 + j));
         for (int j = 0; j < N_POS; ++j) keys.push_back(PK(kp - 5 + j));
+
+        double w_omega = 1.0;
+        if (cfg_.omega_soft_sigma > 0.0) { double q = gmag_near(f.timestamp) / cfg_.omega_soft_sigma; w_omega = 1.0 / (1.0 + q * q); }
+        double inv_med_I = 0.0;
+        if (cfg_.radar_intensity_weight > 0.0) {
+            std::vector<double> ints;
+            for (const auto& pt : f.points) if (pt.intensity > 0.0) ints.push_back(pt.intensity);
+            if (!ints.empty()) { std::sort(ints.begin(), ints.end()); double med = ints[ints.size() / 2]; if (med > 0) inv_med_I = 1.0 / med; }
+        }
         for (const auto& pt : f.points) {
             Eigen::Vector3d xyz(pt.x, pt.y, pt.z);
             const double rng = xyz.norm();
             if (rng < cfg_.min_range) continue;
-            const Eigen::Vector3d u_body = R_bs_ * (xyz / rng);
-            g.add(gtsam_factors::RadarFactor(n_radar_, keys, u_body, pt.v, t_bs_, uo, inv_dt_ori_, up, inv_dt_pos_));
+            const Eigen::Vector3d u_sensor = xyz / rng;
+            const Eigen::Vector3d u_body = R_bs_ * u_sensor;
+            const double v_c = pt.v - cfg_.radar_zbias_fixed * u_sensor.z();
+            double w_int = 1.0;
+            if (inv_med_I > 0.0 && pt.intensity > 0.0)
+                w_int = std::min(4.0, std::max(0.25, std::pow(pt.intensity * inv_med_I, cfg_.radar_intensity_weight)));
+            const double w = w_omega * w_int;
+            auto nr = (w == 1.0) ? n_radar_
+                      : gtsam::noiseModel::Robust::Create(
+                            gtsam::noiseModel::mEstimator::Huber::Create(cfg_.huber_delta),
+                            gtsam::noiseModel::Isotropic::Sigma(1, 1.0 / std::sqrt(std::max(w, 1e-6))));
+            g.add(gtsam_factors::RadarFactor(nr, keys, u_body, v_c, t_bs_, uo, inv_dt_ori_, up, inv_dt_pos_));
         }
     }
     if (use_heading)

@@ -394,12 +394,31 @@ FixedLagSmootherResult error-reduction > thresh, like LM) would give 0-1 passes 
 easy strides, 3+ on hard ones. Lower priority now: with a tuned grid even fixed
 extra_iters=3 is 88ms (see fast above).
 
-**Remaining Phase 3:** backflips (needs the universal weighting ported:
-omega-adaptive gyro, radar/accel omega-soft-gates, radar z-bias -- the features
-that make the 10 rad/s flips work; the conditioning stress case); per-bag config
-sweep to match the SW deployment tuning; extra_iters auto-tuning (iterate only
-when residual high -> reclaim the 65->200ms). Backend correctness/timing on the
-racing regime is DONE.
+**Backflips: universal weighting PORTED (omega-adaptive gyro, radar/accel
+omega-soft-gates, radar z-bias, per-point intensity, position tether).** Config
+fields in IsamConfig + pybind + driver; all gated (0 = off, racing unaffected).
+|omega| proxy = gyro-measurement magnitude (vs the SW's warm-start spline omega).
+Result (backflips, full deployment config via --set, mocap eval):
+  | metric | iSAM2 | Ceres SW |
+  |---|---|---|
+  | Position | **1.72 m (3.2%)** | 1.67 m (2.85%) |
+  | Velocity | **2.14 m/s** | 2.35 m/s |
+  | Orientation | 10.7 deg | 5.01 deg |
+  - **Position + velocity MATCH/BEAT the SW** -> the universal-weighting port works
+    (gates, z-bias, tether all functional). Key fix: the tether must anchor to the
+    RAW P1-P3 init (drift-resistant radar-integrated position), NOT the aligned
+    value (which follows the drift) -- that one change took position 12.4m -> 1.72m.
+  - **Orientation 10.7 deg (2x the SW's 5)** = the known-hardest backflips problem.
+    Tried extra_iters {3,8}, warm_start_align off, lambda_ori_accel {0.1,0.001},
+    bias_rw {1e-3,1e-6}, lag {1.5,2.0} -- none cracks it (best ~10.7 at tight bias).
+    Context: even the SW "converges to ~10 deg" at dt_ori=0.008 (bags.yaml), open-loop
+    gyro is 7.8 deg, and mocap GT is degraded mid-flip. Likely refinement: the ω-gate
+    should use the SPLINE omega (from the current estimate at build time) not the
+    gyro-magnitude proxy -- during flips a lagging orientation gives spline omega <
+    gyro, less gating, MORE radar/accel correction (my proxy over-gates).
+
+**Phase 3 status: racing DONE (matches/beats batch+SW at real-time); backflips
+position/velocity DONE, orientation is the open refinement (spline-omega gate).**
 
 ## Phase 0 verdict: PROCEED to the C++ port (Phases 1-3), with random-walk bias
 and FEJ as firm requirements.

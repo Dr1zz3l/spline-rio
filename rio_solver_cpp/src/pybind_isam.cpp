@@ -44,7 +44,15 @@ PYBIND11_MODULE(rio_isam, m) {
         .def_readwrite("relinearize_skip", &IsamConfig::relinearize_skip)
         .def_readwrite("extra_iters", &IsamConfig::extra_iters)
         .def_readwrite("use_qr", &IsamConfig::use_qr)
-        .def_readwrite("fej", &IsamConfig::fej);
+        .def_readwrite("fej", &IsamConfig::fej)
+        .def_readwrite("warm_start_align", &IsamConfig::warm_start_align)
+        .def_readwrite("lambda_gyro_omega_sigma", &IsamConfig::lambda_gyro_omega_sigma)
+        .def_readwrite("lambda_gyro_omega_pow", &IsamConfig::lambda_gyro_omega_pow)
+        .def_readwrite("omega_soft_sigma", &IsamConfig::omega_soft_sigma)
+        .def_readwrite("accel_soft_sigma", &IsamConfig::accel_soft_sigma)
+        .def_readwrite("radar_zbias_fixed", &IsamConfig::radar_zbias_fixed)
+        .def_readwrite("radar_intensity_weight", &IsamConfig::radar_intensity_weight)
+        .def_readwrite("lambda_pos_init_prior", &IsamConfig::lambda_pos_init_prior);
 
     py::class_<ExtrinsicConfig>(m, "ExtrinsicConfig")
         .def(py::init<>())

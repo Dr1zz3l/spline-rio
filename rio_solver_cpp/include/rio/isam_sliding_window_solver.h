@@ -28,6 +28,14 @@ struct IsamConfig {
     double lambda_heading{0.6};
     double lambda_bias_prior{10000.0};
     double bias_rw_sigma{1e-3};
+    // --- universal weighting (aggressive dynamics / backflips); 0 = off ---
+    double lambda_gyro_omega_sigma{0.0};  // gyro stiffen: w_g = 1+(|z_gyro|/sigma)^pow
+    double lambda_gyro_omega_pow{2.0};
+    double omega_soft_sigma{0.0};         // radar down-weight: w=1/(1+(|w|/sigma)^2)
+    double accel_soft_sigma{0.0};         // accel down-weight (same form)
+    double radar_zbias_fixed{0.0};        // v_corr = v - b*u_sensor.z()
+    double radar_intensity_weight{0.0};   // per-point w_int=clamp((I/I_med)^a,0.25,4)
+    double lambda_pos_init_prior{0.0};    // per-CP tether to the (aligned) init
     double boundary_sigma{1e-3};           // strong gauge anchor on first knots
     double min_range{0.2};
     double lag{1.5};
@@ -38,6 +46,10 @@ struct IsamConfig {
                                   // SW re-solves each window to convergence)
     bool   use_qr{true};                    // QR vs Cholesky (conditioning)
     bool   fej{false};                      // pin marginalized-coupled linpoints
+    bool   warm_start_align{true};          // align entering knots to solved
+                                            // boundary; OFF -> enter at raw init
+                                            // (better for flips: gyro init beats
+                                            // the propagated solver orientation)
 };
 
 class IsamSolver {
