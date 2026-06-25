@@ -1,0 +1,153 @@
+# iSAM2 / GTSAM Back-End Migration
+
+> **Status (2026-06-25): Phase 0 spike in progress on branch `isam2-backend`.**
+> Goal: replace the Ceres LM fixed-lag sliding window with a GTSAM
+> `IncrementalFixedLagSmoother` (iSAM2 core + timestamp marginalization) for a
+> real-time margin. Staged behind a de-risk **gate**; paper is frozen (no
+> `report/` edits). Plan file: `~/.claude/plans/ethereal-sniffing-hejlsberg.md`.
+> Companion auto-memory: `project_isam2_backend`.
+
+This file is the durable record of *why* and *what was learned*, so the key
+insights survive context compression. Benchmark numbers and per-phase config
+go in CLAUDE.md / RESEARCH_NOTES.md as results land.
+
+---
+
+## 1. Motivation
+
+Ceres LM sliding window solves each window from scratch (28 -> 11 LM iters) at
+0.35--0.70 s/window, only *barely* hitting the 0.3 s stride at a tuned no-margin
+point. Two prior speed attempts failed structurally: BandedSchurSolver
+(`RESEARCH_NOTES §8`, numerically dead at cond(H) ~ 5.5e10) and parameter tuning
+(`§9b`, the iteration floor / window wall). The standing fix in docs + paper is
+**incremental smoothing (iSAM2)**: the single open `ROADMAP` item and the named
+future-work deployment path (`conclusion.tex:48`, `results.tex:96-100`).
+
+## 2. Why iSAM2 is feasible here (core premise, CONFIRMED in code)
+
+Despite the "cumulative SO(3)" naming, the C++ solver uses **basalt
+absolute-knot** splines with **strictly local support**: every radar/accel/gyro
+residual touches only `N_ORI=4` consecutive orientation knots + `N_POS=6`
+position CPs, *not* the left-triangular global coupling of the Python `R_base`
+incremental-Omega form. The factor graph is genuinely banded, so a Bayes-tree
+factorization stays small-clique.
+
+Confirmed 2026-06-25 in the spike: gtsam `linearize` of each factor yields
+Jacobian blocks of exactly the local support: radar `(1x30)` = 4 ori*3 + 6 pos*3;
+accel `(3x36)` = +6 bias; gyro `(3x18)` = 4 ori*3 + 6 bias.
+
+**The one global coupling is the single shared constant IMU bias** (connects to
+every IMU factor). This is the "shared global bias induces a Bayes-tree fill-in"
+the report flags (`results.tex:99`). The bias model is therefore the crux; the
+spike measures **both** variants (constant vs random-walk) and picks by clique
+size.
+
+## 3. Two verified caveats (raised in review, both TRUE) -> plan adapted
+
+Verified against Girod et al. 2024 (arXiv:2408.05764, the cited `girod2024brio`)
+and `methodology.tex:370-385`.
+
+**Girod's iSAM2 is well-conditioned by formulation, not because iSAM2 fixes
+conditioning.** Girod runs GTSAM iSAM2 over a *discrete-time* graph: one 15-dim
+keyframe (R,t,v,b_g,b_a) per radar frame at 8 Hz, IMU **preintegrated** (Forster)
+into one between-factor, **per-state random-walk biases**, solved in 40 ms / 10 s
+window on a Jetson Orin NX. Our system is the opposite on every axis
+(continuous-time B-spline, ~1000s of knots, per-sample **1 kHz** gyro/accel
+factors with lambda_g -> 62500 info/knot, single shared bias). Our cond(H) ~ 5.5e10
+comes from exactly these choices. We cannot adopt Girod's preintegration to dodge
+it: `RESEARCH_NOTES §3` shows preint degrades our orientation (0.96 -> 6.0 deg)
+because the per-sample gyro *is* the spline's bandwidth source.
+
+1. **Ill-conditioning is intrinsic and inherited.** Conditioning is a property
+   of the information matrix, not the optimizer; iSAM2 factorizes the same
+   information. It only changes the *failure mode*: iSAM2 eliminates small
+   band-bounded cliques and can use **QR** (cond(J) = sqrt(cond(H)) ~ 2.3e5,
+   comfortably double-precision) instead of the monolithic no-pivot banded
+   Cholesky that killed BandedSchur. So it is more likely to *survive*, but it
+   does not improve conditioning, soft-mode convergence, or stiffness.
+
+2. **FEJ becomes load-bearing, and our marginalization is "halfway" there.**
+   Our nullspace is absolute position + yaw. The Ceres SW survives without FEJ
+   only because it re-solves each window from scratch (washing out nullspace
+   accumulation over short 18--26 s missions) and freezes the prior information
+   S at marginalization time. iSAM2's **fluid relinearization** removes the first
+   protection: it keeps and incrementally updates linearizations. The paper
+   states the gap outright: "We do not employ FEJ ... We do not claim this
+   re-centering preserves consistency across relinearizations ... left to future
+   work." The Markov-blanket factor-selection (Prop 1) + frozen-S is the
+   structural half; the missing half is **pinning the linearization points** of
+   the marginalized-coupled boundary + bias variables (FEJ). Tested data-driven
+   (FEJ on/off vs NEES) at the Phase-0 gate; implemented in Phase 2 if needed.
+
+## 4. Phase plan + GATE
+
+- **Phase 0 (Python gtsam spike, gated)** on slow_racing. Reuses
+  `generated_jacobians.py` residuals + basalt-exact spline primitives.
+- **GATE (all must hold):** accuracy within 5--10% of the Ceres SW headline
+  (settled 0.293 m / 1.53 deg, live 0.31 m / 1.97 deg); **bounded clique size**
+  (constant in trajectory length; picks the bias model); **no conditioning
+  failures** (try QR); **NEES-calibrated** on the observable subspace with FEJ
+  on/off; **incremental timing trend** beats batch re-solve.
+- If the gate fails: write a post-mortem, stop, keep the Ceres SW.
+- **Phase 1** C++ `gtsam::NoiseModelFactorN` (reuse `factors/analytic/*` math),
+  ctest vs numericalDerivative + Ceres parity.
+- **Phase 2** C++ `IsamSlidingWindowSolver` (sibling of `SlidingWindowSolver`,
+  same API), `IncrementalFixedLagSmoother`, FEJ pinning if gated, `--isam` flag.
+- **Phase 3** 3-bag accuracy + per-update timing vs the CLAUDE.md SW headline.
+
+## 5. GTSAM API facts (verified 2026-06-25, gtsam 4.2.1)
+
+- `gtsam.CustomFactor(noise, keys, error_fn)` present. `error_fn(this, values, H)`
+  returns the **unwhitened** residual; fills `H[i] = jacobian` (dim_res x
+  dim_tangent_i) when `H is not None`. The noise model whitens.
+- **`Rot3.retract` is RIGHT-mult: `R.retract(xi) == R * Exp(xi)`** (verified).
+  Identical to Ceres/Sophus, so the basalt-left -> gtsam-right bridge is
+  `J_right = J_left * R(knot)` (the existing `spline_jacobians.h` math).
+- **`IncrementalFixedLagSmoother` lives in `gtsam_unstable`** (importable;
+  NOT top-level `gtsam`). Also `BatchFixedLagSmoother`,
+  `FixedLagSmootherKeyTimestampMap`. Constructs as `(lag, ISAM2Params)`; has
+  `update`, `calculateEstimate`. `ISAM2.marginalizeLeaves` is NOT exposed in
+  Python, so the smoother is the marginalization path.
+- `ISAM2Params.setFactorization('QR'|'CHOLESKY')` exists (Caveat-1 mitigation).
+- `gtsam.numericalDerivative` is NOT exposed in Python; the spike uses an
+  on-manifold finite-difference checker instead.
+
+## 6. Convention crib (must match the C++ solver exactly)
+
+- Orientation knots: **absolute** rotations, quaternion **[x,y,z,w]** (Sophus
+  order). gtsam variable = `Rot3`.
+- Position: quintic (degree 5, N_POS=6) uniform B-spline; CP = Vector3 / Point3.
+- `UniformBSpline` (lib/bspline_utils.py) is **0-based** (knots = arange*dt), so
+  evaluate at `t_rel = t_abs - t_ref`; its clamping matches C++ `pos_index`.
+- SO(3) eval: uniform cubic **cumulative** blending lam(u) (closed form in
+  `spline_factors.cumulative_cubic`, matches `NonUniformSO3Spline.evaluate` /
+  basalt to 8e-8 rad). Active ori knots `[k-3..k]` with
+  `k = clamp(int(t_rel/dt_ori), 3, n_ori-1)`, `u=(t_rel-k*dt_ori)/dt_ori`.
+- Extrinsic `R_radar_to_body`: **ZYX**, `Rz*Ry*Rx` (`rotation_matrix_from_euler`
+  == C++ `ExtrinsicConfig::R_radar_to_body`, verified). Spike LOCKS extrinsics at
+  the C++-solved pitch.
+- Residual models: reuse `codegen/generated_jacobians.py` (same SymForce
+  derivation as the C++ analytic factors). **Rotations passed as `gj.Rot3` shim
+  objects** (`.data` = quat xyzw), NOT 3x3 matrices; use
+  `gj.Rot3.from_rotation_matrix(R)`. Radar `r = v_meas - v_pred`,
+  `v_pred = -dot(u_body, v_ant)` (lever arm); accel `z - R^T(a_world-g) - b_a`;
+  gyro `z - omega - b_g` (dr/domega = -I, verified).
+
+## 7. Spike artifacts (`analysis/isam_spike/`)
+
+- `capture_problem.py`: monkeypatches `validate_live_solver._solve_cpp` to dump
+  the EXACT batch problem (init knots, post-RANSAC radar, IMU, heading, full cfg,
+  C++-solved trajectory) to `_cache/<bag>_batch.npz`. Non-invasive; the real
+  batch solve still runs (reference: slow_racing C++ batch = 0.199 m / 1.077 deg).
+- `spline_factors.py`: `Problem` (loads npz, index/basis machinery, initial
+  gtsam `Values`), spline primitives, and `make_{radar,accel,gyro}_factor`
+  (CustomFactor + retract-consistent FD Jacobians). FD Jacobians are correct by
+  construction w.r.t. gtsam variables; Phase 1 swaps to the analytic chain for
+  the C++ port (the spike needs correct Jacobians, not fast ones).
+- `test_phase0a.py`: primitives vs basalt reference (8e-8 rad), derivative
+  consistency, factor build/evaluate, end-to-end gtsam `linearize`. PASS.
+
+Phase 0a status: **DONE** (scaffold builds, evaluates, linearizes with correct
+local sparsity). Next: Phase 0b batch parity (sub-window solve vs the C++
+optimum; Python FD makes full-trajectory solve intractable, so use a sub-window;
+absolute timing is unrepresentative until C++ in Phase 3).
