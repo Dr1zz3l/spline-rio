@@ -41,7 +41,7 @@ The principal contributions are:
 
 We believe the work fits T-RO's standards for thoroughness and rigor: the system is
 released with **code and datasets for independent, deterministic reproduction**
-(github.com/Dr1zz3l/radar-iwr6843-driver), every hyperparameter is disclosed, the external
+(github.com/Dr1zz3l/spline-rio), every hyperparameter is disclosed, the external
 baselines are faithfully reproduced, and the limitations and negative results are reported
 in full. A supplementary video accompanies the submission.
 

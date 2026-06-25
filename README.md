@@ -87,8 +87,8 @@ metrics by `≤5%`).
 
 ### 0. Setup
 ```bash
-git clone https://github.com/Dr1zz3l/radar-iwr6843-driver
-cd radar-iwr6843-driver
+git clone https://github.com/Dr1zz3l/spline-rio
+cd spline-rio
 cd analysis && uv pip install -r requirements.txt && cd ..          # Python env
 cd rio_solver_cpp && mkdir -p build_release && cd build_release \
   && cmake -DCMAKE_BUILD_TYPE=Release .. && cmake --build . -j"$(nproc)" && cd ../..   # C++ Ceres solver
