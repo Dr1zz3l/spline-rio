@@ -352,11 +352,36 @@ sweep pinned the cause -- and it was NOT FEJ/marginalization:
     (extra_iters trades the 65ms->220ms; the coarser deployment dt_pos configs
     leave more margin, and "iterate only when needed" is an obvious optimization.)
 
-**Phase 2 status: DONE for slow_racing -- backend works, matches batch accuracy,
-real-time, bounded.** Remaining: Phase 3 (fast_racing + backflips captures +
-configs + 3-bag benchmark), `--isam` flag in the driver, optional extra_iters
-auto-tuning. The two iSAM2 risks (conditioning, bounded cost) and the accuracy
-question are all now positively resolved.
+**Phase 2 status: DONE -- backend works, matches batch accuracy, real-time, bounded.**
+
+## Phase 3 progress (driver integration + multi-bag, mocap eval)
+
+`--isam` flag wired into `validate_live_solver.py` (`_solve_cpp_isam`): feeds
+NON-overlapping strides to `rio_isam.IsamSolver`, returns a TrajectoryState for
+the STANDARD mocap eval. Config via the usual `--set` (lambda_heading, extra_iters,
+window_duration=lag, dt_pos/dt_ori, ...). Run:
+```
+validate_live_solver.py <bag> --mocap-yaw --cpp --isam --no-plot \
+  --set lambda_heading=10 --set window_duration=1.5 --set extra_iters=3
+```
+
+**Racing-bag results (mocap RMSE, settled, through the real harness):**
+  | bag | iSAM2 | Ceres batch | Ceres SW (deployed) | iSAM2 ms/update |
+  |---|---|---|---|---|
+  | slow_racing | **0.165 m / 1.39 deg** | 0.199 / 1.08 | 0.293 / 1.53 settled | 202 (313 max) |
+  | fast_racing | **0.604 m / 2.54 deg** | 0.641 / 2.46 | 0.312 / 2.35 settled | 236 (369 max) |
+  - iSAM2 MATCHES the Ceres batch on both racing bags at real-time, and BEATS the
+    deployed Ceres SW on slow_racing (both accuracy AND speed: 202ms vs ~700ms).
+  - fast_racing matches batch; the SW's better settled pos (0.31m) comes from its
+    bag-specific deployment tuning (dt_pos=40ms, locked pitch, universal weighting)
+    which iSAM2 can also take via --set (not yet swept).
+
+**Remaining Phase 3:** backflips (needs the universal weighting ported:
+omega-adaptive gyro, radar/accel omega-soft-gates, radar z-bias -- the features
+that make the 10 rad/s flips work; the conditioning stress case); per-bag config
+sweep to match the SW deployment tuning; extra_iters auto-tuning (iterate only
+when residual high -> reclaim the 65->200ms). Backend correctness/timing on the
+racing regime is DONE.
 
 ## Phase 0 verdict: PROCEED to the C++ port (Phases 1-3), with random-walk bias
 and FEJ as firm requirements.

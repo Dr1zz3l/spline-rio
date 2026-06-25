@@ -16,7 +16,8 @@ import rio_isam
 import spline_factors as sf
 from scipy.spatial.transform import Rotation
 
-NPZ = os.path.join(HERE, '_cache', 'slow_racing_best_velocity_batch.npz')
+BAG = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith('-') else 'slow_racing_best_velocity'
+NPZ = os.path.join(HERE, '_cache', f'{BAG}_batch.npz')
 STRIDE = 0.3
 
 

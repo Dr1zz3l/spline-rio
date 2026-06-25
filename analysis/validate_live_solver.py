@@ -656,6 +656,111 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
     ), live_snapshots
 
 
+# ==================== C++ iSAM2 fixed-lag bridge (--isam) ====================
+
+def _solve_cpp_isam(initial_state, solver_radar_frames, imu_data,
+                    extrinsics_cfg, solver_cfg, heading_priors=None):
+    """GTSAM IncrementalFixedLagSmoother backend (rio_isam). Feeds NON-overlapping
+    strides; the lag handles the window. Returns a TrajectoryState for the standard
+    mocap eval. See documentation/ISAM2_MIGRATION.md."""
+    import sys as _sys, os as _os, time as _time
+    for d in [_os.path.join(_os.path.dirname(__file__), '..', 'rio_solver_cpp', 'build_release'),
+              _os.path.dirname(__file__)]:
+        d = _os.path.abspath(d)
+        if d not in _sys.path:
+            _sys.path.insert(0, d)
+    import rio_isam
+
+    ori_spline = initial_state.ori_spline
+    pos_bspline = initial_state.pos_bspline
+    t_ref = pos_bspline.t_ref
+    all_pos_cps = pos_bspline.control_points.copy()
+    all_ori_quats = Rotation.from_matrix(ori_spline._base_rotations).as_quat()
+    biases = np.concatenate([initial_state.acc_bias, initial_state.gyr_bias])
+
+    cfg = rio_isam.IsamConfig()
+    cfg.dt_pos = solver_cfg.get('dt_pos', 0.005)
+    cfg.dt_ori = solver_cfg.get('dt_ori', 0.008)
+    cfg.lambda_accel = solver_cfg.get('lambda_accel', 0.01)
+    cfg.lambda_gyro = solver_cfg.get('lambda_gyro', 4.0)
+    cfg.huber_delta = solver_cfg.get('huber_delta', 1.0)
+    cfg.lambda_snap_pos = solver_cfg.get('lambda_snap_pos', 2e-5)
+    cfg.lambda_ori_accel = solver_cfg.get('lambda_ori_accel', 0.1)
+    cfg.lambda_heading = solver_cfg.get('lambda_heading', 10.0)
+    cfg.lambda_bias_prior = solver_cfg.get('lambda_bias_prior_accel', 10000.0)
+    cfg.min_range = solver_cfg.get('min_range', 0.2)
+    cfg.lag = solver_cfg.get('window_duration', 1.5)
+    cfg.extra_iters = int(solver_cfg.get('extra_iters', 3))
+    cfg.bias_rw_sigma = solver_cfg.get('bias_rw_sigma', 1e-3)
+
+    ext = rio_isam.ExtrinsicConfig()
+    euler = extrinsics_cfg.get('rotation_euler_deg', [180.0, 25.5, 0.0])
+    ext.roll_deg, ext.pitch_deg, ext.yaw_deg = euler
+    tb = extrinsics_cfg.get('translation_body_m', [0.08, 0.02, -0.01])
+    ext.tx, ext.ty, ext.tz = tb
+
+    solver = rio_isam.IsamSolver(cfg, ext)
+    solver.initialize(np.asarray(all_pos_cps, float), np.asarray(all_ori_quats, float),
+                      np.asarray(biases, float), float(t_ref))
+
+    cpp_radar_all = []
+    for f in solver_radar_frames:
+        n = f.num_points()
+        if n == 0:
+            continue
+        pts = np.zeros((n, 5))
+        pts[:, :3] = f.positions[:n]
+        pts[:, 3] = f.velocities[:n] if f.velocities is not None else 0.0
+        pts[:, 4] = f.intensities[:n] if f.intensities is not None else 0.0
+        cpp_radar_all.append((float(f.timestamp), pts))
+    imu_np = np.zeros((len(imu_data), 7))
+    for i, s in enumerate(imu_data):
+        imu_np[i, 0] = s.timestamp
+        imu_np[i, 1:4] = s.linear_acceleration
+        imu_np[i, 4:7] = s.angular_velocity
+    imu_t = imu_np[:, 0]
+    all_heading = ([(float(t), float(np.arctan2(R[1, 0], R[0, 0]))) for t, R in heading_priors]
+                   if heading_priors else [])
+
+    stride = solver_cfg.get('window_stride', 0.3)
+    t_lo = cpp_radar_all[0][0] if cpp_radar_all else imu_t[0]
+    t_hi = cpp_radar_all[-1][0] if cpp_radar_all else imu_t[-1]
+    print(f"  [--isam] lag={cfg.lag:.1f}s stride={stride:.2f}s extra_iters={cfg.extra_iters} "
+          f"lambda_h={cfg.lambda_heading:g}")
+    t_prev, t_now, dts = t_lo, t_lo + stride, []
+    while t_now <= t_hi + 1e-6:
+        m = (imu_t > t_prev) & (imu_t <= t_now)
+        imu_blk = imu_np[m]
+        if imu_blk.shape[0] == 0:
+            t_prev, t_now = t_now, t_now + stride
+            continue
+        radar_list = [(t, pts) for (t, pts) in cpp_radar_all if t_prev < t <= t_now]
+        heading_blk = [(t, y) for (t, y) in all_heading if t_prev < t <= t_now]
+        dts.append(solver.update(radar_list, imu_blk, heading_blk, float(t_now)))
+        t_prev, t_now = t_now, t_now + stride
+    if dts:
+        tail = dts[len(dts) // 3:]
+        print(f"  [--isam] {len(dts)} strides, {1000*np.mean(tail):.0f}ms/update mean "
+              f"({1000*np.max(tail):.0f}ms max), active vars {solver.num_active()}")
+
+    ori_full = all_ori_quats.copy()
+    pos_full = all_pos_cps.copy()
+    for idx, q in solver.ori_knots():
+        ori_full[idx] = q
+    for idx, c in solver.pos_cps():
+        pos_full[idx] = c
+    fb = solver.biases()
+
+    new_ori_spline = CumulativeSO3BSpline.from_rotation_samples(
+        Rotation.from_quat(ori_full).as_matrix(), dt=ori_spline.dt, t_ref=ori_spline.t_ref)
+    new_pos_bspline = UniformBSpline(pos_full, pos_bspline.degree, pos_bspline.dt)
+    new_pos_bspline.t_ref = t_ref
+    return TrajectoryState(
+        pos_bspline=new_pos_bspline, ori_spline=new_ori_spline,
+        acc_bias=np.array(fb[:3]), gyr_bias=np.array(fb[3:]),
+        radar_extrinsic_delta=np.zeros(3))
+
+
 # ==================== Config ====================
 _cfg = load_config()
 BAGS = _cfg['bags']['bags']
@@ -1247,6 +1352,7 @@ def main():
     USE_GNC = '--gnc' in sys.argv
     USE_CPP = '--cpp' in sys.argv
     USE_SLIDING_WINDOW = '--sliding-window' in sys.argv
+    USE_ISAM = '--isam' in sys.argv   # GTSAM IncrementalFixedLagSmoother backend
     # Accel-bias init is SENSOR-ONLY by default (gravity-aligned scalar
     # correction during the stationary segment; no external attitude).
     # --mocap-accel-bias re-enables the legacy MoCap-attitude full-3D seed
@@ -1964,7 +2070,16 @@ def main():
     solver_lambda_accel = 0.0 if USE_PREINTEGRATE else LAMBDA_ACCEL
 
     live_snapshots = []  # populated only for --sliding-window; used in live RMSE eval below
-    if USE_CPP and USE_SLIDING_WINDOW:
+    if USE_ISAM:
+        optimized_state = _solve_cpp_isam(
+            initial_state=initial_state,
+            solver_radar_frames=solver_radar_frames,
+            imu_data=imu_data,
+            extrinsics_cfg=_EXTRINSICS_CFG,
+            solver_cfg=_SOLVER_CFG,
+            heading_priors=heading_priors if heading_priors else None,
+        )
+    elif USE_CPP and USE_SLIDING_WINDOW:
         optimized_state, live_snapshots = _solve_cpp_sliding_window(
             initial_state=initial_state,
             solver_radar_frames=solver_radar_frames,
