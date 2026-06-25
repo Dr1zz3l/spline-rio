@@ -143,8 +143,7 @@ non-monotone sensitivity, robust losses on the prior acting backwards)
 is a useful \emph{diagnostic for marginalization inconsistency} in
 sliding-window estimators generally.
 \autoref{tab:prior_scale} shows the sweep measured with the
-inconsistent prior; \autoref{fig:prior_scale}
-plots the orientation sweep.
+inconsistent prior.
 
 \begin{table}[t]
 \centering
@@ -185,9 +184,9 @@ non-monotone slow-racing orientation maximum at $10^{-6}$
 The information asymmetry in the inconsistent $S$ (orientation
 eigenvalues $\sim$$5.5{\times}10^{14}$, position $\sim$$10^4$) meant
 no single scalar could address both modalities; eigenvalue clipping
-and Cauchy robustification of the prior also failed (the latter
-counter-productively down-weights the bag that needs the prior most,
-because aggressive dynamics produce larger prior residuals).
+and Cauchy robustification also failed (Cauchy down-weights the bag
+that needs the prior most, since aggressive dynamics produce larger
+prior residuals).
 
 \textbf{Resolution.}
 With the Markov-blanket factor-selection rule of \autoref{sec:sw},
@@ -203,19 +202,6 @@ prior-consistency effect at a fixed pre-\ac{ransac} operating point; the
 (\autoref{tab:sw}).  Stride-boundary position
 jumps in the settled trajectory also disappear (settled velocity \ac{rmse}
 0.89\,$\to$\,0.21\,m/s on slow racing).
-
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=\columnwidth]{figures/prior_scale_sensitivity.pdf}
-  \caption{Live-edge orientation (left) and position (right, dual
-    y-axes) \ac{rmse} vs.\ \texttt{marg\_prior\_scale}.  Orientation
-    (left): slow racing shows a local maximum at $10^{-6}$;
-    fast racing orientation is insensitive to scale.
-    Position (right): slow racing worsens monotonically with
-    increasing scale while fast racing improves sharply:
-    the two bags require opposite scale regimes.}
-  \label{fig:prior_scale}
-\end{figure}
 
 \subsection{Other Negative Results}
 \label{sec:negative}

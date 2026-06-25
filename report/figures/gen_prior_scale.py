@@ -45,7 +45,7 @@ C_SLOW = '#1f77b4'  # blue
 C_FAST = '#d62728'  # red
 
 # ── Plot ────────────────────────────────────────────────────────────────────
-fig, (ax_ori, ax_pos) = plt.subplots(1, 2, figsize=(9, 4))
+fig, (ax_ori, ax_pos) = plt.subplots(1, 2, figsize=(9, 3.3))
 
 # --- Orientation panel (both series, shared axis) ---
 ax_ori.semilogx(slow_scales, slow_ori, 'o-', color=C_SLOW,

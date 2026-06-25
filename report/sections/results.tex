@@ -15,7 +15,8 @@ The radar-to-body pitch is a fixed mount angle, measured at
 rather than estimate it online because it is only weakly observable from
 Doppler: the self-calibration is init-dependent and orientation \ac{rmse} is
 pitch-insensitive (\autoref{sec:backflips}).  The batch estimate is
-shown for reference (dashed) in the \ac{rpe} curves (\autoref{fig:rpe}).
+shown for reference (dashed) in the error-vs-time curves
+(\autoref{fig:error_time}).
 
 \subsection{Sliding Window: Settled vs.\ Live}
 \label{sec:sw_results}
@@ -75,29 +76,28 @@ that inflated the settled velocity derivative).
 We report all tables, plots, and the cross-validation of
 \autoref{sec:baselines} at a single \emph{evaluation configuration}
 (3\,s window, 0.3\,s stride), chosen for best accuracy and cross-table
-consistency rather than as a deployment claim: per-window solve time is set
+consistency, not as a deployment claim: per-window solve time is set
 by window length and knot density, not the stride, and at 3\,s only fast
 racing approaches the 0.3\,s budget on a laptop CPU.  Real time is
-nonetheless within reach.  Pushing the window and stride to \emph{barely}
-reach it per regime costs almost nothing (\autoref{tab:realtime}):
-fast is real-time at the 0.3\,s stride with a 2\,s
-window, slow and backflips at a 0.5\,s stride (1.5\,s and 2\,s windows),
-live accuracy stays within run-to-run noise of the evaluation configuration
-(backflips even improves, $6.35\to5.56\degree$), and racing remains under
-1\% drift.  Solve times carry $\sim$20\% run-to-run variance, so the strides
-are taken with margin.
+nonetheless within reach: pushing the window and stride to \emph{barely}
+reach it per regime (\autoref{tab:realtime}) costs almost nothing.
+Fast is real-time at the 0.3\,s stride with a 2\,s window, slow and
+backflips at a 0.5\,s stride (1.5\,s and 2\,s windows); slow racing and
+backflips stay within run-to-run noise (backflips even improves,
+$6.35\to5.56\degree$), and fast-racing position degrades only modestly,
+under 1\% drift ($0.88\to0.98\%$).  Solve times carry $\sim$20\% variance,
+so the strides are taken with margin.
 
-Deployment, though, asks for more than \emph{barely} real-time.  This
-estimator is designed as one factor source in a larger fusion graph
-(\autoref{sec:nees}), sharing compute with a parallel visual or lidar
-pipeline, so a tuned, no-margin operating point on a dedicated CPU is a
-feasibility demonstration, not a deployment budget.  The margin must come
-from the back-end: a banded Schur factorization is numerically unstable at
-our conditioning, so the route is incremental smoothing, not batch
-re-solve.  Girod et al.~\cite{girod2024brio} reach comfortable onboard rates
-with exactly such an iSAM2 back-end (on a discrete-time graph); porting our
-continuous-time B-spline onto it, where the shared global bias induces a
-Bayes-tree fill-in, is the deployment path we leave to future work.
+Deployment asks for more than \emph{barely} real-time.  As one factor source
+in a larger fusion graph (\autoref{sec:nees}) sharing compute with a parallel
+visual or lidar pipeline, a tuned, no-margin point on a dedicated CPU is a
+feasibility demonstration, not a deployment budget.  The margin must come from
+the back-end, and since a banded Schur factorization is numerically unstable
+at our conditioning, the route is incremental smoothing, not batch re-solve:
+Girod et al.~\cite{girod2024brio} reach comfortable onboard rates with exactly
+such an iSAM2 back-end (discrete-time graph), and porting our continuous-time
+B-spline onto it, where the shared global bias induces a Bayes-tree fill-in,
+is the deployment path we leave to future work.
 The dominant cost reductions were: the consistent prior removing
 the marginalization re-linearization ($\sim$0.6\,s), coarsening
 $\Delta t_p$ from 5\,ms to 40\,ms for aggressive flight (which
@@ -157,32 +157,6 @@ Regime & Win./str.\ (s) & Solve (s) & Live pos (m) & Live ori (\degree) \\
     orientation errors spike at high-speed, high-dynamics sections.}
   \label{fig:error_time}
 \end{figure*}
-
-\subsection{Relative Pose Error and Position Drift}
-\label{sec:rpe}
-
-\autoref{fig:rpe} shows the KITTI-style translational \ac{rpe} as a
-function of segment length for racing bags (batch and SW live) and
-backflips (batch only).  At longer segments ($\geq 20$\,m) the global
-B-spline smoother reduces error sharply: slow racing batch reaches
-\SI{1.08}{\percent} at 20\,m and \SI{1.02}{\percent} at 40\,m; fast
-racing stabilises at $\approx$\SI{2.2}{\percent} beyond 20\,m.  At
-short segments ($\leq$10\,m) errors are larger (3--8\% for racing)
-because the 11\,Hz radar provides only a handful of Doppler
-measurements per segment and the global optimizer cannot smooth over
-sub-second intervals, a constraint of the radar rate, not a spline
-artifact.  Global position drift (\%) remains the headline deployment
-metric (live edge); \ac{rpe} is the complementary per-segment view.
-
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=\columnwidth]{figures/rpe_drift.pdf}
-  \caption{KITTI-style translational \ac{rpe} (end-point displacement error
-    as \% of segment length) vs.\ accumulated GT distance.  Left:
-    racing bags, batch (solid) and SW live edge (dashed).  Right:
-    backflips batch.}
-  \label{fig:rpe}
-\end{figure}
 
 \subsection{Radar Contribution}
 Radar is essential.  Disabling it (\texttt{-{}-no-radar}) collapses the
@@ -320,7 +294,7 @@ either method: their stack runs near sensor rate on dense clouds, ours
 spends \SI{0.35}{}--\SI{0.70}{\second} per window on sparse Doppler,
 an accuracy-versus-latency trade.
 
-\begin{table*}[t]
+\begin{table}[t]
 \caption{Cross-validation on the public ICINS-2021 flight
 datasets~\cite{doer2021yrio}, all systems under our causal protocol
 (live estimate, start-anchored alignment).
@@ -337,16 +311,14 @@ published figures.}
 \label{tab:baselines}
 \centering
 \footnotesize
-% (a) reports drift [\% path] = ATE / trajectory length: normalized across the
-% four different path lengths, easier to read than meters, and the exact metric
-% (b) decomposes into horizontal/vertical.  Absolute ATE [m] is preserved in
-% (b)'s whole-traj column for the published cross-check.  Both subtables fill
-% \textwidth (via \extracolsep{\fill}) so the float leaves no left/right
-% whitespace and they share one axis.
-\setlength{\tabcolsep}{6pt}%
-\begin{tabular*}{\textwidth}{@{\extracolsep{\fill}}lccc}
+% Single-column table: (a) headline (drift [\% path]) at \footnotesize, (b)
+% 9-column decomposition at \scriptsize so both fit \columnwidth.  Both fill
+% the column via \extracolsep{\fill} so they share one axis with no whitespace.
+% Absolute ATE [m] lives in (b)'s whole-traj column for the published cross-check.
+\setlength{\tabcolsep}{3pt}%
+\begin{tabular*}{\columnwidth}{@{\extracolsep{\fill}}lccc}
 \toprule
-\multicolumn{4}{l}{\textit{(a)~Headline: drift [\% path] / velocity [m/s] / orientation [\degree]}}\\
+\multicolumn{4}{@{}l}{\textit{(a)~drift [\% path] / velocity [m/s] / orientation [\degree]}}\\
 \midrule
 Flight (path) & ekf-rio & ekf-yrio & Ours \\
 \midrule
@@ -357,64 +329,62 @@ Flight (path) & ekf-rio & ekf-yrio & Ours \\
 \bottomrule
 \end{tabular*}
 
-\vspace{5pt}
+\vspace{4pt}
 
-\setlength{\tabcolsep}{5pt}%
-\begin{tabular*}{\textwidth}{@{\extracolsep{\fill}}lcccccccc}
+{\scriptsize
+\setlength{\tabcolsep}{1.5pt}%
+\begin{tabular*}{\columnwidth}{@{\extracolsep{\fill}}lcccccccc}
 \toprule
-\multicolumn{9}{l}{\textit{(b)~Decomposition}}\\
+\multicolumn{9}{@{}l}{\textit{(b)~Decomposition}\quad(systems: ekf-rio / ekf-yrio / Ours)}\\
 \midrule
- & \multicolumn{3}{c}{Roll/pitch \ac{rmse} [\degree]} & \multicolumn{2}{c}{Our drift [\% path]} & \multicolumn{3}{c}{Whole-traj.\ \ac{ate} [m]} \\
+ & \multicolumn{3}{c}{Roll/pitch [\degree]} & \multicolumn{2}{c}{Our drift [\%]} & \multicolumn{3}{c}{Whole ATE [m]} \\
 \cmidrule(lr){2-4}\cmidrule(lr){5-6}\cmidrule(lr){7-9}
-Flight & ekf-rio & ekf-yrio & Ours & horiz.\ & vert.\ & ekf-rio & ekf-yrio & Ours \\
+Fl.\ & rio & yrio & Ours & hor.\ & ver.\ & rio & yrio & Ours \\
 \midrule
 1 & 0.24 & 0.25 & 0.25 & 0.16 & 0.63 & 0.87 & 0.23 & 0.46 \\
 2 & 0.57 & 0.59 & 0.55 & 0.14 & 1.13 & 0.13 & 0.10 & 0.24 \\
 3 & 0.25 & 0.26 & 0.27 & 0.30 & 1.28 & 0.36 & 0.26 & 0.76 \\
 4 & 0.74 & 0.74 & 0.74 & 0.26 & 1.15 & 0.30 & 0.15 & 0.46 \\
 \bottomrule
-\end{tabular*}
+\end{tabular*}}
 
 \vspace{2pt}
 
-\parbox{\textwidth}{\raggedright\footnotesize Prefilter \emph{disabled} (Huber-only): our vertical drift $12$--$15\%$; whole-traj.\ \ac{ate} $9.57/2.88/10.86/5.48$\,m (flights~1--4).\par}
-\end{table*}
+\parbox{\columnwidth}{\raggedright\scriptsize Prefilter \emph{disabled} (Huber-only): our vertical drift $12$--$15\%$; whole-traj.\ \ac{ate} $9.57/2.88/10.86/5.48$\,m (flights~1--4).\par}
+\end{table}
 
 \subsection{Output Covariance Consistency (NEES)}
 \label{sec:nees}
 A factor source for a larger fusion graph must report \emph{honest}
-covariance.  We extract the live-edge joint covariance of
-$(\vv_w, \vR)$ each window from the converged problem
-(\texttt{ceres::Covariance} over the active support control points,
-tangent space, marginalization prior included) and compute the
-normalized estimation error squared (\ac{nees}) against \ac{mocap};
-for a consistent estimator the \ac{nees} of each 3-DoF block is
-$\chi^2_3$-distributed with mean~3.
-On the racing flights, summarized by the per-window median for
-\emph{both} channels, the \emph{orientation} \ac{nees} is $1.2$--$2.6$
-and the velocity \ac{nees} $1.4$--$5.4$ (consistent value~3):
-orientation is essentially calibrated (slightly conservative on slow
-racing, near-exact on fast, as the weights approximate effective-noise
-whitening), and velocity is calibrated to mildly overconfident.  We
-report the median, not the mean, because the means (velocity especially)
-are inflated by a few windows where the finite-difference \ac{mocap}
-velocity reference is unreliable.  Both are \emph{calibration checks}, not powered
-hypothesis tests: consecutive windows are temporally correlated, so the
-$\chi^2_3$ mean-3 expectation holds only heuristically.  On backflips the
-orientation covariance is overconfident
-by ${\sim}3\times$ in standard deviation (unmodeled flip-time error) and
-only 6 of 50 windows survive the ground-truth quality mask
-(\autoref{sec:setup}), too few to support a consistency statement, so
-we report it as a caveat rather than a result.  Deployment recipe: inflate the emitted covariance per
-regime ($1\times$ gentle, $3\times$ aggressive), or calibrate online
-from innovations.
+covariance.  Each window we extract the live-edge joint covariance of
+$(\vv_w, \vR)$ from the converged problem (\texttt{ceres::Covariance},
+active support control points, tangent space, marginalization prior
+included) and compute the \ac{nees} against \ac{mocap}; for a consistent
+estimator each 3-DoF block is $\chi^2_3$-distributed with mean~3.
+On the racing flights, by per-window median for \emph{both} channels, the
+\emph{orientation} \ac{nees} is $1.2$--$2.6$ and the velocity \ac{nees}
+$1.4$--$5.4$ (consistent value~3): orientation is essentially calibrated
+(slightly conservative on slow racing, near-exact on fast, as the weights
+approximate effective-noise whitening) and velocity mildly overconfident.
+We report the median because the means (velocity especially) are inflated
+by a few windows where the finite-difference \ac{mocap} velocity reference
+is unreliable.  Both are \emph{calibration checks}, not powered hypothesis
+tests: consecutive windows are temporally correlated, so the $\chi^2_3$
+mean-3 expectation holds only heuristically.  On backflips the orientation
+covariance is overconfident by ${\sim}3\times$ in standard deviation
+(unmodeled flip-time error), and only 6 of 50 windows survive the
+ground-truth quality mask (\autoref{sec:setup}), too few for a consistency
+statement, so we report it as a caveat.  Deployment recipe: inflate the
+emitted covariance per regime ($1\times$ gentle, $3\times$ aggressive), or
+calibrate online from innovations.
 
 \subsection{Ablation Studies}
 \autoref{tab:ablations} summarizes key design choices.
 
 \begin{table}[t]
 \centering
-\caption{Selected Ablation Results (batch solver, slow\_racing unless noted)}
+\caption{Selected Ablation Results (batch solver, slow\_racing unless noted;
+  SW rows use the default 0.3\,s stride)}
 \label{tab:ablations}
 \small
 \setlength{\tabcolsep}{4pt}

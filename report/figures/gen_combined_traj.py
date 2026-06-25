@@ -62,7 +62,7 @@ PROJ = [(1, 0, 'X (m)'),
 
 # Row heights proportional to the vertical data range (X on top, Z below) so the
 # isometric (equal-aspect) boxes pack with little whitespace.
-fig, axes = plt.subplots(2, 3, figsize=(7.2, 3.1), sharex='col',
+fig, axes = plt.subplots(2, 3, figsize=(7.2, 2.45), sharex='col',
                          gridspec_kw={'height_ratios': [1.6, 1.0]})
 
 for col, (bag, title) in enumerate(BAGS):

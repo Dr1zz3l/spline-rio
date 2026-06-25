@@ -98,7 +98,7 @@ UNIV="--set marg_prior_scale=1.0 --set lambda_gyro_omega_sigma=4.0 --set lambda_
   --set omega_soft_sigma=4.0 --set accel_soft_sigma=8.0 --set radar_intensity_weight=1.0"
 ```
 
-### 1. Headline sliding-window results (Table II)
+### 1. Headline sliding-window results (Table III)
 ```bash
 # Slow racing -> 0.48 m/s / 1.97deg / 0.31 m (0.64%)
 ../.venv/bin/python3 validate_live_solver.py slow_racing_best_velocity \
@@ -116,8 +116,9 @@ UNIV="--set marg_prior_scale=1.0 --set lambda_gyro_omega_sigma=4.0 --set lambda_
   --set dt_ori=0.008 --set lock_gyro_bias=0 --set lambda_pos_init_prior=0.5 \
   --set radar_zbias_fixed=-1.5 --set-ext 'rotation_euler_deg=[180.0,27.5,0.0]'
 ```
-Each prints a settled-vs-live RMSE table (position/velocity/orientation, drift %),
-the KITTI RPE, and the per-window NEES covariance check.
+Each prints a settled-vs-live RMSE table (position/velocity/orientation, drift %)
+and the per-segment KITTI RPE.  Append `--set nees=1` for the covariance dump
+(see §3 NEES).
 
 ### 2. Batch solver + extrinsic self-calibration (Sec. VI-A)
 ```bash
@@ -126,19 +127,52 @@ the KITTI RPE, and the per-window NEES covariance check.
 ../.venv/bin/python3 validate_live_solver.py fast_racing_best_velocity --mocap-yaw --cpp   # 0.64 m / 2.5deg
 ```
 
-### 3. Figures (Fig. 1, 3-6)
+### 3. Figures + NEES
 ```bash
-# Re-run the Sec.1 (SW) and Sec.2 (batch) commands with  --save-arrays --no-plot  appended,
-# for all three bags (this writes plots/<bag>/live_solver/*.npz), then:
+# First re-run the Sec.1 (SW) and Sec.2 (batch) commands for ALL three bags with
+#   --save-arrays --no-plot  appended (writes plots/<bag>/live_solver/*.npz), then:
 cd ../report/figures
-../../.venv/bin/python3 gen_combined_traj.py     # Fig. 3  trajectory overlays
-../../.venv/bin/python3 gen_error_time.py        # Fig. 4  error-over-time
-../../.venv/bin/python3 gen_rpe.py               # Fig. 5  RPE + the drift/RPE summary table
-../../.venv/bin/python3 gen_prior_scale.py       # Fig. 6  prior-scale sweep (hardcoded sweep data)
+../../.venv/bin/python3 gen_combined_traj.py   # Fig. 3  trajectory overlays (MoCap vs SW live)
+../../.venv/bin/python3 gen_error_time.py      # Fig. 4  position/velocity/orientation error vs time
 cd ../../analysis
+# Fig. 1 (pipeline) and Fig. 2 (sliding-window marginalization) are TikZ, drawn inline in main.tex.
+```
+```bash
+# NEES output-covariance consistency (Sec. "Output Covariance Consistency"):
+# append --set nees=1 to a Sec.1 command to dump per-window covariance, then evaluate:
+../.venv/bin/python3 validate_live_solver.py slow_racing_best_velocity --mocap-yaw --cpp \
+  --sliding-window $UNIV --set max_iterations=12 --set lambda_heading=10.0 --set nees=1 --no-plot
+../.venv/bin/python3 nees_eval.py slow_racing_best_velocity   # orientation/velocity NEES vs chi2(3)
+```
+```bash
+# Supplementary (NOT paper figures — data preserved in the prior-scale table / repo):
+../../.venv/bin/python3 report/figures/gen_rpe.py          # per-segment KITTI RPE vs segment length
+../../.venv/bin/python3 report/figures/gen_prior_scale.py  # prior-scale sweep behind the Table VII data
 ```
 
-### 4. External cross-validation vs EKF-RIO baselines (Table III)
+### 4. Ablations (Table VI) and the real-time / window sweep (Table IV)
+```bash
+# Window-duration + per-regime real-time operating points (Table IV):
+../.venv/bin/python3 sweep_sw_params.py --mode window        # window in {1.0,1.5,2.0,2.5,3.0}s
+# ...or a single point, e.g. fast real-time (2.0 s window, 0.3 s stride):
+../.venv/bin/python3 validate_live_solver.py fast_racing_best_velocity --mocap-yaw --cpp \
+  --sliding-window $UNIV --set dt_pos=0.04 --set dt_ori=0.016 --set lock_extrinsics=1 \
+  --set-ext 'rotation_euler_deg=[180.0,27.5,0.0]' --set window_duration=2.0 --set window_stride=0.3
+
+# Each Table VI row toggles ONE knob on a Sec.1/Sec.2 command:
+#   IMU rate 1000 vs 200 Hz ........  --imu-hz 200
+#   IMU preintegration vs raw ......  --preintegrate   (or --set use_preintegration=1)
+#   Orientation reg: min-alpha .....  --set lambda_ori_accel=0.1   (default)
+#                    min-omega .....  --set lambda_ori_reg=0.001 --set lambda_ori_accel=0
+#   Marginalization: boundary-only .  --set marg_prior_scale=0     (vs the unscaled Schur default)
+#   Extrinsic pitch ................  batch frees pitch; add --set lock_extrinsics=1 to lock at 27.5 deg
+
+# Backflips elevation-bias (b) sweep + the RANSAC-vs-Huber rebench tables:
+( cd ../baselines && ./run_bsweep_fast_ransac.sh )                        # radar_zbias_fixed sweep
+( cd ../baselines && ./run_ransac_rebench_A.sh && ./run_ransac_rebench_B.sh )  # RANSAC vs Huber front-end
+```
+
+### 5. External cross-validation vs EKF-RIO baselines (Table V)
 ```bash
 cd ../baselines
 ./setup.sh                 # build the Doer/Trommer ekf-rio / ekf-yrio baselines (Docker)
@@ -147,7 +181,7 @@ cd ../baselines
 cd ../analysis             # see baselines/README.md for details
 ```
 
-### 5. Held-out generalization (Sec. VI-E)
+### 6. Held-out generalization (Sec. VI-E)
 ```bash
 # the SAME config, unmodified, on flights never used for tuning (use the Sec.1 fast/slow flags):
 ../.venv/bin/python3 validate_live_solver.py fast_racing_best_velocity_no_clustering \
@@ -158,7 +192,7 @@ cd ../analysis             # see baselines/README.md for details
 ( cd ../baselines && ./run_oldfw_ransac.sh )   # old-firmware (12x coarser Doppler) stress-tier bags
 ```
 
-### 6. Build the paper
+### 7. Build the paper
 ```bash
 cd ../report && latexmk -pdf main.tex          # -> main.pdf (12 pp)
 ```
