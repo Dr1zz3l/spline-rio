@@ -75,7 +75,9 @@ for col, (bag, title) in enumerate(BAGS):
                 ls='none', zorder=5)
         ax.set_ylabel(yl, labelpad=1)
         ax.grid(True, alpha=0.3)
-        ax.set_aspect('equal')
+        # equal aspect via data limits (not box) so every panel fills its cell
+        # to the same width -> shared x-ticks line up across the two rows
+        ax.set_aspect('equal', adjustable='datalim')
         ax.tick_params(length=2, pad=1.5)
         if row == 0:
             ax.set_title(title, fontweight='bold', pad=3)
