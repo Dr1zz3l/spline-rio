@@ -17,6 +17,9 @@
 Run: `validate_live_solver.py <bag> --mocap-yaw --cpp --isam --set lambda_heading=10
 --set window_duration=1.5 --set extra_iters=3` (+ per-bag extras: fast dt_pos=40ms
 locked-pitch; backflips the universal-weighting set + tether + z-bias).
+Generalization sanity (4th maneuver, no config change): circle bag runs cleanly at
+196ms -> 1.26m/0.55/3.59deg (higher drift = old-firmware 0.63m/s bin ~12x noisier
+radar + fast 5m/s circle; no SW/batch reference run -- just confirms it generalizes).
 
 **Headline: a real-time GTSAM incremental B-spline RIO backend that beats the Ceres
 SW on racing (accuracy AND speed) and matches it on backflips position/velocity.**
