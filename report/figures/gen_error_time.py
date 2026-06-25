@@ -49,7 +49,7 @@ matplotlib.rcParams.update({
 C_BATCH = '#d62728'
 C_LIVE  = 'darkorange'
 
-fig, axes = plt.subplots(len(BAGS), 3, figsize=(13, 3.2 * len(BAGS)))
+fig, axes = plt.subplots(len(BAGS), 3, figsize=(13, 2.65 * len(BAGS)))
 if len(BAGS) == 1:
     axes = axes[np.newaxis, :]
 

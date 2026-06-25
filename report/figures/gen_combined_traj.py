@@ -56,7 +56,7 @@ C_LIVE  = '#D55E00'   # vermillion (SW live edge, dashed)
 PROJ = [(0, 1, 'X (m)', 'Y (m)'),
         (1, 2, 'Y (m)', 'Z (m)')]
 
-fig, axes = plt.subplots(2, 3, figsize=(7.2, 4.15))
+fig, axes = plt.subplots(2, 3, figsize=(7.2, 3.7))
 
 for col, (bag, title) in enumerate(BAGS):
     bag_dir   = PLOTS_ROOT / bag / 'live_solver'
