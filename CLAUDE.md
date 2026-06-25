@@ -16,6 +16,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `documentation/ROADMAP.md` | Design-rationale **archive** (2026-06-11 audit, largely executed): the "ROADMAP Part X / N.M" targets that CLAUDE.md's inline comments reference. Open item: iSAM2 back-end |
 | `analysis/lib/rosbag_loader/README.md` | Rosbag loader API and ROS topic reference |
 | `rio_solver_cpp/README.md` | C++ Ceres solver: build instructions, Phase status, Python API |
+| `documentation/ISAM2_MIGRATION.md` | **GTSAM IncrementalFixedLagSmoother backend (branch `isam2-backend`): WORKING — beats the Ceres SW on racing (accuracy+speed), matches backflips pos/vel; backflips ori +4° = characterized FEJ freeze-vs-relinearize trade-off. Run via `--isam`. Vendored GTSAM in `rio_solver_cpp/gtsam_vendored_install/` (source-built, unstable+march=native).** |
+| `documentation/ALGO_IMPROVEMENTS.md` | Forward-looking algorithm-improvement brainstorm + tested-and-rejected ideas (radar smear negligible, per-chirp deskew dead, early-stop negative); open research items (selective FEJ, GP/WNOA, plane-mapping) |
 
 ## Project Overview
 

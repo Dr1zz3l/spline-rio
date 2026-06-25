@@ -1,11 +1,33 @@
 # iSAM2 / GTSAM Back-End Migration
 
-> **Status (2026-06-25): Phase 0 spike in progress on branch `isam2-backend`.**
-> Goal: replace the Ceres LM fixed-lag sliding window with a GTSAM
-> `IncrementalFixedLagSmoother` (iSAM2 core + timestamp marginalization) for a
-> real-time margin. Staged behind a de-risk **gate**; paper is frozen (no
-> `report/` edits). Plan file: `~/.claude/plans/ethereal-sniffing-hejlsberg.md`.
-> Companion auto-memory: `project_isam2_backend`.
+> **Status (2026-06-26): WORKING on branch `isam2-backend`.** Phases 0-2 done,
+> Phase 3 validated on all 3 bags. Goal: replace the Ceres LM fixed-lag sliding
+> window with a GTSAM `IncrementalFixedLagSmoother`. Paper frozen (no `report/`
+> edits). Plan: `~/.claude/plans/ethereal-sniffing-hejlsberg.md`. Memory:
+> `project_isam2_backend`.
+
+## FINAL SUMMARY (verified, mocap eval through validate_live_solver.py --isam)
+
+| bag | iSAM2 (pos / vel / ori) | reference | ms/update | verdict |
+|-----|-------------------------|-----------|-----------|---------|
+| slow_racing | **0.165m / 0.30 / 1.39deg** | SW 0.292/0.43/1.51 (win=1.5) | 202 | **iSAM2 BEATS SW on all 3** |
+| fast_racing | **0.574m / 0.227 / 2.27deg** | batch 0.641/-/2.46 | 88 (dt_pos=40ms) | matches batch, far faster |
+| backflips | 1.67m / 2.14 / 10.7deg | SW 1.56/3.54/6.32 (win=1.5) | 162 | pos/vel match; ori +4deg (FEJ trade-off) |
+
+Run: `validate_live_solver.py <bag> --mocap-yaw --cpp --isam --set lambda_heading=10
+--set window_duration=1.5 --set extra_iters=3` (+ per-bag extras: fast dt_pos=40ms
+locked-pitch; backflips the universal-weighting set + tether + z-bias).
+
+**Headline: a real-time GTSAM incremental B-spline RIO backend that beats the Ceres
+SW on racing (accuracy AND speed) and matches it on backflips position/velocity.**
+The one deficit (backflips orientation, +4deg) is a CHARACTERIZED freeze-vs-
+relinearize trade-off (FEJ-freeze stale under extreme nonlinearity), not a bug --
+see "ROOT CAUSE" below. Improvement experiments that came back dead/negative/marginal
+(so the backend is well-optimized): radar smear (negligible, 2.7% of flip noise),
+cost-based extra_iters early-stop (orientation hidden under dominant residuals),
+radar_pos_split (small pos win, small ori cost), NIS-adaptive (= hand-tuned, not
+better). Remaining wins are research-grade: selective FEJ (backflips ori), GP/WNOA
+motion prior, plane-mapping for absolute position. See ALGO_IMPROVEMENTS.md.
 
 This file is the durable record of *why* and *what was learned*, so the key
 insights survive context compression. Benchmark numbers and per-phase config
