@@ -35,14 +35,15 @@ PLOTS_ROOT = Path(__file__).parent.parent.parent / 'plots'
 OUT_DIR    = Path(__file__).parent
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# Authored at ~7.2in and displayed at \textwidth (~7.16in) -> ~1:1, so sizes are true pt.
+# Authored at ~7.2in and displayed at \textwidth (~7.16in) -> ~1:1, so sizes are
+# true pt.  Matched to fig 4's on-page sizes (~7.7pt labels, ~7pt ticks/title).
 matplotlib.rcParams.update({
-    'font.size':       9,
-    'axes.labelsize':  9,
-    'axes.titlesize':  11,
-    'xtick.labelsize': 7.5,
-    'ytick.labelsize': 7.5,
-    'legend.fontsize': 9.5,
+    'font.size':       8,
+    'axes.labelsize':  8,
+    'axes.titlesize':  8,
+    'xtick.labelsize': 6.5,
+    'ytick.labelsize': 6.5,
+    'legend.fontsize': 8,
     'lines.linewidth': 1.3,
     'figure.dpi':      150,
 })
