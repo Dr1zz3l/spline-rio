@@ -4,6 +4,8 @@
 \usepackage{cite}
 \usepackage{url}
 \usepackage{amsmath,amssymb,amsfonts}
+\usepackage{amsthm}
+\newtheorem{proposition}{Proposition}
 \usepackage{algorithmic}
 \usepackage{graphicx}
 \usepackage{textcomp}
@@ -91,7 +93,8 @@ source, reporting position as drift per distance.  A Markov-blanket
 factor-selection rule makes the marginalization a true marginal, and a
 single dynamics-adaptive measurement-weighting law covers hover to
 \SI{10}{\radian\per\second}, validated on held-out flights.  At the live
-leading edge, velocity and orientation RMSE stay below
+leading edge (the newest window estimate, before later windows refine
+it), velocity and orientation RMSE stay below
 \SI{0.5}{\metre\per\second} and \SI{3}{\degree} across racing (position
 drift under \SI{1}{\percent}) and degrade gracefully to
 \SI{6.4}{\degree} orientation (\SI{2.9}{\percent} drift) under tumbling;

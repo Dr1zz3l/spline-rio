@@ -72,8 +72,11 @@ this is expected because subsequent windows refine previous estimates.
 With the consistent prior, settled velocity is smooth across stride
 boundaries (the earlier inconsistent prior produced position jumps
 that inflated the settled velocity derivative).
-Per-window solve times are 0.35--0.70\,s against a 0.3\,s stride on a
-laptop CPU; fast racing runs in real time at a 0.4\,s stride.
+Per-window solve times are 0.35--0.70\,s on a laptop CPU.  At the default
+0.3\,s stride (at which all \autoref{tab:sw} accuracy is reported) the
+system is therefore \emph{not} real-time.  Only fast racing reaches real
+time, and only at a coarser 0.4\,s stride (its 0.35\,s solve fits that
+budget); slow racing at 0.70\,s/window does not, at any practical stride.
 The dominant cost reductions were: the consistent prior removing
 the marginalization re-linearization ($\sim$0.6\,s), coarsening
 $\Delta t_p$ from 5\,ms to 40\,ms for aggressive flight (which
@@ -407,7 +410,8 @@ Configuration & Pos (m) & Ori (\degree) \\
 \multicolumn{3}{@{}p{\columnwidth}@{}}{\scriptsize
   Batch rows (\ac{imu}-rate, lever-arm, ori-reg, extrinsic) isolate one
   design choice at a fixed pre-\ac{ransac} operating point; the \ac{ransac} default
-  shifts batch absolutes (e.g.\ slow batch 0.169$\to$0.198\,m) without
+  shifts batch absolutes (slow batch 0.169$\to$0.198\,m, fast
+  0.768$\to$0.64\,m, the \autoref{sec:results} batch figures) without
   changing orderings.  The SW rows (window duration, marginalization)
   are under the \ac{ransac} default.  All runs use the sensor-only init
   (\autoref{sec:init}); the bias seed shifts batch absolutes comparably,

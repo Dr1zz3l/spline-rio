@@ -54,7 +54,10 @@ where $\vu_b = \vR_{bs}\,\vu_s$, $\vR_{bs}$ is the rotation from
 radar sensor to body frame (extrinsic $[\text{roll}{=}180\degree,\,
 \text{pitch}{=}27.5\degree,\,\text{yaw}{=}0\degree]$; measured,
 \autoref{sec:results}), and
-$\vR_{bw} = \vR_{wb}^{\top}$.  The residual
+$\vR_{bw} = \vR_{wb}^{\top}$.  The leading minus makes the convention
+self-consistent: a sensor translating toward a static point
+($\vu_b^{\top}\vR_{bw}\vv_w > 0$) yields $v_D < 0$, an approaching rather
+than receding target, as required.  The residual
 $r_k = v_{D,\text{meas}} - v_{D,\text{pred}}$ uses Huber
 loss with $\delta = 1.0$\,m/s, robust as defense-in-depth to any
 residual Doppler noise on the surviving inlier returns; the
@@ -80,7 +83,7 @@ frame load, not per window, so it does not
 enter the per-window timing budget (\autoref{sec:results}).
 \autoref{sec:baselines} quantifies what it removes: on the public
 ICINS flights it closes an order-of-magnitude vertical-drift gap, and on
-our own flights it improves aggressive-racing live position by $22\%$ ($0.50\to0.39$\,m
+our own flights it improves aggressive-racing live position by $20\%$ ($0.50\to0.40$\,m
 live).  It is enabled by default for every result in this paper.
 
 \textbf{Dynamics-adaptive measurement weighting.}
@@ -315,12 +318,25 @@ deflated by a hand-tuned scale of $10^{-7}$--$2{\times}10^{-4}$
 depending on flight dynamics (\autoref{sec:prior_scale}).
 The shared global bias is the trap: it is what tempts pulling in the
 far-edge \ac{imu} factors.  We instead exploit the splines' local support
-of $N$ knots (quintic position $N{=}6$, cubic orientation $N{=}4$): a
-factor touching marginalized knot $i$ has support
-$[i, i{+}N{-}1] \subseteq$ marg\,$\cup$\,boundary, so including
-\emph{only} residuals that touch a marginalized variable (rather than
-those touching marginalized \emph{or} boundary variables), plus the
-previous prior, yields an exactly closed, consistent marginal.  With this rule the prior is applied
+of $N$ knots (quintic position $N{=}6$, cubic orientation $N{=}4$).
+
+\begin{proposition}[Exactly closed spline marginal]
+\label{prop:marg}
+Let $\mathcal{M}$ be the block of knots leaving the window and
+$\mathcal{B}$ the $N{-}1$ retained knots immediately adjacent to it.
+For an order-$N$ spline, every factor has local support over $N$
+consecutive knots $[i,\,i{+}N{-}1]$.  If a factor touches $\mathcal{M}$,
+i.e.\ $[i,\,i{+}N{-}1]\cap\mathcal{M}\neq\varnothing$, then
+$[i,\,i{+}N{-}1]\subseteq\mathcal{M}\cup\mathcal{B}$.  Selecting exactly
+the factors that touch $\mathcal{M}$, together with the previous prior,
+therefore forms a Schur complement that conditions on no interior state
+and shares no factor with the next window: the resulting prior is the
+exact marginal.
+\end{proposition}
+
+Including \emph{only} residuals that touch a marginalized variable
+(rather than those touching marginalized \emph{or} boundary variables)
+thus yields a consistent marginal.  With this rule the prior is applied
 \textbf{unscaled} (scale $=1$) across all flight regimes, and its
 Mahalanobis residual at the solution drops from $10^{6}$--$10^{12}$
 to $\mathcal{O}(1)$: the prior agrees with the incoming data.
@@ -338,6 +354,9 @@ this re-centering preserves consistency across relinearizations as a
 theoretical guarantee; rather, in our experiments it left no measurable
 inconsistency symptom; the \ac{nees} analysis of
 \autoref{sec:nees} provides the corresponding empirical evidence.
+Our missions are short (18--26\,s), which may be too brief to expose
+drift a re-centered prior could accumulate over a long deployment;
+bounding this over extended runs is left to future work.
 
 \textbf{Live-edge warm start.}
 Control points entering the window each stride would otherwise hold

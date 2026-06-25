@@ -197,8 +197,11 @@ simultaneously, the prior's Mahalanobis residual at each solution is
 $\mathcal{O}(1)$, and the entire per-mission tuning table becomes
 obsolete.  The fix also improves accuracy: fast-racing settled
 position improves from 0.727\,m (tuned inconsistent prior) to
-0.701\,m (unscaled consistent prior), and stride-boundary position
-jumps in the settled trajectory disappear (settled velocity \ac{rmse}
+0.701\,m (unscaled consistent prior).  Both figures isolate the
+prior-consistency effect at a fixed pre-\ac{ransac} operating point; the
+\ac{ransac} default brings the same metric to 0.312\,m
+(\autoref{tab:sw}).  Stride-boundary position
+jumps in the settled trajectory also disappear (settled velocity \ac{rmse}
 0.89\,$\to$\,0.21\,m/s on slow racing).
 
 \begin{figure}[t]
