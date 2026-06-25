@@ -242,19 +242,23 @@ sensor model. The only change vs the Ceres factors is the final convention step:
 swap `tangent_to_ambient(q)` (Ceres ambient 4-dim) for `* R(knot_i).matrix()`
 (GTSAM right-tangent 3-dim), per the bridge `d(f)/d(delta)=J_left*R_i`.
 
-`tests/test_gtsam_factor_math.cpp` (builds WITHOUT GTSAM) verifies each factor vs
-(a) numerical differentiation using the GTSAM right-retract `q*Exp(eps)` and
-(b) the existing Ceres analytic factor (residual parity). Result: ALL PASS ---
-gyro/accel/radar knot+CP+bias Jacobians match numerics to <=1e-4 (mostly ~1e-8),
-all residuals match the Ceres factors EXACTLY (0). Convention bridge + spline
-Jacobian reuse confirmed in C++. (Test uses central differences + physically
-scaled CPs; forward differences blow up because a_world ~ inv_dt_pos^2.)
+ALL FIVE factor-math types are now done + verified (headers in
+`include/rio/gtsam/`): gyro, accel, radar (`*_factor_math.h`), plus min-snap and
+angular-accel (`reg_factor_math.h`). `tests/test_gtsam_factor_math.cpp` (builds
+WITHOUT GTSAM, runs in ctest) verifies each vs (a) numerical differentiation using
+the GTSAM right-retract `q*Exp(eps)` and (b) the existing Ceres analytic factor
+(residual parity). Result: **ALL PASS** -- every knot/CP/bias Jacobian matches
+numerics to <=1e-4 (mostly ~1e-8 to 1e-10), all sensor residuals match the Ceres
+factors EXACTLY (0). The derived angular-accel right-tangent Jacobian
+(Jl^-1/Jr^-1 of the SO(3) log-differences) matches to 3e-10. Convention bridge +
+spline-Jacobian reuse confirmed in C++. (Test uses central differences +
+physically scaled CPs; forward differences blow up because a_world ~ inv_dt_pos^2.)
 
 **Remaining Phase 1 (needs `libgtsam-dev`):** thin `gtsam::NoiseModelFactorN`
-wrappers forwarding to the math functions; the trivial regularizer factors
-(min-snap, angular-accel) + priors; `find_package(GTSAM)` in CMake; ctest the
-wrappers. Install: `sudo apt-get install -y libgtsam-dev` (3 pkgs; boost/eigen/
-tbb already present).
+wrappers forwarding to the verified math functions; boundary/heading priors
+(trivial); `find_package(GTSAM)` in CMake; ctest the wrappers vs gtsam
+numericalDerivative. Install: `sudo apt-get install -y libgtsam-dev` (3 pkgs;
+boost/eigen/tbb already present). The hard part (factor math) is DONE.
 
 ## Phase 0 verdict: PROCEED to the C++ port (Phases 1-3), with random-walk bias
 and FEJ as firm requirements.

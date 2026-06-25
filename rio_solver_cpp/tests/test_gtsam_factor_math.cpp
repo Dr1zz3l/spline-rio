@@ -11,6 +11,7 @@
 #include <rio/gtsam/gyro_factor_math.h>
 #include <rio/gtsam/accel_factor_math.h>
 #include <rio/gtsam/radar_factor_math.h>
+#include <rio/gtsam/reg_factor_math.h>
 #include <rio/factors/analytic/gyro_analytic.h>
 #include <rio/factors/analytic/accel_analytic.h>
 #include <rio/factors/analytic/radar_analytic.h>
@@ -237,6 +238,57 @@ int main() {
     check("radar d_r/d_knot vs numerical", r_knot_err, 1e-4);
     check("radar d_r/d_cp vs numerical", r_cp_err, 1e-4);
     check("radar residual vs Ceres factor", r_res_parity, 1e-12);
+
+    // ---------- REGULARIZERS ----------
+    double ms_err = 0.0, aa_err = 0.0;
+    for (int trial = 0; trial < 20; ++trial) {
+        // min-snap: residual linear in CPs; check d_r/d_cp[i] = coeff[i] I via numerical
+        double cp[N_POS][3]; const double* cptr[N_POS];
+        for (int i = 0; i < N_POS; ++i) {
+            for (int k = 0; k < 3; ++k) cp[i][k] = nd(rng) * 1e-2;
+            cptr[i] = cp[i];
+        }
+        auto ms = rio::gtsam_factors::minsnap_residual_gtsam(cptr, u_pos, inv_dt_pos);
+        const double eps = 1e-6;
+        for (int i = 0; i < N_POS; ++i) {
+            for (int axis = 0; axis < 3; ++axis) {
+                double cpp[3], cpm[3];
+                for (int k = 0; k < 3; ++k) { cpp[k] = cp[i][k]; cpm[k] = cp[i][k]; }
+                cpp[axis] += eps; cpm[axis] -= eps;
+                const double *cp_p[N_POS], *cp_m[N_POS];
+                for (int k = 0; k < N_POS; ++k) { cp_p[k] = (k == i) ? cpp : cptr[k]; cp_m[k] = (k == i) ? cpm : cptr[k]; }
+                Vector3d col = (rio::gtsam_factors::minsnap_residual_gtsam(cp_p, u_pos, inv_dt_pos).residual
+                              - rio::gtsam_factors::minsnap_residual_gtsam(cp_m, u_pos, inv_dt_pos).residual) / (2 * eps);
+                Vector3d expect = Vector3d::Zero(); expect[axis] = ms.coeff[i];  // coeff[i]*I col
+                ms_err = std::max(ms_err, (col - expect).cwiseAbs().maxCoeff() / std::max(1.0, std::abs(ms.coeff[i])));
+            }
+        }
+        // ang-accel: 3 knots, central-diff right-retract
+        double q[3][4];
+        for (int i = 0; i < 3; ++i) {
+            Vector3d w(nd(rng) * 0.3, nd(rng) * 0.3, nd(rng) * 0.3);
+            Eigen::Quaterniond qq = SO3d::exp(w).unit_quaternion();
+            q[i][0] = qq.x(); q[i][1] = qq.y(); q[i][2] = qq.z(); q[i][3] = qq.w();
+        }
+        auto aa = rio::gtsam_factors::angaccel_residual_gtsam(q[0], q[1], q[2]);
+        auto aeval = [&](const double* a0, const double* a1, const double* a2) {
+            return rio::gtsam_factors::angaccel_residual_gtsam(a0, a1, a2, false).residual;
+        };
+        for (int i = 0; i < 3; ++i) {
+            Matrix3d Jnum;
+            for (int axis = 0; axis < 3; ++axis) {
+                Vector3d d = Vector3d::Zero(); d[axis] = eps;
+                double qpp[4], qpm[4]; retract(q[i], d, qpp); retract(q[i], -d, qpm);
+                const double* a_p[3] = {q[0], q[1], q[2]};
+                const double* a_m[3] = {q[0], q[1], q[2]};
+                a_p[i] = qpp; a_m[i] = qpm;
+                Jnum.col(axis) = (aeval(a_p[0], a_p[1], a_p[2]) - aeval(a_m[0], a_m[1], a_m[2])) / (2 * eps);
+            }
+            aa_err = std::max(aa_err, (Jnum - aa.d_r_d_knot[i]).cwiseAbs().maxCoeff());
+        }
+    }
+    check("minsnap d_r/d_cp vs numerical (rel)", ms_err, 1e-5);
+    check("angaccel d_r/d_knot vs numerical", aa_err, 1e-4);
 
     std::printf("%s\n", g_fail ? "FAILED" : "ALL PASS");
     return g_fail ? 1 : 0;
