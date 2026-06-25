@@ -9,12 +9,17 @@
 #include <sophus/so3.hpp>
 
 #include <rio/gtsam/gyro_factor_math.h>
+#include <rio/gtsam/accel_factor_math.h>
+#include <rio/gtsam/radar_factor_math.h>
 #include <rio/factors/analytic/gyro_analytic.h>
+#include <rio/factors/analytic/accel_analytic.h>
+#include <rio/factors/analytic/radar_analytic.h>
 
 using Eigen::Vector3d;
 using Eigen::Matrix3d;
 using Sophus::SO3d;
 using rio::N_ORI;
+using rio::N_POS;
 
 static int g_fail = 0;
 static void check(const char* name, double err, double tol) {
@@ -94,6 +99,144 @@ int main() {
     check("gyro d_r/d_knot vs numerical", max_knot_err, 1e-5);
     check("gyro d_r/d_bias vs numerical", max_bias_err, 1e-6);  // [0|-I] exact; FD roundoff
     check("gyro residual vs Ceres factor", max_res_parity, 1e-12);
+
+    // ---------- ACCEL ----------
+    const double inv_dt_pos = 1.0 / 0.005;
+    const double u_pos = 0.62;
+    double a_knot_err = 0.0, a_cp_err = 0.0, a_bias_err = 0.0, a_res_parity = 0.0;
+    for (int trial = 0; trial < 20; ++trial) {
+        double q[N_ORI][4]; const double* qptr[N_ORI];
+        for (int i = 0; i < N_ORI; ++i) {
+            Vector3d w(nd(rng) * 0.3, nd(rng) * 0.3, nd(rng) * 0.3);
+            Eigen::Quaterniond qq = SO3d::exp(w).unit_quaternion();
+            q[i][0] = qq.x(); q[i][1] = qq.y(); q[i][2] = qq.z(); q[i][3] = qq.w(); qptr[i] = q[i];
+        }
+        // CPs scaled so a_world (= inv_dt_pos^2 * coeff * cp) is physical (~O(10)).
+        double cp[N_POS][3]; const double* cptr[N_POS];
+        for (int i = 0; i < N_POS; ++i) {
+            for (int k = 0; k < 3; ++k) cp[i][k] = nd(rng) * 1e-3;
+            cptr[i] = cp[i];
+        }
+        double bias[6]; for (int k = 0; k < 6; ++k) bias[k] = nd(rng) * 0.05;
+        Vector3d z_acc(nd(rng), nd(rng), nd(rng));
+
+        auto a = rio::gtsam_factors::accel_residual_gtsam(
+            qptr, cptr, bias, z_acc, u, inv_dt, u_pos, inv_dt_pos);
+        const double eps = 1e-6;
+        auto eval = [&](const double* const* qp, const double* const* cpq, const double* bp) {
+            return rio::gtsam_factors::accel_residual_gtsam(
+                qp, cpq, bp, z_acc, u, inv_dt, u_pos, inv_dt_pos, false).residual;
+        };
+        // knot Jacobians (right-retract, CENTRAL difference)
+        for (int i = 0; i < N_ORI; ++i) {
+            Matrix3d Jnum;
+            for (int axis = 0; axis < 3; ++axis) {
+                Vector3d d = Vector3d::Zero(); d[axis] = eps;
+                double qpp[4], qpm[4]; retract(q[i], d, qpp); retract(q[i], -d, qpm);
+                const double *qp_p[N_ORI], *qp_m[N_ORI];
+                for (int k = 0; k < N_ORI; ++k) { qp_p[k] = (k == i) ? qpp : qptr[k]; qp_m[k] = (k == i) ? qpm : qptr[k]; }
+                Jnum.col(axis) = (eval(qp_p, cptr, bias) - eval(qp_m, cptr, bias)) / (2 * eps);
+            }
+            a_knot_err = std::max(a_knot_err, (Jnum - a.d_r_d_knot[i]).cwiseAbs().maxCoeff());
+        }
+        // CP Jacobians (Euclidean, central)
+        for (int i = 0; i < N_POS; ++i) {
+            Matrix3d Jnum;
+            for (int axis = 0; axis < 3; ++axis) {
+                double cpp[3], cpm[3];
+                for (int k = 0; k < 3; ++k) { cpp[k] = cp[i][k]; cpm[k] = cp[i][k]; }
+                cpp[axis] += eps; cpm[axis] -= eps;
+                const double *cq_p[N_POS], *cq_m[N_POS];
+                for (int k = 0; k < N_POS; ++k) { cq_p[k] = (k == i) ? cpp : cptr[k]; cq_m[k] = (k == i) ? cpm : cptr[k]; }
+                Jnum.col(axis) = (eval(qptr, cq_p, bias) - eval(qptr, cq_m, bias)) / (2 * eps);
+            }
+            a_cp_err = std::max(a_cp_err, (Jnum - a.d_r_d_cp[i]).cwiseAbs().maxCoeff());
+        }
+        // bias (central)
+        Eigen::Matrix<double, 3, 6> Jb;
+        for (int k = 0; k < 6; ++k) {
+            double bp[6], bm[6];
+            for (int j = 0; j < 6; ++j) { bp[j] = bias[j]; bm[j] = bias[j]; }
+            bp[k] += eps; bm[k] -= eps;
+            Jb.col(k) = (eval(qptr, cptr, bp) - eval(qptr, cptr, bm)) / (2 * eps);
+        }
+        a_bias_err = std::max(a_bias_err, (Jb - a.d_r_d_bias).cwiseAbs().maxCoeff());
+        // residual parity vs Ceres
+        rio::analytic::AccelAnalyticFactor cf(z_acc, u, inv_dt, u_pos, inv_dt_pos);
+        std::vector<const double*> params;
+        for (int i = 0; i < N_ORI; ++i) params.push_back(qptr[i]);
+        for (int i = 0; i < N_POS; ++i) params.push_back(cptr[i]);
+        params.push_back(bias);
+        Vector3d rc; cf.Evaluate(params.data(), rc.data(), nullptr);
+        a_res_parity = std::max(a_res_parity, (rc - a.residual).cwiseAbs().maxCoeff());
+    }
+    check("accel d_r/d_knot vs numerical", a_knot_err, 1e-4);
+    check("accel d_r/d_cp vs numerical", a_cp_err, 1e-4);
+    check("accel d_r/d_bias vs numerical", a_bias_err, 1e-6);
+    check("accel residual vs Ceres factor", a_res_parity, 1e-12);
+
+    // ---------- RADAR ----------
+    const SO3d R_bs = SO3d::exp(Vector3d(3.14159, 0.48, 0.0));   // ~ extrinsic
+    const Vector3d t_bs(0.08, 0.02, -0.01);
+    double r_knot_err = 0.0, r_cp_err = 0.0, r_res_parity = 0.0;
+    for (int trial = 0; trial < 20; ++trial) {
+        double q[N_ORI][4]; const double* qptr[N_ORI];
+        for (int i = 0; i < N_ORI; ++i) {
+            Vector3d w(nd(rng) * 0.3, nd(rng) * 0.3, nd(rng) * 0.3);
+            Eigen::Quaterniond qq = SO3d::exp(w).unit_quaternion();
+            q[i][0] = qq.x(); q[i][1] = qq.y(); q[i][2] = qq.z(); q[i][3] = qq.w(); qptr[i] = q[i];
+        }
+        double cp[N_POS][3]; const double* cptr[N_POS];   // scaled so v_world ~ O(1) m/s
+        for (int i = 0; i < N_POS; ++i) {
+            for (int k = 0; k < 3; ++k) cp[i][k] = nd(rng) * 1e-2;
+            cptr[i] = cp[i];
+        }
+        Vector3d u_sensor(nd(rng), nd(rng), nd(rng)); u_sensor.normalize();
+        const Vector3d u_body = R_bs.matrix() * u_sensor;
+        double v_meas = nd(rng);
+
+        auto a = rio::gtsam_factors::radar_residual_gtsam(
+            qptr, cptr, u_body, v_meas, t_bs, u, inv_dt, u_pos, inv_dt_pos);
+        const double eps = 1e-6;
+        auto reval = [&](const double* const* qp, const double* const* cpq) {
+            return rio::gtsam_factors::radar_residual_gtsam(
+                qp, cpq, u_body, v_meas, t_bs, u, inv_dt, u_pos, inv_dt_pos, false).residual;
+        };
+        for (int i = 0; i < N_ORI; ++i) {
+            Eigen::Matrix<double, 1, 3> Jnum;
+            for (int axis = 0; axis < 3; ++axis) {
+                Vector3d d = Vector3d::Zero(); d[axis] = eps;
+                double qpp[4], qpm[4]; retract(q[i], d, qpp); retract(q[i], -d, qpm);
+                const double *qp[N_ORI], *qm[N_ORI];
+                for (int k = 0; k < N_ORI; ++k) { qp[k] = (k == i) ? qpp : qptr[k]; qm[k] = (k == i) ? qpm : qptr[k]; }
+                Jnum(0, axis) = (reval(qp, cptr) - reval(qm, cptr)) / (2 * eps);
+            }
+            r_knot_err = std::max(r_knot_err, (Jnum - a.d_r_d_knot[i]).cwiseAbs().maxCoeff());
+        }
+        for (int i = 0; i < N_POS; ++i) {
+            Eigen::Matrix<double, 1, 3> Jnum;
+            for (int axis = 0; axis < 3; ++axis) {
+                double cpp[3], cpm[3];
+                for (int k = 0; k < 3; ++k) { cpp[k] = cp[i][k]; cpm[k] = cp[i][k]; }
+                cpp[axis] += eps; cpm[axis] -= eps;
+                const double *cp_p[N_POS], *cp_m[N_POS];
+                for (int k = 0; k < N_POS; ++k) { cp_p[k] = (k == i) ? cpp : cptr[k]; cp_m[k] = (k == i) ? cpm : cptr[k]; }
+                Jnum(0, axis) = (reval(qptr, cp_p) - reval(qptr, cp_m)) / (2 * eps);
+            }
+            r_cp_err = std::max(r_cp_err, (Jnum - a.d_r_d_cp[i]).cwiseAbs().maxCoeff());
+        }
+        // residual parity vs Ceres RadarAnalyticFactor
+        rio::analytic::RadarAnalyticFactor cf(u_sensor, v_meas, u, inv_dt, u_pos, inv_dt_pos, R_bs, t_bs);
+        std::vector<const double*> params;
+        for (int i = 0; i < N_ORI; ++i) params.push_back(qptr[i]);
+        for (int i = 0; i < N_POS; ++i) params.push_back(cptr[i]);
+        double bias[6] = {0, 0, 0, 0, 0, 0}; params.push_back(bias);
+        double rc; cf.Evaluate(params.data(), &rc, nullptr);
+        r_res_parity = std::max(r_res_parity, std::abs(rc - a.residual));
+    }
+    check("radar d_r/d_knot vs numerical", r_knot_err, 1e-4);
+    check("radar d_r/d_cp vs numerical", r_cp_err, 1e-4);
+    check("radar residual vs Ceres factor", r_res_parity, 1e-12);
 
     std::printf("%s\n", g_fail ? "FAILED" : "ALL PASS");
     return g_fail ? 1 : 0;

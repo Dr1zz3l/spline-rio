@@ -232,8 +232,33 @@ confirmed (not a failure: the plan routes FEJ into Phase 2 on exactly this).
     the C++ implementation), and 0b already showed gtsam reproduces the Ceres
     optimum, so accuracy parity is expected once full-rate.
 
-**Phase 0 verdict: PROCEED to the C++ port (Phases 1-3), with random-walk bias
-and FEJ as firm requirements.** The spike de-risked the two things that could have
+## Phase 1 progress (C++ GTSAM factors)
+
+**Factor MATH done + verified on the existing toolchain (no GTSAM needed yet).**
+The GTSAM-tangent Jacobians live as API-independent free functions in
+`rio_solver_cpp/include/rio/gtsam/{gyro,accel,radar}_factor_math.h`, reusing the
+existing analytic spline Jacobians (`spline_jacobians.h`) and the SymForce radar
+sensor model. The only change vs the Ceres factors is the final convention step:
+swap `tangent_to_ambient(q)` (Ceres ambient 4-dim) for `* R(knot_i).matrix()`
+(GTSAM right-tangent 3-dim), per the bridge `d(f)/d(delta)=J_left*R_i`.
+
+`tests/test_gtsam_factor_math.cpp` (builds WITHOUT GTSAM) verifies each factor vs
+(a) numerical differentiation using the GTSAM right-retract `q*Exp(eps)` and
+(b) the existing Ceres analytic factor (residual parity). Result: ALL PASS ---
+gyro/accel/radar knot+CP+bias Jacobians match numerics to <=1e-4 (mostly ~1e-8),
+all residuals match the Ceres factors EXACTLY (0). Convention bridge + spline
+Jacobian reuse confirmed in C++. (Test uses central differences + physically
+scaled CPs; forward differences blow up because a_world ~ inv_dt_pos^2.)
+
+**Remaining Phase 1 (needs `libgtsam-dev`):** thin `gtsam::NoiseModelFactorN`
+wrappers forwarding to the math functions; the trivial regularizer factors
+(min-snap, angular-accel) + priors; `find_package(GTSAM)` in CMake; ctest the
+wrappers. Install: `sudo apt-get install -y libgtsam-dev` (3 pkgs; boost/eigen/
+tbb already present).
+
+## Phase 0 verdict: PROCEED to the C++ port (Phases 1-3), with random-walk bias
+and FEJ as firm requirements.
+ The spike de-risked the two things that could have
 killed the migration (conditioning under marginalization; unbounded cost) and
 turned the FEJ caveat from a theoretical worry into a measured, must-fix design
 requirement.
