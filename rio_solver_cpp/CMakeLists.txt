@@ -124,3 +124,33 @@ target_link_libraries(test_gtsam_factor_math PRIVATE
     fmt::fmt
 )
 add_test(NAME test_gtsam_factor_math COMMAND test_gtsam_factor_math)
+
+# GTSAM wrapper factors + smoother backend (Phase 1/2). Guarded so the build
+# still works without libgtsam-dev. NOTE: Ubuntu's GTSAMConfig.cmake exports a
+# broken CppUnitLite target (missing libCppUnitLite.a), so find_package(GTSAM)
+# config mode fails. We link libgtsam.so directly instead.
+find_library(GTSAM_LIB gtsam)
+find_path(GTSAM_INC gtsam/nonlinear/NonlinearFactor.h)
+if(GTSAM_LIB AND GTSAM_INC)
+  message(STATUS "GTSAM found (${GTSAM_LIB}); building GTSAM factor wrappers + tests")
+  add_executable(test_gtsam_factors tests/test_gtsam_factors.cpp)
+  # Ubuntu's GTSAM is built for baseline x86-64 (16-byte Eigen alignment); our
+  # global -march=native enables AVX (32-byte) -> Eigen ABI mismatch across the
+  # GTSAM boundary (heap corruption). Match GTSAM's alignment for GTSAM-linked TUs.
+  target_compile_options(test_gtsam_factors PRIVATE -march=x86-64)
+  target_include_directories(test_gtsam_factors PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/include
+      ${BASALT_HEADERS_DIR}/include
+      ${SOPHUS_DIR}
+      ${GTSAM_INC}
+  )
+  target_link_libraries(test_gtsam_factors PRIVATE
+      Eigen3::Eigen
+      ${GTSAM_LIB}
+      fmt::fmt
+      tbb
+  )
+  add_test(NAME test_gtsam_factors COMMAND test_gtsam_factors)
+else()
+  message(STATUS "GTSAM not found; skipping GTSAM factor wrappers (install libgtsam-dev)")
+endif()

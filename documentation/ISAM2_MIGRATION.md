@@ -254,11 +254,34 @@ factors EXACTLY (0). The derived angular-accel right-tangent Jacobian
 spline-Jacobian reuse confirmed in C++. (Test uses central differences +
 physically scaled CPs; forward differences blow up because a_world ~ inv_dt_pos^2.)
 
-**Remaining Phase 1 (needs `libgtsam-dev`):** thin `gtsam::NoiseModelFactorN`
-wrappers forwarding to the verified math functions; boundary/heading priors
-(trivial); `find_package(GTSAM)` in CMake; ctest the wrappers vs gtsam
-numericalDerivative. Install: `sudo apt-get install -y libgtsam-dev` (3 pkgs;
-boost/eigen/tbb already present). The hard part (factor math) is DONE.
+**Phase 1 wrappers DONE + verified (libgtsam-dev 4.2.0).** `include/rio/gtsam/
+factors.h` wraps the 5 factors as **dynamic `gtsam::NoiseModelFactor`** (n-ary;
+override `unwhitenedError(Values, boost::optional<std::vector<Matrix>&>)`),
+chosen over variadic `NoiseModelFactorN` to avoid 10-11 template args for
+radar/accel. Each just extracts the variables and forwards to the verified math.
+`tests/test_gtsam_factors.cpp` checks each vs `gtsam::linearizeNumerically` (which
+differentiates through GTSAM's own retract = the true end-to-end convention test):
+ALL PASS, relative Jacobian error ~1e-11 to 1e-12. ctest 3/3 green.
+
+**Two GTSAM packaging gotchas (Ubuntu Noble libgtsam-dev 4.2.0) -- important for
+Phase 2/3:**
+1. `find_package(GTSAM)` config mode FAILS: `GTSAM-exports.cmake` references a
+   broken `CppUnitLite` imported target (missing `libCppUnitLite.a`). Workaround:
+   link `libgtsam.so` directly via `find_library(GTSAM_LIB gtsam)` +
+   `find_path(GTSAM_INC ...)`, NOT `find_package`. Also link `fmt::fmt` (basalt
+   Sophus uses fmt) and `tbb`.
+2. **Eigen alignment ABI mismatch -> heap corruption ("double free").** Ubuntu's
+   GTSAM is built for baseline x86-64 (16-byte Eigen align); our global
+   `-march=native` enables AVX (32-byte). Eigen objects (e.g. Rot3's Matrix3)
+   then have mismatched layout across the GTSAM boundary -> corruption at runtime.
+   Fix: compile GTSAM-linked TUs with `-march=x86-64` (`target_compile_options`).
+   **Phase 2/3 consequence:** the IsamSolver + its pybind TU must use matching
+   alignment; the Ceres analytic factors stay `-march=native` (separate TUs).
+   For the final Phase-3 timing, consider rebuilding GTSAM from source with
+   `-march=native` to regain AVX in the GTSAM-facing factor evaluation.
+
+Remaining (minor, lands in Phase 2 wiring): heading prior (1D yaw factor on ori
+knots) and boundary anchors (built-in `gtsam::PriorFactor<Rot3/Vector3/Vector6>`).
 
 ## Phase 0 verdict: PROCEED to the C++ port (Phases 1-3), with random-walk bias
 and FEJ as firm requirements.
