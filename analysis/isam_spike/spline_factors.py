@@ -35,8 +35,33 @@ from gtsam import CustomFactor, Rot3                  # noqa: E402
 from gtsam.symbol_shorthand import P, R, B           # noqa: E402  P=pos CP, R=ori knot, B=bias
 import generated_jacobians as gj                      # noqa: E402
 from bspline_utils import UniformBSpline              # noqa: E402
-from nonuniform_bspline import so3_exp, so3_log       # noqa: E402
 from radar_velocity_utils import rotation_matrix_from_euler  # noqa: E402
+
+
+# Fast pure-numpy SO(3) exp/log (Rodrigues) — the spike evaluates these a LOT
+# under finite differencing; avoids scipy object overhead (~10x faster).
+def _skew(v):
+    return np.array([[0.0, -v[2], v[1]], [v[2], 0.0, -v[0]], [-v[1], v[0], 0.0]])
+
+
+def so3_exp(w):
+    th2 = float(w @ w)
+    if th2 < 1e-24:
+        return np.eye(3) + _skew(w)
+    th = np.sqrt(th2)
+    K = _skew(w)
+    return np.eye(3) + (np.sin(th) / th) * K + ((1.0 - np.cos(th)) / th2) * (K @ K)
+
+
+def so3_log(R):
+    c = (np.trace(R) - 1.0) * 0.5
+    c = min(1.0, max(-1.0, c))
+    th = np.arccos(c)
+    if th < 1e-7:
+        return 0.5 * np.array([R[2, 1] - R[1, 2], R[0, 2] - R[2, 0], R[1, 0] - R[0, 1]])
+    s = np.sin(th)
+    return (th / (2.0 * s)) * np.array([R[2, 1] - R[1, 2], R[0, 2] - R[2, 0], R[1, 0] - R[0, 1]])
+
 
 EPS = 1e-9
 G_WORLD = np.array([0.0, 0.0, -9.81])
@@ -260,3 +285,94 @@ def make_gyro_factor(prob, t, z_gyro, noise):
         return _fd_fill(H, residual_fn, R4, None, bias, has_pos=False, has_bias=True)
 
     return CustomFactor(noise, keys, err)
+
+
+# ----------------------------------------------------------------------------
+# Regularizers + priors (match solver.cpp / regularization.h)
+# ----------------------------------------------------------------------------
+def make_minsnap_factor(prob, seg, noise):
+    """Min-snap: r = p^(4) at u=0.5 of position segment `seg` (CPs [seg..seg+5])."""
+    pos_keys = [P(seg + l) for l in range(N_POS)]
+    t_rel = (seg + (N_POS - 1) + 0.5) * prob.dt_pos
+    k = prob._pos.find_knot_span(t_rel)
+    N4 = prob._pos.basis_functions(t_rel, k, 4)        # 4th-derivative basis (6,)
+
+    def err(this, values, H):
+        P6 = [np.asarray(values.atVector(key), float) for key in pos_keys]
+        snap = np.zeros(3)
+        for l in range(N_POS):
+            snap = snap + N4[l] * P6[l]
+        if H is not None:
+            for l in range(N_POS):
+                H[l] = N4[l] * np.eye(3)               # linear in CPs -> exact Jacobian
+        return snap
+
+    return CustomFactor(noise, pos_keys, err)
+
+
+def make_angaccel_factor(prob, i, noise):
+    """Angular accel: r = log(q1^-1 q2) - log(q0^-1 q1) over knots [i,i+1,i+2]."""
+    ori_keys = [R(i), R(i + 1), R(i + 2)]
+
+    def residual(R3):
+        op = so3_log(R3[0].T @ R3[1])
+        on = so3_log(R3[1].T @ R3[2])
+        return on - op
+
+    def err(this, values, H):
+        R3 = [values.atRot3(k).matrix() for k in ori_keys]
+        r0 = residual(R3)
+        if H is not None:
+            for idx in range(3):
+                J = np.zeros((3, 3))
+                for a in range(3):
+                    d = np.zeros(3); d[a] = _FD
+                    R3p = list(R3); R3p[idx] = R3[idx] @ so3_exp(d)
+                    J[:, a] = (residual(R3p) - r0) / _FD
+                H[idx] = J
+        return r0
+
+    return CustomFactor(noise, ori_keys, err)
+
+
+def make_bias_prior(prob, b0, noise):
+    """r = bias - b0 (per-component weights live in the noise model)."""
+    def err(this, values, H):
+        b = np.asarray(values.atVector(B(0)), float)
+        if H is not None:
+            H[0] = np.eye(6)
+        return b - np.asarray(b0, float)
+    return CustomFactor(noise, [B(0)], err)
+
+
+def make_vec_prior(key, ref, noise):
+    """Strong anchor on a vector variable (boundary CP / bias pinning)."""
+    ref = np.asarray(ref, float)
+    n = ref.shape[0]
+
+    def err(this, values, H):
+        x = np.asarray(values.atVector(key), float)
+        if H is not None:
+            H[0] = np.eye(n)
+        return x - ref
+    return CustomFactor(noise, [key], err)
+
+
+def make_rot_prior(key, R_ref_mat, noise):
+    """Strong anchor on a Rot3 variable: r = Log(R_ref^T R) (right-tangent)."""
+    R_ref = np.asarray(R_ref_mat, float)
+
+    def residual(Rm):
+        return so3_log(R_ref.T @ Rm)
+
+    def err(this, values, H):
+        Rm = values.atRot3(key).matrix()
+        r0 = residual(Rm)
+        if H is not None:
+            J = np.zeros((3, 3))
+            for a in range(3):
+                d = np.zeros(3); d[a] = _FD
+                J[:, a] = (residual(Rm @ so3_exp(d)) - r0) / _FD
+            H[0] = J
+        return r0
+    return CustomFactor(noise, [key], err)

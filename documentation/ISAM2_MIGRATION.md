@@ -147,7 +147,24 @@ because the per-sample gyro *is* the spline's bandwidth source.
 - `test_phase0a.py`: primitives vs basalt reference (8e-8 rad), derivative
   consistency, factor build/evaluate, end-to-end gtsam `linearize`. PASS.
 
+- `test_phase0b.py`: batch parity vs the Ceres optimum over an interior window.
+  (A) stationarity: init at the C++ solution, outer knots pinned, solve. (B)
+  convergence: init at the P1-P3 init, solve. Compares the sampled gtsam
+  trajectory to the C++ trajectory.
+
 Phase 0a status: **DONE** (scaffold builds, evaluates, linearizes with correct
-local sparsity). Next: Phase 0b batch parity (sub-window solve vs the C++
-optimum; Python FD makes full-trajectory solve intractable, so use a sub-window;
-absolute timing is unrepresentative until C++ in Phase 3).
+local sparsity).
+
+Phase 0b status: **PASS** (2026-06-25). gtsam reproduces the Ceres optimum:
+  - 0.5 s window: max d_pos = 3.6 mm, max d_ori = 0.019 deg vs C++.
+  - 1.0 s window: max d_pos = 13.4 mm, max d_ori = 0.057 deg vs C++.
+Both the C++-init (stationarity) and P1-P3-init (convergence) solves land on the
+SAME gtsam optimum (identical final cost), so the sensor factors/weights/
+conventions match Ceres. The small mm/0.05 deg gap is windowing (local boundary
+pinning + omitted heading prior vs C++ global boundary+heading), not a factor
+bug: a sign/convention error would make the C++ optimum a NON-stationary point
+and gtsam would move far. Python FD solve is ~20-60 s/window (unrepresentative;
+the timing verdict is C++ Phase 3, per the plan).
+
+Next: Phase 0c (ISAM2 incremental + BOTH bias models; clique-size-vs-length;
+the constant-vs-random-walk bias decision).
