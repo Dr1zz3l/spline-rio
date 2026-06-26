@@ -516,6 +516,19 @@ double IsamSolver::update(
     // everywhere (ISAM2_MIGRATION.md "Selective FEJ"). The freeze is load-bearing
     // for marginal validity, so the plumbing was reverted.
 
+    // --- adaptive lag: extend the marginalization window during flips ---
+    // Marginalizing a flip knot freezes a stale linearization (the backflips ori gap,
+    // ISAM2_MIGRATION.md). Hold the lag long during/just-after high-|omega| segments so
+    // those knots keep re-linearizing; calm segments still marginalize at the base lag.
+    if (cfg_.lag_flip > 0.0) {
+        double wmax = 0.0;
+        for (const auto& s : imu)
+            wmax = std::max(wmax, std::sqrt(s.gx * s.gx + s.gy * s.gy + s.gz * s.gz));
+        if (wmax > cfg_.lag_flip_omega) last_flip_t_ = t_now;
+        const bool in_flip = (t_now - last_flip_t_) < cfg_.lag_flip_hold;
+        smoother_->smootherLag() = in_flip ? cfg_.lag_flip : cfg_.lag;
+    }
+
     // --- solve ---
     auto t0 = std::chrono::steady_clock::now();
     auto res = smoother_->update(g, v, ts);

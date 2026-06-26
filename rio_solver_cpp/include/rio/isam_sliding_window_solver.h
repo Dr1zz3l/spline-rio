@@ -70,6 +70,14 @@ struct IsamConfig {
     double boundary_sigma{1e-3};           // strong gauge anchor on first knots
     double min_range{0.2};
     double lag{1.5};
+    double lag_flip{0.0};         // extended marginalization lag (s) during high-|omega|
+                                  // flip segments (0 = off, fixed `lag`). Delays freezing
+                                  // the flip knots so they re-linearize freely (recovers
+                                  // toward the no-marg orientation, ISAM2_MIGRATION.md
+                                  // fix option (a)); calm segments still marginalize at
+                                  // `lag`. Held for lag_flip_hold s after the last flip.
+    double lag_flip_omega{5.0};   // |gyro| (rad/s) that engages the extended lag
+    double lag_flip_hold{1.0};    // keep the extended lag this long after the last flip
     double relinearize_threshold{0.01};
     int    relinearize_skip{1};
     int    extra_iters{0};        // extra empty ISAM2 updates/stride to converge
@@ -156,6 +164,7 @@ private:
     double floor_zlo_{0.0};           // this stride's floor level (Phase-1b cluster)
     bool   bz_init_{false};           // BZK(0) inserted (estimated radar z-bias)
     double bz_est_{0.0};              // current estimate of b_z
+    double last_flip_t_{-1e18};       // last high-|omega| time (adaptive-lag hysteresis)
 
     std::map<int, std::array<double, 4>> live_ori_;
     std::map<int, std::array<double, 3>> live_pos_;

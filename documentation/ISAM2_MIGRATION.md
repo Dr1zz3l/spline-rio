@@ -478,13 +478,24 @@ marginalization vs windowed re-linearizing marginalization.
 **Fix options (none trivial; backflips is CONTINUOUS flips so no quiet segment to
 marginalize in):**
   (a) Adaptive/no marginalization in high-|omega| segments -> full-smooth the flips
-      (7.3deg) but slow / unbounded for pure-backflips.
+      (7.3deg) but slow / unbounded for pure-backflips. **IMPLEMENTED + tested
+      2026-06-26 (`lag_flip`/`lag_flip_omega`/`lag_flip_hold`): WORKS, confirms the
+      root cause, but real-time-prohibitive on pure backflips.** Extend the IFLS lag
+      (gtsam FixedLagSmoother::smootherLag() is a settable ref -- no patch) during/just-
+      after high-|omega| strides. Backflips ori (floor on): fixed lag1.5 9.83deg ->
+      lag_flip4 7.98 -> lag_flip8 **7.05** (monotonic, approaching SW 6.3) -- DECISIVELY
+      confirms FEJ-freeze staleness. Cost: lag8 = 1025 ms/update, ~1862 active vars (the
+      flip knots never marginalize -> approaches no-marg). Needs lag~8 (small extensions
+      barely move it). Viable OFFLINE/mapping (recovers most of the gap), NOT real-time on
+      continuous backflips. Zero benefit on racing (ori not FEJ-limited) and fast racing
+      DOES hit |omega|>5 -> set the threshold high or leave off. Kept off by default.
   (b) SELECTIVE FEJ: don't fix the (observable, nonlinear) ORIENTATION boundary,
       only the (unobservable) position/yaw nullspace -> re-linearize orientation.
-      GTSAM fixes all marginal vars uniformly -> needs custom marginalization.
+      GTSAM fixes all marginal vars uniformly -> needs custom marg. TRIED -> REJECTED
+      (worse everywhere; the freeze is load-bearing, see "Selective FEJ" below).
   (c) Re-linearizing marginal (Ceres-style) in GTSAM -> not natively supported.
   (d) Accept it: iSAM2 wins racing, trails on the hardest flip orientation -- a
-      characterized, regime-dependent property.
+      characterized, regime-dependent property. (a) buys it back offline at a compute cost.
 
 ## Selective FEJ (2026-06-26): IMPLEMENTED + TESTED -> REJECTED (worse everywhere)
 
