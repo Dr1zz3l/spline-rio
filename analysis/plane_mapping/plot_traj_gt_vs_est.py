@@ -45,7 +45,7 @@ for col, (bag, title) in enumerate(BAGS):
         if row == 0 and col == 0:
             ax.legend(fontsize=8, loc='best')
 
-fig.suptitle("Ground truth vs iSAM live-edge trajectory (mocap-aligned) -- floor-plane anchor ON",
+fig.suptitle("Ground truth vs iSAM live-edge trajectory (mocap-aligned) -- floor-plane anchor ON (universal: free-offset + cluster, no per-bag tuning)",
              fontsize=13, y=0.99)
 plt.tight_layout(rect=[0, 0, 1, 0.97])
 out = Path(__file__).parent / "traj_gt_vs_est_all3.png"

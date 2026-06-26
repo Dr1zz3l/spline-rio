@@ -259,9 +259,16 @@ offset is a persistent gtsam::Vector1 landmark f0 (`FloorPlaneFreeFactor`), boot
 from the first ~1.5 s lowest return cluster, jointly estimated. Self-calibrates per bag
 with NO floor_z input: slow -0.04 m (vert 0.084, best yet), fast -0.09 m (vert 0.274,
 big win), backflips -0.82 m (neutral). The floor_z sensitivity (the -1.19 catastrophe)
-is GONE -- deployment-safe. Remaining (1b): the classification BAND is still per-bag
-(chicken-and-egg); replace with the drift-invariant lowest-z-cluster (width = physical
-floor thickness, a sensor constant) to remove the last knob. Study Appendix B.
+is GONE -- deployment-safe. **Phase 1b DONE (2026-06-26): drift-invariant lowest-z-
+cluster classification (`floor_cluster=1`) -> UNIVERSAL floor, the per-bag band is gone.**
+z_lo = per-stride 10th-pct predicted-z; floor = [z_lo-0.1, z_lo+floor_slab] gated by
+|z_lo-f0|<floor_band (drift gate). slab/band are physical constants, not per-env knobs.
+ONE config (lambda_floor=15, huber=0.15, floor_free=1, floor_cluster=1, floor_slab=0.4,
+floor_band=0.5) for ALL bags: slow total -32%/vert -58%, fast total -43%/vert -70%/vel
+-66%, backflips neutral. BEATS the per-bag-band Phase-1a (fast vert 0.163 vs 0.274). The
+Phase-1 gate (match/beat z, zero per-env tuning) is met+exceeded; the floor anchor is now
+universal + deployment-safe. Study Appendix B/C. Remaining: Phase 2 (wall->y, small) +
+multi-plane SLAM (Phases 3-5, optional).
 
 ## E. Other
 - Learned radar front-end (static/dynamic + ground/structure classification) to

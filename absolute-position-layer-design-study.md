@@ -330,11 +330,31 @@ start-height knowledge needed). slow even improved over hand-tuned (f0 finds the
 better than 0); fast is slightly behind hand-tuned (bootstrap landed -0.09 vs the ~0
 optimum; f0 stays gate-anchored near bootstrap) but still a large win over baseline.
 
-**Remaining for full Phase 1 (1b):** the classification BAND is still per-bag
-(slow 0.35 / fast 0.2 / backflips 0.3) -- the chicken-and-egg (gate on predicted-z,
-coupled to the vertical error). Next: replace the absolute band with the **drift-
-invariant lowest-z-cluster** per stride (the floor is the lowest dense layer regardless
-of absolute z; cluster width = physical floor thickness ~0.3 m, a sensor constant, not a
-per-env band), or the full local-normal classification (study §4). That removes the last
-tuning knob and makes the floor truly universal. (Timing: backflips free-floor mean
-245 ms/update, one 600 ms spike -- watch under the 300 ms stride budget.)
+## APPENDIX C — Phase 1b EXECUTED (2026-06-26): drift-invariant cluster -> UNIVERSAL floor
+
+Replaced the per-point absolute band with the **drift-invariant lowest-z-cluster** per
+stride (`floor_cluster=1`): z_lo = 10th-pct of the stride's predicted-z; a return is
+floor iff the stride is floor-bearing (|z_lo - f0| < floor_band, the max-plausible-drift
+gate) AND z_pred in [z_lo - 0.1, z_lo + floor_slab]. Because z_lo rides the common per-
+stride drift, there is no absolute-band clipping -> `floor_slab` (floor thickness) and
+`floor_band` (drift gate) are PHYSICAL CONSTANTS, not per-env knobs.
+
+**ONE universal floor config for all bags** (lambda_floor=15, floor_huber=0.15,
+floor_free=1, floor_cluster=1, floor_slab=0.4, floor_band=0.5):
+| bag | total (baseline) | vertical (baseline) | velocity (baseline) | f0 auto |
+|-----|------------------|---------------------|---------------------|---------|
+| slow | 0.112 (0.165) -32% | 0.059 (0.141) -58% | 0.208 (0.195) | -0.00 m |
+| fast | 0.344 (0.604) -43% | 0.163 (0.552) -70% | 0.248 (0.733) -66% | -0.05 m |
+| backflips | 1.718 (1.722) | 0.939 (0.949) | -- (neutral) | -0.48 m |
+
+The cluster classifier is MORE selective (slow 443 vs 721 band factors, fast 98 vs 181)
+-> cleaner floor returns, and it BEATS the per-bag-band Phase-1a (fast vert 0.163 vs
+0.274; slow 0.059 vs 0.084). **Phase 1 gate MET + exceeded: match/beat z across all
+speeds with ZERO per-environment tuning.** No floor_z, no per-bag band -> the floor
+anchor is now universal and deployment-safe. Recommended floor config = the line above.
+(Timing: backflips ~250 ms/update mean, occasional ~630 ms spike near the 300 ms stride
+budget -- the per-stride floor_cands pre-pass adds a little; optimize if it matters.)
+
+**Done for Phase 1.** Remaining toward the full study: Phase 2 (single dominant wall ->
+y anchor; small, partial, where-visible per Phase 0) and Phases 3-5 (multi-plane SLAM +
+Atlanta prior) -- optional, modest payoff on these flights (Appendix A).

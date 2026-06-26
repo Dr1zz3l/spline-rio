@@ -44,6 +44,13 @@ struct IsamConfig {
     double floor_z{0.0};                  // world height of the floor plane (init frame)
     double floor_band{0.5};               // |z_pred_world - floor_ref| < band => floor
     double floor_huber{0.3};              // Huber delta on the floor residual (m)
+    bool   floor_cluster{false};          // Phase 1b: classify floor returns by the
+                                          // drift-invariant LOWEST z-cluster per stride
+                                          // ([z_lo, z_lo+floor_slab], gated |z_lo-f0| <
+                                          // floor_band) instead of the per-point absolute
+                                          // band -> removes the per-bag band (the band &
+                                          // slab become universal physical constants).
+    double floor_slab{0.4};               // cluster width above z_lo (floor thickness, m)
     bool   floor_free{false};             // Phase 1: estimate the floor offset as a
                                           // persistent landmark f0 (FK(0)) instead of
                                           // hardcoding floor_z; bootstrapped from the
@@ -130,6 +137,7 @@ private:
     double floor_off_est_{0.0};    // current estimate of the floor offset f0
     std::vector<double> floor_cand_;  // bootstrap buffer (lowest-cluster -> f0 init)
     int floor_boot_strides_{0};
+    double floor_zlo_{0.0};           // this stride's floor level (Phase-1b cluster)
 
     std::map<int, std::array<double, 4>> live_ori_;
     std::map<int, std::array<double, 3>> live_pos_;

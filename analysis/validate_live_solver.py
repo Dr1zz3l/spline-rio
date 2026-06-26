@@ -707,6 +707,8 @@ def _solve_cpp_isam(initial_state, solver_radar_frames, imu_data,
     cfg.floor_band = solver_cfg.get('floor_band', 0.5)
     cfg.floor_huber = solver_cfg.get('floor_huber', 0.3)
     cfg.floor_free = bool(int(solver_cfg.get('floor_free', 0)))
+    cfg.floor_cluster = bool(int(solver_cfg.get('floor_cluster', 0)))
+    cfg.floor_slab = solver_cfg.get('floor_slab', 0.4)
     cfg.warm_start_align = bool(int(solver_cfg.get('warm_start_align', 1)))
     cfg.adapt_noise_stride = int(solver_cfg.get('adapt_noise_stride', 0))
     cfg.adapt_noise_alpha = solver_cfg.get('adapt_noise_alpha', 0.3)

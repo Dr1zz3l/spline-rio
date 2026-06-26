@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -198,39 +199,48 @@ double IsamSolver::update(
     ts[bkey] = t_now;
 
     // --- floor-offset landmark f0 (Phase 1, free-offset floor) ---
-    // Bootstrap once from the first stride's LOWEST return cluster (drift-free: the
-    // lowest dense layer is the floor regardless of absolute z), then keep f0 alive
-    // (persistent, never marginalized) by refreshing its timestamp each stride.
+    // Predicted world-z of every static return, using the (aligned) warm-start pose.
+    // The floor is the lowest dense layer here, regardless of absolute-z drift (the
+    // whole stride shares the drift) -> used for both the f0 bootstrap and the Phase-1b
+    // drift-invariant per-stride classification.
+    auto floor_cands = [&](const std::vector<RadarFrame>& frames) {
+        std::vector<double> cand;
+        for (const auto& f : frames) {
+            if (f.points.empty() || !in_domain(f.timestamp)) continue;
+            int ko, kp; double uo, up;
+            ori_active(f.timestamp, ko, uo); pos_active(f.timestamp, kp, up);
+            double qk[N_ORI][4]; const double* qp[N_ORI];
+            for (int j = 0; j < N_ORI; ++j) {
+                const int idx = std::max(0, std::min(ko - 3 + j, n_ori_ - 1));
+                const Eigen::Quaterniond qq = (align_R3 * quat_to_rot3(init_ori_[idx])).toQuaternion();
+                qk[j][0] = qq.x(); qk[j][1] = qq.y(); qk[j][2] = qq.z(); qk[j][3] = qq.w(); qp[j] = qk[j];
+            }
+            const Eigen::Matrix3d Rw =
+                analytic::rotation_with_jacobian_manual<N_ORI>(qp, uo, inv_dt_ori_, nullptr).matrix();
+            using Helper = CeresSplineHelper<N_POS>;
+            Eigen::Matrix<double, N_POS, 1> p0; Helper::template baseCoeffsWithTime<0>(p0, up);
+            const Eigen::Matrix<double, N_POS, 1> wv = Helper::blending_matrix_ * p0;
+            double pz = 0.0;
+            for (int i = 0; i < N_POS; ++i) {
+                const int idx = std::max(0, std::min(kp - 5 + i, n_pos_ - 1));
+                pz += wv[i] * (init_pos_[idx][2] + align_t[2]);
+            }
+            for (const auto& pt : f.points) {
+                Eigen::Vector3d xyz(pt.x, pt.y, pt.z);
+                if (xyz.norm() < cfg_.min_range) continue;
+                cand.push_back((Rw * (R_bs_ * xyz + t_bs_)).z() + pz);
+            }
+        }
+        return cand;
+    };
+
+    floor_zlo_ = std::numeric_limits<double>::quiet_NaN();   // this stride's floor level
     if (cfg_.floor_free) {
         if (!floor_init_) {
-            // Buffer candidate world-z over the first ~1.5 s (a single 0.3 s stride is
-            // too short to reliably see the floor on slow flight) before committing f0.
-            for (const auto& f : radar) {
-                if (f.points.empty() || !in_domain(f.timestamp)) continue;
-                int ko, kp; double uo, up;
-                ori_active(f.timestamp, ko, uo); pos_active(f.timestamp, kp, up);
-                double qk[N_ORI][4]; const double* qp[N_ORI];
-                for (int j = 0; j < N_ORI; ++j) {
-                    const int idx = std::max(0, std::min(ko - 3 + j, n_ori_ - 1));
-                    const Eigen::Quaterniond qq = (align_R3 * quat_to_rot3(init_ori_[idx])).toQuaternion();
-                    qk[j][0] = qq.x(); qk[j][1] = qq.y(); qk[j][2] = qq.z(); qk[j][3] = qq.w(); qp[j] = qk[j];
-                }
-                const Eigen::Matrix3d Rw =
-                    analytic::rotation_with_jacobian_manual<N_ORI>(qp, uo, inv_dt_ori_, nullptr).matrix();
-                using Helper = CeresSplineHelper<N_POS>;
-                Eigen::Matrix<double, N_POS, 1> p0; Helper::template baseCoeffsWithTime<0>(p0, up);
-                const Eigen::Matrix<double, N_POS, 1> wv = Helper::blending_matrix_ * p0;
-                double pz = 0.0;
-                for (int i = 0; i < N_POS; ++i) {
-                    const int idx = std::max(0, std::min(kp - 5 + i, n_pos_ - 1));
-                    pz += wv[i] * (init_pos_[idx][2] + align_t[2]);
-                }
-                for (const auto& pt : f.points) {
-                    Eigen::Vector3d xyz(pt.x, pt.y, pt.z);
-                    if (xyz.norm() < cfg_.min_range) continue;
-                    floor_cand_.push_back((Rw * (R_bs_ * xyz + t_bs_)).z() + pz);
-                }
-            }
+            // Buffer candidates over the first ~1.5 s (a single 0.3 s stride is too short
+            // to reliably see the floor on slow flight) before committing f0.
+            auto c = floor_cands(radar);
+            floor_cand_.insert(floor_cand_.end(), c.begin(), c.end());
             ++floor_boot_strides_;
             if (floor_cand_.size() >= 200 || floor_boot_strides_ >= 6) {
                 double f0 = cfg_.floor_z;
@@ -248,7 +258,20 @@ double IsamSolver::update(
                 std::vector<double>().swap(floor_cand_);
             }
         }
-        if (floor_init_) ts[FK(0)] = t_now;   // persistent: never ages out of the lag
+        if (floor_init_) {
+            ts[FK(0)] = t_now;   // persistent: never ages out of the lag
+            // Phase 1b: this stride's floor level = robust low percentile of the
+            // predicted-z cluster. Only a floor-bearing stride (its lowest cluster near
+            // the established f0) gets floor factors; the slab around z_lo then captures
+            // the whole floor cluster without the absolute-band clipping.
+            if (cfg_.floor_cluster) {
+                auto c = floor_cands(radar);
+                if (!c.empty()) {
+                    std::sort(c.begin(), c.end());
+                    floor_zlo_ = c[std::min(c.size() - 1, c.size() / 10)];   // 10th pct
+                }
+            }
+        }
     }
 
     // --- ensure knots for all measurements first ---
@@ -395,10 +418,22 @@ double IsamSolver::update(
                 const Eigen::Vector3d p_body = R_bs_ * xyz + t_bs_;
                 const double z_off = (R_ws * p_body).z();
                 const double z_pred_world = z_off + pz_pred;
-                // free-offset: gate on the current f0 estimate (self-calibrating);
-                // fixed: gate on the hardcoded floor_z.
-                const double ref = cfg_.floor_free ? floor_off_est_ : cfg_.floor_z;
-                if (std::abs(z_pred_world - ref) <= cfg_.floor_band) {
+                bool is_floor;
+                if (cfg_.floor_cluster) {
+                    // Phase 1b: accept the per-stride lowest cluster [z_lo, z_lo+slab],
+                    // but only on a floor-bearing stride (z_lo near f0, |.|<floor_band
+                    // = max plausible drift). Drift-invariant: z_lo rides the drift, so
+                    // no absolute-band clipping and no per-bag band.
+                    is_floor = std::isfinite(floor_zlo_) &&
+                               std::abs(floor_zlo_ - floor_off_est_) <= cfg_.floor_band &&
+                               z_pred_world >= floor_zlo_ - 0.1 &&
+                               z_pred_world <= floor_zlo_ + cfg_.floor_slab;
+                } else {
+                    // free-offset: gate on the current f0 estimate; fixed: on floor_z.
+                    const double ref = cfg_.floor_free ? floor_off_est_ : cfg_.floor_z;
+                    is_floor = std::abs(z_pred_world - ref) <= cfg_.floor_band;
+                }
+                if (is_floor) {
                     auto nf = gtsam::noiseModel::Robust::Create(
                         gtsam::noiseModel::mEstimator::Huber::Create(cfg_.floor_huber),
                         gtsam::noiseModel::Isotropic::Sigma(1, 1.0 / std::sqrt(cfg_.lambda_floor)));

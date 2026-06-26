@@ -61,7 +61,9 @@ PYBIND11_MODULE(rio_isam, m) {
         .def_readwrite("floor_z", &IsamConfig::floor_z)
         .def_readwrite("floor_band", &IsamConfig::floor_band)
         .def_readwrite("floor_huber", &IsamConfig::floor_huber)
-        .def_readwrite("floor_free", &IsamConfig::floor_free);
+        .def_readwrite("floor_free", &IsamConfig::floor_free)
+        .def_readwrite("floor_cluster", &IsamConfig::floor_cluster)
+        .def_readwrite("floor_slab", &IsamConfig::floor_slab);
 
     py::class_<ExtrinsicConfig>(m, "ExtrinsicConfig")
         .def(py::init<>())
