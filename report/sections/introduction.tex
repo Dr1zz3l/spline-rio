@@ -45,10 +45,11 @@ We contribute:
         complementary to \ac{fej}, eliminating prior-weight tuning, with a
         real-time operating point per regime at minimal accuracy cost
         (0.3--0.5\,s stride on a laptop).
-  \item One measurement-weighting configuration from hover to
-        \SI{10}{\radian\per\second}, with the velocity--orientation
-        trade as a measured Pareto curve and accuracy validated on
-        \emph{held-out flights} never used for tuning.
+  \item One \emph{weighting law} from hover to
+        \SI{10}{\radian\per\second} (with per-regime spline grids and two
+        tumbling rescue terms), the velocity--orientation trade a measured
+        Pareto curve, validated on \emph{held-out racing flights}
+        (tumbling awaits the repeated flips of \autoref{sec:stat_scope}).
   \item Honest negative results: a diagnostic symptom pattern for
         marginalization inconsistency; a representation-level study
         that \emph{disproves} the adaptive-knot-density hypothesis for

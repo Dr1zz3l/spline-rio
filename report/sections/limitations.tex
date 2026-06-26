@@ -32,7 +32,8 @@ research problem.
 
 \textbf{Batch.}
 The batch solver handles backflips only with $\Delta t_o {=} 0.8$\,ms
-(10$\times$ denser than racing, 22{,}630 knots over 18\,s) and
+(the \emph{batch} density, 10$\times$ denser than the \SI{8}{\milli\second}
+sliding-window grid of \autoref{tab:config}; 22{,}630 knots over 18\,s) and
 locked extrinsics (free pitch drifts to $+18\degree$ due to dense
 under-constrained orientation DoF).  At this density the batch
 orientation is \emph{bistable} (detailed below): under small

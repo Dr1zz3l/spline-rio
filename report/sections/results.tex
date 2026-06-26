@@ -59,11 +59,13 @@ Bag & Mode & Vel (m/s) & Ori (\degree) & Pos (m) & Drift\% & $t_{\mathrm{win}}$(
   correction $b{=}{-}1.5$\,m/s (\autoref{sec:backflips}).  Extrinsic
   pitch locked at 27.5\degree\ for all bags.
   $^\ast$Settled velocity is not reported for backflips: stride-boundary
-  resampling injects a retrospective-evaluation artifact there.  The live
-  column is the deployment-relevant figure throughout.
+  resampling injects a retrospective-evaluation artifact there, which also
+  leaves backflips settled \emph{position} above live (the one such
+  inversion); the live column is the deployment-relevant figure throughout.
   Drift\,\%: path lengths 48.1\,m / 44.9\,m / 54.1\,m.
-  Iteration-capped configurations reproduce bit-identically across
-  repeated runs; full-convergence configurations vary by $<$2\%
+  Iteration-capped configurations reproduce bit-identically across repeated
+  runs on a fixed platform/BLAS (single-thread reduction);
+  full-convergence configurations vary by $<$2\%
   (multithreaded reduction order).}
 \end{tabular}
 \end{table}
@@ -154,7 +156,9 @@ Regime & Win./str.\ (s) & Solve (s) & Live pos (m) & Live ori (\degree) \\
     racing (top) and fast racing (bottom).  Batch estimate (red dashed)
     and SW live edge (orange dotted).  Fast racing position error
     accumulates monotonically with trajectory length; velocity and
-    orientation errors spike at high-speed, high-dynamics sections.}
+    orientation errors spike at high-speed, high-dynamics sections.
+    Backflips omitted (flip-time GT mask gaps, bistable batch reference;
+    \autoref{sec:backflips}).}
   \label{fig:error_time}
 \end{figure*}
 
@@ -217,17 +221,17 @@ bags, and \emph{both} systems are evaluated with the identical causal
 protocol of \autoref{sec:setup} (live estimates, start-anchored
 alignment, same windows and ground truth).
 \autoref{tab:baselines} reports the headline metrics~(a) and their
-decomposition~(b).  On position our
-solver reaches the same order of magnitude as the baselines (0.6--1.3\%
-drift, 0.5--1.9\,m absolute).  It trails the yaw-aided ekf-yrio on
-position (best on all four flights), but velocity \ac{rmse}
-0.07--0.08\,m/s matches theirs and the order-of-magnitude vertical gap
-closes (below).
+decomposition~(b).  On position our \emph{horizontal} drift is
+competitive ($0.14$--$0.30\%$ of path, \autoref{tab:baselines}(b)); the
+larger total drift (0.6--1.3\% vs.\ the baselines' 0.3--0.6\%) is almost
+entirely the \emph{vertical} channel (0.63--1.28\%), the single-chip
+elevation residual the \ac{ransac} prefilter targets (below).  Velocity
+\ac{rmse} 0.07--0.08\,m/s matches theirs; absolute position is
+0.5--1.9\,m, trailing the yaw-aided ekf-yrio.
 The full 3-DoF orientation column favors our solver
 (0.51--1.13\degree\ vs.\ up to $10.1\degree$), but this gap is almost
 entirely \emph{yaw}: our heading is anchored by a pseudo-magnetometer
-(here the VINS pseudo-GT yaw used as a magnetometer surrogate, in
-place of the \ac{mocap} yaw available on our own platform), whereas
+(here a VINS pseudo-GT yaw surrogate), whereas
 ekf-yrio uses sensor-only Manhattan-world yaw and ekf-rio is unaided.
 On the heading-\emph{independent} roll and pitch the three systems are
 comparable ($0.25$--$0.74\degree$, \autoref{tab:baselines}(b)),
@@ -268,8 +272,7 @@ confirming that our default front-end matches them.
 \emph{sensor/stack-coupling characterization}, not a head-to-head
 comparison; it is regime-dependent, and we report the measured
 outcome rather than a verdict.  Here we port ekf-rio and its multi-radar generalization
-x-rio~\cite{doer2021xrio} (run single-radar); ekf-yrio, the yaw-aided
-single-radar variant Doer benchmarks the ICINS flights with, was the
+x-rio~\cite{doer2021xrio} (run single-radar); ekf-yrio was the
 forward-port comparator above.  On the slow-racing flight both ekf-rio
 and x-rio fail: their
 $\chi^2(3)$ innovation gate rejects $99.7\%$ of the radar ego-velocity
@@ -279,9 +282,9 @@ entirely vertical, $\approx\tfrac12 g t^2$).  On the faster flight ekf-rio
 instead survives, degrading to $1.4$\,m ($3.1\%$ drift,
 $9.0\degree$): its larger translational excitation produces radar
 ego-velocities that clear the gate (only $64\%$ rejected), enough to
-constrain the filter.  The amount of radar information admitted thus
-scales with how strongly motion excites the sparse Doppler, and the
-common cause is a stack-level mismatch rather than a defect of their
+constrain the filter.  The radar information admitted thus
+scales with how strongly motion excites the sparse Doppler; the common
+cause is a stack-level mismatch, not a defect of their
 method: our best-velocity firmware yields only $\sim$13 points per
 frame (their \ac{ransac}/$\sigma$-gates expect hundreds, and ego-velocity
 estimation fails outright on roughly half of all scans), there is no
@@ -433,8 +436,8 @@ Configuration & Pos (m) & Ori (\degree) \\
 \multicolumn{3}{@{}p{\columnwidth}@{}}{\scriptsize
   Batch rows (\ac{imu}-rate, lever-arm, ori-reg, extrinsic) isolate one
   design choice at a fixed pre-\ac{ransac} operating point; the \ac{ransac} default
-  shifts batch absolutes (slow batch 0.169$\to$0.198\,m, fast
-  0.768$\to$0.64\,m, the \autoref{sec:results} batch figures) without
+  shifts batch absolutes (slow batch 0.169$\to$0.198\,m / 1.02$\to$1.1\degree,
+  fast 0.768$\to$0.64\,m, the \autoref{sec:results} batch figures) without
   changing orderings.  The SW rows (window duration, marginalization)
   are under the \ac{ransac} default.  All runs use the sensor-only init
   (\autoref{sec:init}); the bias seed shifts batch absolutes comparably,

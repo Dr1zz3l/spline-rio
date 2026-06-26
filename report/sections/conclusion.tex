@@ -29,8 +29,8 @@ rather than estimated online.  Notably, the largest accuracy gains came from dia
 re-weighting of existing measurements, not from added model capacity:
 a representation-level study showed the orientation spline already
 tracks \SI{10}{\radian\per\second} flips at the gyroscope noise floor,
-disproving our own adaptive-knot-density hypothesis before
-implementation.
+disproving our own adaptive-knot-density hypothesis without implementing
+the non-uniform-knot extension.
 
 Open limitations: (1) loop-scale position geometry through flips is
 bounded by during-flip radar data quality; (2) ground truth itself degrades during flips

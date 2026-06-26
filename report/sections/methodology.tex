@@ -77,11 +77,10 @@ spline solver, hard-rejecting the elevation-biased minority before the
 optimization.  The prefilter is seeded
 (\texttt{numpy.default\_rng(0)}), so the full pipeline reproduces
 bit-identically; frames with fewer than five returns bypass it
-unchanged.  On those sparse frames, including most of the backflip
-regime, the in-solver Huber loss is the sole radar outlier protection,
-so the two stages are complementary, not redundant.  It runs once at
-frame load, not per window, so it does not
-enter the per-window timing budget (\autoref{sec:results}).
+unchanged.  On those sparse frames (most of the backflip regime) the
+in-solver Huber loss is the sole radar outlier protection, so the two
+stages are complementary.  It runs once at frame load, not per window, so
+it does not enter the per-window timing budget (\autoref{sec:results}).
 \autoref{sec:baselines} quantifies what it removes: on the public
 ICINS flights it closes an order-of-magnitude vertical-drift gap, and on
 our own flights it improves aggressive-racing live position by $20\%$ ($0.50\to0.40$\,m
@@ -342,30 +341,28 @@ The shared global bias is the trap: it is what tempts pulling in the
 far-edge \ac{imu} factors.  We instead exploit the splines' local support
 of $N$ knots (quintic position $N{=}6$, cubic orientation $N{=}4$).
 
-\begin{proposition}[Exactly closed spline marginal]
+\begin{proposition}[Exact closed spline marginal at a fixed linearization]
 \label{prop:marg}
-Let $\mathcal{M}$ be the block of knots leaving the window and
-$\mathcal{B}$ the $N{-}1$ retained knots immediately adjacent to it
-\emph{together with} the global 6-DoF \ac{imu} bias (the dim-30 boundary
-of \autoref{sec:sw}).
-For an order-$N$ spline, every factor has local support over $N$
-consecutive knots $[i,\,i{+}N{-}1]$, and an \ac{imu} factor additionally
-touches the shared bias.  If a factor touches $\mathcal{M}$,
-i.e.\ $[i,\,i{+}N{-}1]\cap\mathcal{M}\neq\varnothing$, then
-$[i,\,i{+}N{-}1]\subseteq\mathcal{M}\cup\mathcal{B}$ and its bias
-dependence already lies in $\mathcal{B}$.  Selecting exactly
-the factors that touch $\mathcal{M}$, together with the previous prior,
-therefore forms a Schur complement that conditions on no interior state
-and shares no factor with the next window: the resulting prior is the
-exact marginal.
+At a fixed linearization point, let $\mathcal{M}$ be the knots leaving the
+window and $\mathcal{B}$ the $N{-}1$ retained knots immediately
+\emph{forward} of $\mathcal{M}$ plus the global 6-DoF \ac{imu} bias (the
+dim-30 boundary of \autoref{sec:sw}).  Every order-$N$ spline factor has
+support over $N$ consecutive knots, and an \ac{imu} factor also touches the
+bias; hence any factor touching $\mathcal{M}$ has support
+$\subseteq\mathcal{M}\cup\mathcal{B}$ with its bias dependence in
+$\mathcal{B}$, while factors reaching further back are already summarized by
+the incoming prior (re-added here).  Selecting exactly the factors touching
+$\mathcal{M}$ (plus that prior) therefore forms a Schur complement that
+conditions on no interior state and shares no factor with the next window:
+at this linearization it is the \emph{exact} marginal.
 \end{proposition}
 
 Including \emph{only} residuals that touch a marginalized variable
 (rather than those touching marginalized \emph{or} boundary variables)
-thus yields a consistent marginal.  With this rule the prior is applied
-\textbf{unscaled} (scale $=1$) across all flight regimes, and its
-Mahalanobis residual at the solution drops from $10^{6}$--$10^{12}$
-to $\mathcal{O}(1)$: the prior agrees with the incoming data.
+thus yields a closed marginal.  Empirically it is also \emph{consistent}:
+the prior is applied \textbf{unscaled} (scale $=1$) across all flight
+regimes, and its Mahalanobis residual at the solution drops from
+$10^{6}$--$10^{12}$ to $\mathcal{O}(1)$, i.e.\ it agrees with the incoming data.
 
 \emph{Relation to \ac{fej}.}  This mechanism is distinct from, and
 complementary to, first-estimates-Jacobian approaches to
