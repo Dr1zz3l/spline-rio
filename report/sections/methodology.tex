@@ -63,7 +63,11 @@ $r_k = v_{D,\text{meas}} - v_{D,\text{pred}}$ uses Huber
 loss with $\delta = 1.0$\,m/s, robust as defense-in-depth to any
 residual Doppler noise on the surviving inlier returns; the
 \SI{0.049}{\metre\per\second} Doppler resolution sets a lower bound but
-does not drive the choice.
+does not drive the choice.  This $\delta$ is deliberately large relative to
+the $0.07$--$0.08$\,m/s ego-velocity residuals we ultimately reach
+(\autoref{sec:baselines}): after the \ac{ransac} prefilter the inliers are
+already clean, so $\delta$ caps only the rare survivor rather than shaping
+the fit.
 
 \textbf{\ac{ransac} ego-velocity prefilter (default front-end).}
 A single-chip radar with only 2\,TX antennas has limited elevation
@@ -140,7 +144,12 @@ elevation bias of the 2-TX array.
   \mathbf{r}_a = \vz_a - \vR_{bw}\!\left(\ddot{\vp}_w - \vg_w\right) - \vb_a,
   \label{eq:accel}
 \end{equation}
-weighted $\lambda_a = 0.01$.
+weighted $\lambda_a = 0.01$: this $400{:}1$ gyro/accel ratio
+($\lambda_g{=}4$, below) is a deliberate design statement that leans
+position and velocity on radar Doppler plus min-snap, since the
+accelerometer carries thrust transients and frame vibration that
+corrupt the $\vR$--$\ddot{\vp}$ coupling (the dynamics-adaptive law of
+\autoref{sec:models} down-weights it further mid-flip).
 
 \textbf{Gyroscope.}
 \begin{equation}

@@ -67,8 +67,8 @@ analytical first derivative of the position B-spline, not from finite
 differences of the estimated trajectory.
 \emph{Position drift} (\%) is position \ac{rmse} normalised by the total
 GT path length, the standard odometry metric for a
-dead-reckoning system with no loop closure; per-segment (KITTI-style)
-relative pose error is in the released code.
+dead-reckoning system with no loop closure (per-segment \ac{rpe} in
+\autoref{sec:sw_results}).
 Start-anchored alignment is harsher than the whole-trajectory
 SE(3)/Umeyama fit (the EVO/KITTI default) used by most odometry papers,
 because it cannot retro-fit a constant transform to cancel accumulated

@@ -72,6 +72,11 @@ Bag & Mode & Vel (m/s) & Ori (\degree) & Pos (m) & Drift\% & $t_{\mathrm{win}}$(
 
 Live-edge orientation degrades 0.4--0.5\degree\ relative to settled;
 this is expected because subsequent windows refine previous estimates.
+As a complementary per-segment view, the live-edge KITTI translational
+\ac{rpe} converges to $1.0$--$1.7\%$ beyond 20\,m on racing (from
+$5$--$9\%$ at 5\,m segments, where the ${\sim}11$\,Hz radar yields few
+Doppler per segment) and to ${\sim}5.6\%$ on backflips; full curves are
+released with the code.
 With the consistent prior, settled velocity is smooth across stride
 boundaries (the earlier inconsistent prior produced position jumps
 that inflated the settled velocity derivative).
@@ -271,7 +276,11 @@ confirming that our default front-end matches them.
 \textbf{Their filters on our data.}  The reverse port is a
 \emph{sensor/stack-coupling characterization}, not a head-to-head
 comparison; it is regime-dependent, and we report the measured
-outcome rather than a verdict.  Here we port ekf-rio and its multi-radar generalization
+outcome rather than a verdict.  We deliberately keep their \emph{stock}
+innovation gate and process noise rather than re-tuning them to our
+platform: the question here is out-of-the-box coupling, and any re-tune
+would confound it with our own parameter search.  Here we port ekf-rio and
+its multi-radar generalization
 x-rio~\cite{doer2021xrio} (run single-radar); ekf-yrio was the
 forward-port comparator above.  On the slow-racing flight both ekf-rio
 and x-rio fail: their
