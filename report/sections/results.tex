@@ -112,10 +112,7 @@ live-edge seam.
 
 \begin{table}[t]
 \centering
-\caption{Evaluation configuration (3\,s/0.3\,s, used throughout the paper)
-  vs.\ the per-regime real-time point (solve time below the stride).
-  Reaching real time is accuracy-neutral and improves backflips.  Live-edge
-  \ac{rmse}; solve times carry $\sim$20\% run-to-run variance.}
+\caption{Evaluation Configuration vs.\ Per-Regime Real-Time Operating Point}
 \label{tab:realtime}
 \small
 \setlength{\tabcolsep}{3pt}
@@ -135,6 +132,11 @@ Regime & Win./str.\ (s) & Solve (s) & Live pos (m) & Live ori (\degree) \\
   & 3.0/0.3 (eval.)   & 0.60 & 1.545 & 6.35 \\
   & 2.0/0.5 (real-time) & 0.43 & \textbf{1.499} & \textbf{5.56} \\
 \bottomrule
+\multicolumn{5}{@{}p{\columnwidth}@{}}{\scriptsize Win./str.: window/stride.
+  The 3\,s/0.3\,s evaluation configuration is used throughout the paper; the
+  real-time point pushes per-window solve time below the stride.  Reaching real
+  time is accuracy-neutral and improves backflips.  Live-edge \ac{rmse}; solve
+  times carry $\sim$20\% run-to-run variance.}
 \end{tabular}
 \end{table}
 
@@ -300,19 +302,8 @@ spends \SI{0.35}{}--\SI{0.70}{\second} per window on sparse Doppler,
 an accuracy-versus-latency trade.
 
 \begin{table}[t]
-\caption{Cross-validation on the public ICINS-2021 flight
-datasets~\cite{doer2021yrio}, all systems under our causal protocol
-(live estimate, start-anchored alignment).
-\textbf{(a)}~Headline metrics; heading aiding differs by design (see text).
-\textbf{(b)}~Decomposition, making the honest structure visible at a
-glance: \emph{roll/pitch} is the heading-independent attitude \ac{rmse}
-(per-axis RMS, yaw excluded), so the large orientation gap in~(a) is yaw,
-not attitude; \emph{our drift} splits our position error into horizontal
-and vertical, both sub-1.3\% under the default \ac{ransac} prefilter
-(\autoref{sec:models}; the footnote gives the prefilter-disabled figures
-for contrast); \emph{whole-traj.\ \ac{ate}} re-evaluates every system under the
-standard EVO/KITTI Umeyama alignment (no scale) for cross-checking against
-published figures.}
+\caption{Cross-Validation on the Public ICINS-2021 Flight
+Datasets~\cite{doer2021yrio}, All Systems Under Our Causal Protocol}
 \label{tab:baselines}
 \centering
 \footnotesize
@@ -355,7 +346,16 @@ Fl.\ & rio & yrio & Ours & hor.\ & ver.\ & rio & yrio & Ours \\
 
 \vspace{2pt}
 
-\parbox{\columnwidth}{\raggedright\scriptsize Prefilter \emph{disabled} (Huber-only): our vertical drift $12$--$15\%$; whole-traj.\ \ac{ate} $9.57/2.88/10.86/5.48$\,m (flights~1--4).\par}
+\parbox{\columnwidth}{\raggedright\scriptsize Live estimate, start-anchored
+  alignment.  \textbf{(a)}~headline; heading aiding differs by design (see
+  text).  \textbf{(b)}~decomposition: \emph{roll/pitch} is the
+  heading-independent attitude \ac{rmse} (yaw excluded), so the orientation
+  gap in~(a) is yaw, not attitude; \emph{our drift} splits position into
+  horizontal/vertical (both sub-1.3\% under the default \ac{ransac} prefilter,
+  \autoref{sec:models}); \emph{whole-traj.\ \ac{ate}} re-evaluates every system
+  under EVO/KITTI Umeyama alignment (no scale) for cross-checking published
+  figures.  Prefilter \emph{disabled} (Huber-only): vertical drift
+  $12$--$15\%$, whole-traj.\ \ac{ate} $9.57/2.88/10.86/5.48$\,m (flights~1--4).\par}
 \end{table}
 
 \subsection{Output Covariance Consistency (NEES)}
