@@ -20,18 +20,20 @@ unchanged, so absolute heading cannot be recovered from radar and \ac{imu}
 alone.  A magnetometer resolves this and is standard on virtually all
 flight platforms; here \ac{mocap} yaw serves that role.  Because that
 \ac{mocap} yaw is noise- and bias-free (unlike a real magnetometer),
-the heading-aided orientation numbers are an \emph{upper bound} on accuracy.
-We characterize the gap with a perturbed heading prior (a slowly-varying
-$2\degree$ drift, a low-frequency sinusoid with random phase/frequency, zero
-at the start, plus $1.5\degree$ white noise; three seeds).  The estimate
-\emph{tracks} the prior, so the effect is regime- and realization-dependent:
-live orientation ranges $2.1$--$3.5\degree$ on slow racing (from
-$1.97\degree$: a sustained drift propagates into yaw at $\lambda_\psi{=}10$),
-$2.9$--$3.3\degree$ on fast (from $2.88\degree$, weaker prior), and
-$6.4$--$6.9\degree$ on backflips (from $6.35\degree$, roll/pitch-dominated).
-Real magnetometers can be larger and throttle-correlated, so this is an
-optimistic floor; real-mag validation is future work (\autoref{sec:models}).
-The heading-\emph{independent} roll/pitch decomposition
+the heading-aided orientation numbers are an \emph{upper bound}; we bound
+the real-sensor gap two ways.  The dominant magnetometer error is a roughly
+\emph{constant} hard-iron bias (often $5$--$15\degree$ uncalibrated), which
+under our start-anchored alignment is a \emph{gauge} it absorbs, leaving
+drift, velocity, and orientation \ac{rmse} unchanged however large.  Only the
+\emph{time-varying} residual costs: perturbing the prior with a $2\degree$
+slowly-varying drift plus $1.5\degree$ noise (three seeds) degrades live
+orientation by up to ${\sim}1.5\degree$ on slow racing ($2.1$--$3.5\degree$
+from $1.97\degree$; the estimate tracks the prior) and ${\sim}0.4$/$0.6\degree$
+on fast/backflips, and a $\lambda_\psi$ sweep shows this is the sensor's
+floor, not over-trust ($\lambda_\psi{=}10$ is near-optimal).  A
+throttle-correlated real magnetometer, validated against ground truth, is
+future work.  The
+heading-\emph{independent} roll/pitch decomposition
 (\autoref{tab:baselines}(b)) and the unaided-yaw check (\autoref{sec:baselines})
 isolate attitude from this idealization.
 
@@ -76,12 +78,10 @@ from the Huber front-end ($1.51\to1.55$\,m live) is within run-to-run
 noise.
 
 \emph{Why $\Delta t_o{=}8$\,ms in the window.}
-At the batch density $\Delta t_o{=}0.8$\,ms a 3\,s window has
-$\sim$11{,}250 orientation DoF against $\sim$9{,}000 gyroscope
-constraints (1.26 DoF/constraint); the per-window Jacobian is
-rank-deficient and the solver freezes near its initialization.
-At 8\,ms the window is well-conditioned (62.5\,Hz model bandwidth
-comfortably covers the 10--20\,Hz flip dynamics).
+At the batch $0.8$\,ms a 3\,s window is rank-deficient
+($\sim$11{,}250 orientation DoF vs $\sim$9{,}000 gyroscope constraints) and
+the solver freezes near its initialization; 8\,ms is well-conditioned
+(62.5\,Hz bandwidth covers the 10--20\,Hz flip dynamics).
 The same density is what makes the \emph{batch} problem bistable (the
 $\sim$8\degree/$\sim$25\degree\ oscillation noted above): the final cost
 \emph{anti-correlates} with accuracy (the underconstrained problem
