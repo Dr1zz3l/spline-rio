@@ -353,6 +353,11 @@ double IsamSolver::update(
         }
     }
 
+    // NOTE: "selective FEJ" (exclude active ori knots from the marginal freeze via
+    // a vendored-GTSAM setNoFixKeys patch) was tried here and REJECTED -- worse
+    // everywhere (ISAM2_MIGRATION.md "Selective FEJ"). The freeze is load-bearing
+    // for marginal validity, so the plumbing was reverted.
+
     // --- solve ---
     auto t0 = std::chrono::steady_clock::now();
     auto res = smoother_->update(g, v, ts);

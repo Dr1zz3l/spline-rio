@@ -29,8 +29,9 @@ see "ROOT CAUSE" below. Improvement experiments that came back dead/negative/mar
 (so the backend is well-optimized): radar smear (negligible, 2.7% of flip noise),
 cost-based extra_iters early-stop (orientation hidden under dominant residuals),
 radar_pos_split (small pos win, small ori cost), NIS-adaptive (= hand-tuned, not
-better). Remaining wins are research-grade: selective FEJ (backflips ori), GP/WNOA
-motion prior, plane-mapping for absolute position. See ALGO_IMPROVEMENTS.md.
+better), selective FEJ (worse everywhere -- the marginal freeze is load-bearing;
+see "Selective FEJ" below). Remaining wins are research-grade: GP/WNOA motion prior,
+plane-mapping for absolute position. See ALGO_IMPROVEMENTS.md.
 
 This file is the durable record of *why* and *what was learned*, so the key
 insights survive context compression. Benchmark numbers and per-phase config
@@ -484,6 +485,59 @@ marginalize in):**
   (c) Re-linearizing marginal (Ceres-style) in GTSAM -> not natively supported.
   (d) Accept it: iSAM2 wins racing, trails on the hardest flip orientation -- a
       characterized, regime-dependent property.
+
+## Selective FEJ (2026-06-26): IMPLEMENTED + TESTED -> REJECTED (worse everywhere)
+
+Fix option (b) above was implemented end-to-end and is a clean NEGATIVE result.
+
+**What was built.** GTSAM IFLS/iSAM2 freezes ALL marginal-boundary keys uniformly
+(`ISAM2::marginalizeLeaves` inserts every key of each new marginal factor into
+`fixedVariables_`; relinearization then erases those from relinKeys -> the FEJ
+freeze). Selective FEJ = exclude the ORIENTATION knots from that freeze so the
+(observable, strongly nonlinear) ori boundary keeps relinearizing while the
+position/yaw nullspace + bias stay frozen. This needed a vendored-GTSAM patch
+(no native hook):
+  - `gtsam/nonlinear/ISAM2.h`: add `KeySet noFixKeys_` + `setNoFixKeys()/getNoFixKeys()`.
+  - `gtsam/nonlinear/ISAM2.cpp` (`marginalizeLeaves`, the `fixedVariables_.insert`
+    loop): `if (noFixKeys_.exists(factorKey)) continue;` before the insert.
+  - `gtsam_unstable/.../IncrementalFixedLagSmoother.h`: forward
+    `setNoFixKeys(keys){ isam_.setNoFixKeys(keys); }` (getISAM2() is const).
+  - `IsamSolver::update`, before `smoother_->update`: set noFix = all active ori
+    keys `RK(j)`. Confirmed working: FEJ-fixed vars dropped 10->7 on backflips,
+    10->6 on slow_racing (the 3-4 excluded keys = the ori boundary), so the patch
+    does exactly what it claims.
+
+**Result: worse on EVERY bag, not just no-better on backflips.**
+
+| Bag         | frozen ori (baseline) | selective FEJ | extra_iters=0 (sel) |
+|-------------|-----------------------|---------------|---------------------|
+| backflips   | 10.74 deg, 1.72 m     | 13.61, 1.67   | 19.27 deg           |
+| slow_racing | 1.39 deg, 0.165 m     | 6.66, 0.359   | --                  |
+
+**Why it fails (the freeze is LOAD-BEARING, not incidental).** A Gaussian marginal
+is a quadratic approximation valid only in a neighborhood of the linearization point
+where it was computed. FEJ-freezing the boundary keeps those variables AT that point,
+so the marginal stays a good local model. Selective FEJ lets the orientation
+relinearize and drift AWAY from the frozen point while its marginal factor (a
+`LinearContainerFactor`: fixed Jacobian A and rhs b, only re-centered by the delta)
+stays linearized at the old ori -- so the stale linear marginal now mis-constrains a
+moved orientation and actively pulls the estimate wrong. extra_iters AMPLIFIES it
+(converges harder onto the bad constraint: 13.6 -> 19.3 deg at extra_iters=0 is the
+under-converged form; more iters pull it back toward 13.6 but never past the 10.74
+frozen baseline). slow_racing degrading too (1.39 -> 6.66) proves it is not a
+backflips-specific tuning artifact -- it is intrinsic to letting a marginal-boundary
+variable leave its own marginal's validity region.
+
+**Conclusion.** The backflips ori gap is NOT a "GTSAM freezes too much" problem that a
+selective freeze can fix. The freeze is what makes the single-pass marginal valid at
+all; the gap is fundamental to incremental FEJ marginalization under strong
+nonlinearity. The only real cures remain (a) don't marginalize the flip (longer lag,
+7.3deg, but slow/unbounded for pure backflips) or (c) a re-linearizing marginal
+(Ceres-style, not native to GTSAM). The repo flag plumbing was REVERTED to keep the
+tree buildable against stock vendored GTSAM (the patch lived only in the gitignored
+source build); the patch recipe above is retained for reproducibility. Verdict stands:
+**accept it (option d)** -- iSAM2 wins racing, trails on the hardest flip orientation,
+a characterized regime-dependent property.
 
 ## Phase 0 verdict: PROCEED to the C++ port (Phases 1-3), with random-walk bias
 and FEJ as firm requirements.

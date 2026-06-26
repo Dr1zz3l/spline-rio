@@ -56,6 +56,11 @@ struct IsamConfig {
     double adapt_noise_alpha{0.3};// EMA smoothing for the sigma estimates
     bool   use_qr{true};                    // QR vs Cholesky (conditioning)
     bool   fej{false};                      // pin marginalized-coupled linpoints
+    // NOTE: "selective FEJ" (exclude ori knots from the marginal FEJ-freeze) was
+    // tried and REJECTED (2026-06-26, ISAM2_MIGRATION.md "Selective FEJ"): worse
+    // everywhere (backflips 10.7->13.6 deg, slow_racing 1.39->6.66 deg). The freeze
+    // is load-bearing for marginal validity; letting the boundary drift from its
+    // linpoint makes the stale linear marginal mis-constrain. No flag retained.
     bool   warm_start_align{true};          // align entering knots to solved
                                             // boundary; OFF -> enter at raw init
                                             // (better for flips: gyro init beats

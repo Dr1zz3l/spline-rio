@@ -170,8 +170,24 @@ not the smear.
    WORSENS orientation +0.8deg (10.74 -> 11.54) via the accel pos<->ori coupling.
    Small position win at a small ori cost, and pos was already good (tether) -> net
    marginal. Feature kept (off by default). Confirms: the backend is well-optimized;
-   remaining wins are research-grade (selective FEJ, GP/WNOA, plane mapping).
+   remaining wins are research-grade (GP/WNOA, plane mapping).
 3. **Plane mapping** (D-section): the real absolute-position win (structured env).
+
+## D4. Selective FEJ -- IMPLEMENTED + tested (2026-06-26): REJECTED (worse everywhere)
+The backflips ori gap is FEJ-freeze staleness (ISAM2_MIGRATION.md ROOT CAUSE). The
+proposed fix: don't FEJ-freeze the (observable, nonlinear) ORIENTATION marginal
+boundary, only the (unobservable) position/yaw nullspace -> let orientation
+re-linearize. GTSAM freezes all marginal-boundary keys uniformly, so it needed a
+vendored-GTSAM `ISAM2::setNoFixKeys` patch (exclude active ori keys from
+`fixedVariables_` in marginalizeLeaves). Patch confirmed working (FEJ-fixed vars
+10 -> 7 backflips, 10 -> 6 slow). Result: WORSE on every bag -- backflips
+10.74 -> 13.61deg, slow_racing 1.39 -> 6.66deg (0.165 -> 0.359m). The freeze is
+LOAD-BEARING: a Gaussian marginal is only valid near its linpoint; letting the
+boundary drift away while its LinearContainerFactor stays linearized makes the stale
+marginal mis-constrain. Not a tuning artifact (slow_racing degrades too). Repo
+plumbing reverted (patch is gitignored-build-only); full recipe + table in
+ISAM2_MIGRATION.md "Selective FEJ". => the gap is intrinsic to incremental FEJ
+marginalization under strong nonlinearity; accept it (regime-dependent property).
 
 ## E. Other
 - Learned radar front-end (static/dynamic + ground/structure classification) to
