@@ -47,28 +47,29 @@ quat = np.array([p.orientation for p in poses])[keep]
 rots = Rotation.from_quat(quat)
 slerp = Slerp(tp, rots)
 
-# GT velocity: smoothed FD of mocap position
-vel_fd = np.diff(pos, axis=0) / np.diff(tp)[:, None]
-t_v = 0.5 * (tp[:-1] + tp[1:])
-w = max(1, int(round(0.04 / np.median(np.diff(tp)))))
-vel_s = np.column_stack([np.convolve(vel_fd[:, k], np.ones(w) / w, 'same') for k in range(3)])
+t_v = 0.5 * (tp[:-1] + tp[1:])   # mocap-FD midpoints, used only for the ori glitch mask
+# GT velocity: the Agiros state velocity (Vicon-fed), Butterworth-10 Hz filtfilt --
+# the SAME clean reference the headline velocity RMSE uses (NOT a finite difference
+# of mocap position, whose near-duplicate-timestamp glitches were inflating the mean).
+from scipy.signal import butter, filtfilt
+_ag  = bag.agiros_state
+t_ag = np.array([s.timestamp for s in _ag])
+_ak  = np.concatenate([[True], np.diff(t_ag) > 1e-6])
+t_ag = t_ag[_ak]
+v_ag = np.array([s.velocity for s in _ag])[_ak]
+_fs  = 1.0 / np.median(np.diff(t_ag)); _fc = min(10.0, _fs * 0.4)
+_bb, _aa = butter(4, _fc / (_fs / 2), btype='low')
+if len(v_ag) > 27:
+    v_ag = np.column_stack([filtfilt(_bb, _aa, v_ag[:, k]) for k in range(3)])
 
-# Ground-truth-quality masks.  Orientation GT (slerp) fails only at mocap
-# dropouts / large angular glitches.  Velocity GT (finite-difference of mocap
-# position) fails there AND at position-glitch FD spikes (a single bad mocap
-# sample -> a several-m/s velocity spike); we mask those *separately* so the
-# velocity mean is not dominated by GT artifacts rather than estimator error.
+# GT-quality mask: both channels fail only at mocap dropouts / large angular
+# glitches (the clean Agiros velocity reference has no FD spikes to mask).
 om = np.linalg.norm(
     Rotation.from_matrix(
         np.einsum('nij,njk->nik', rots[:-1].as_matrix().transpose(0, 2, 1),
                   rots[1:].as_matrix())).as_rotvec(), axis=1) / np.diff(tp)
 gap = np.diff(tp) > 0.02
-bad_o_t = t_v[(om > 25.0) | gap]            # orientation-GT-bad (mocap dropouts/glitches)
-# Velocity GT (finite difference of mocap position) is unusable where it returns
-# an implausible speed: a near-duplicate mocap timestamp divides a normal
-# displacement by a tiny dt, giving >100 m/s spikes (the estimate is fine).  Cut
-# per-window at 1.5x the platform's 99th-percentile *estimated* speed.
-v_gt_max = 1.5 * np.percentile(np.linalg.norm(vel_w, axis=1), 99)
+bad_o_t = t_v[(om > 25.0) | gap]            # GT-bad windows (mocap dropouts/glitches)
 
 
 def _clean(t, bad):
@@ -82,13 +83,13 @@ for i, t in enumerate(t_w):
     if not (tp[0] + 0.05 < t < tp[-1] - 0.05):
         continue
     R_gt = slerp(t).as_matrix()
-    v_gt = np.column_stack([np.interp(t, t_v, vel_s[:, k]) for k in range(3)])[0]
+    v_gt = np.array([np.interp(t, t_ag, v_ag[:, k]) for k in range(3)])
     R_est = Rotation.from_quat(quat_w[i]).as_matrix()
     e_v = vel_w[i] - v_gt
     e_o = Rotation.from_matrix(R_est.T @ R_gt).as_rotvec()  # right tangent
     S = Sig_w[i]
     Svv, Soo = S[:3, :3], S[3:, 3:]
-    v_ok = _clean(t, bad_o_t) and np.linalg.norm(v_gt) <= v_gt_max
+    v_ok = _clean(t, bad_o_t)
     try:
         if _clean(t, bad_o_t):
             nees_o.append(float(e_o @ np.linalg.solve(Soo, e_o)))

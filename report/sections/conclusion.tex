@@ -18,9 +18,10 @@ true marginal, eliminating regime-dependent prior tuning whose
 symptom pattern we document as a reusable diagnostic;
 (2) a \emph{dynamics-adaptive trust allocation} across the
 measurement streams (rate-adaptive gyroscope weight, rate-inflated
-radar/accelerometer noise, per-point \ac{snr} weighting), one
-configuration from hover to \SI{10}{\radian\per\second}, with the
-velocity--orientation trade made explicit as a measured Pareto curve;
+radar/accelerometer noise, per-point \ac{snr} weighting): one weighting
+law from hover to \SI{10}{\radian\per\second} (with per-regime spline grids
+and two tumbling rescue terms), the velocity--orientation trade made
+explicit as a measured Pareto curve;
 and (3) \emph{characterized sensor systematics}, including the
 finding that the apparent elevation bias under tumbling is a
 flight-regime error proxy, not an antenna constant, and that the

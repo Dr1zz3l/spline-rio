@@ -295,8 +295,10 @@ dim-30 boundary of \autoref{sec:sw}).  Every order-$N$ spline factor has
 support over $N$ consecutive knots, and an \ac{imu} factor also touches the
 bias; hence any factor touching $\mathcal{M}$ has support
 $\subseteq\mathcal{M}\cup\mathcal{B}$ with its bias dependence in
-$\mathcal{B}$, while factors reaching further back are already summarized by
-the incoming prior (re-added here).  Selecting exactly the factors touching
+$\mathcal{B}$.  Factors reaching further back were consumed in the
+\emph{previous} marginalization step and enter the current Schur complement
+only through the incoming prior term, never re-added as fresh factors, so
+nothing is double-counted.  Selecting exactly the factors touching
 $\mathcal{M}$ (plus that prior) therefore forms a Schur complement that
 conditions on no interior state and shares no factor with the next window:
 at this linearization it is the \emph{exact} marginal.
