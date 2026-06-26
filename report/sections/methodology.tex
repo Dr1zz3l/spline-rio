@@ -91,11 +91,10 @@ our own flights it improves aggressive-racing live position by $20\%$ ($0.50\to0
 live).  It is enabled by default for every result in this paper.
 
 \textbf{Dynamics-adaptive measurement weighting.}
-The central practical finding of this work is that a single
-\emph{rate-adaptive trust allocation} across the three measurement
-streams covers hover to \SI{10}{\radian\per\second} tumbling with one
-configuration.  Each component was derived from a measured failure
-diagnosis (\autoref{sec:backflips}), not tuned ad hoc:
+Our central practical finding is that a single \emph{rate-adaptive trust
+allocation} across the three measurement streams covers hover to
+\SI{10}{\radian\per\second} with one configuration, each component derived
+from a measured failure diagnosis (\autoref{sec:backflips}), not tuned ad hoc:
 \begin{itemize}
 \item \emph{Gyroscope: trust more when rotating fast.}
   Per-sample weight

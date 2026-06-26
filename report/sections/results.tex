@@ -110,9 +110,7 @@ the marginalization re-linearization ($\sim$0.6\,s), coarsening
 $\Delta t_p$ from 5\,ms to 40\,ms for aggressive flight (which
 \emph{also} drops the LM iteration count from 28 to 11 and slightly
 improves orientation), and warm-start alignment removing the
-live-edge seam.  For a mapping-oriented profile (full iterations,
-no warm-start alignment) slow racing settles to 1.14\degree\
-orientation (yaw 0.61\degree) at 2.1\,s per window.
+live-edge seam.
 
 \begin{table}[t]
 \centering
@@ -170,13 +168,12 @@ Regime & Win./str.\ (s) & Solve (s) & Live pos (m) & Live ori (\degree) \\
 \subsection{Radar Contribution}
 Radar is essential.  Disabling it (\texttt{-{}-no-radar}) collapses the
 live-edge estimate to \ac{imu} dead-reckoning: position drift balloons to
-5.9\% on slow racing and diverges entirely on fast racing
-($\approx$99.5\% of distance, error on the order of the full path
-length), with velocity \ac{rmse} rising to 2.4 and
-8.0\,m/s as double-integrated accelerometer noise accumulates unbounded.
-The direct Doppler velocity constraints bound this to the
-\autoref{tab:sw} figures (0.6--0.9\% drift, 0.32--0.48\,m/s velocity),
-one-to-two orders of magnitude lower.  Orientation
+5.9\% on slow racing and diverges on fast racing ($\approx$99.5\% of
+distance), with velocity \ac{rmse} rising to 2.4 and 8.0\,m/s as
+double-integrated accelerometer noise accumulates unbounded.  The direct
+Doppler velocity constraints bound this to the \autoref{tab:sw} figures
+(0.6--0.9\% drift, 0.32--0.48\,m/s velocity), one-to-two orders of magnitude
+lower.  Orientation
 improves more modestly, from 8.9\degree/4.0\degree\ (\ac{imu}-only) to
 2.0\degree/2.9\degree, the 1\,kHz gyroscope already constraining it.
 
@@ -296,11 +293,9 @@ scales with how strongly motion excites the sparse Doppler; the common
 cause is a stack-level mismatch, not a defect of their
 method: our best-velocity firmware yields only $\sim$13 points per
 frame (their \ac{ransac}/$\sigma$-gates expect hundreds, and ego-velocity
-estimation fails outright on roughly half of all scans), there is no
-hardware radar trigger, and our racing-frame vibration (measured gyro
-white-noise PSD $2.1\degree/\mathrm{s}/\sqrt{\mathrm{Hz}}$ in flight)
-exceeds their process-noise parameter range, making propagation
-overconfident so the gate then rejects the few updates that survive.
+estimation fails on roughly half of all scans), there is no hardware radar
+trigger, and our racing-frame vibration exceeds their process-noise range,
+making propagation overconfident so the gate rejects the survivors.
 This is a design-space split (\autoref{sec:conclusion}), not a defect of
 either method: their stack runs near sensor rate on dense clouds, ours
 spends \SI{0.35}{}--\SI{0.70}{\second} per window on sparse Doppler,
@@ -378,13 +373,12 @@ mask used on backflips, applied per channel; the finite-difference \ac{mocap}
 velocity reference is additionally discarded where a near-duplicate
 timestamp makes it return an implausible speed).
 On the racing flights the \emph{orientation} \ac{nees} mean is $1.6$ (slow)
-and $3.2$ (fast), within or just below the $\chi^2_3$ 95\% interval for the
-window count (${\approx}[2.0,3.7]$): orientation covariance is calibrated on
-fast racing and slightly conservative on slow, as the weights approximate
-effective-noise whitening.  Where the finite-difference velocity reference is
-clean (slow racing) the velocity \ac{nees} mean is $2.7$, also calibrated;
-on the faster and tumbling flights that reference is itself too noisy
-(${\sim}1$\,m/s) for a powered velocity check.  These are \emph{calibration
+and $3.2$ (fast), within or just below the $\chi^2_3$ 95\% interval
+(${\approx}[2.0,3.7]$): orientation covariance is calibrated on fast racing
+and slightly conservative on slow.  Velocity is calibrated where the
+finite-difference reference is clean (slow racing, mean $2.7$); on the
+faster and tumbling flights that reference is itself too noisy
+(${\sim}1$\,m/s) for a powered check.  These are \emph{calibration
 checks}, not powered hypothesis tests: consecutive windows are temporally
 correlated, so the $\chi^2$ expectation holds only heuristically.  On
 backflips the orientation covariance is overconfident (\ac{nees} mean~38,
