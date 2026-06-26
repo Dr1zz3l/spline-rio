@@ -154,11 +154,12 @@ Regime & Win./str.\ (s) & Solve (s) & Live pos (m) & Live ori (\degree) \\
   \centering
   \includegraphics[width=\textwidth]{figures/error_over_time.pdf}
   \caption{SW live-edge (deployed) position, velocity, and orientation
-    error vs.\ time for slow racing (top) and fast racing (bottom).  Fast
-    racing position error accumulates monotonically with trajectory length;
-    velocity and orientation errors spike at high-speed, high-dynamics
-    sections.  Backflips omitted (flip-time GT mask gaps;
-    \autoref{sec:backflips}).}
+    error vs.\ time for slow racing (top), fast racing (middle), and
+    backflips (bottom).  Fast-racing position error accumulates
+    monotonically with trajectory length; velocity and orientation errors
+    spike at high-speed, high-dynamics sections; backflip errors peak
+    \emph{during} the flips, where the radar measurement model degrades
+    (\autoref{sec:backflips}).}
   \label{fig:error_time}
 \end{figure*}
 

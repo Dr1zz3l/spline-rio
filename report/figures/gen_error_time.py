@@ -8,8 +8,8 @@ Requires extended .npz arrays produced by:
   python validate_live_solver.py slow_racing_best_velocity --mocap-yaw --cpp --sliding-window --save-arrays --no-plot
   python validate_live_solver.py fast_racing_best_velocity --mocap-yaw --cpp --sliding-window --save-arrays --no-plot
 
-Two-row layout: slow racing (top), fast racing (bottom).
-Each row has three subplots: position error, velocity error, and orientation error vs time.
+One row per flight (slow racing, fast racing, backflips); each row has three
+subplots: position, velocity, and orientation error vs time (SW live edge).
 """
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'analysis'))
@@ -25,6 +25,7 @@ from pathlib import Path
 BAGS = [
     ('slow_racing_best_velocity', 'Slow racing'),
     ('fast_racing_best_velocity', 'Fast racing'),
+    ('backflips_best_velocity',   'Backflips'),
 ]
 
 PLOTS_ROOT = Path(__file__).parent.parent.parent / 'plots'
@@ -55,29 +56,13 @@ if len(BAGS) == 1:
 
 for row, (bag_key, bag_label) in enumerate(BAGS):
     bag_dir   = PLOTS_ROOT / bag_key / 'live_solver'
-    batch_npz = bag_dir / f'traj_arrays_{bag_key}_{TAG}_batch.npz'
     sw_npz    = bag_dir / f'traj_arrays_{bag_key}_{TAG}_sw.npz'
 
-    if not batch_npz.exists():
-        print(f"Missing (re-run with --save-arrays): {batch_npz}")
-        continue
     if not sw_npz.exists():
         print(f"Missing (re-run with --save-arrays): {sw_npz}")
         continue
 
-    b = np.load(batch_npz)
     s = np.load(sw_npz)
-
-    # Check for extended arrays
-    if 't_rel' not in b:
-        print(f"WARNING: {batch_npz} lacks extended arrays. "
-              f"Re-run validate_live_solver.py with --save-arrays.")
-        continue
-
-    t_batch      = b['t_rel']
-    pos_err_b    = b['pos_errors']
-    vel_err_b    = b['vel_errors']
-    rot_err_b    = b['rot_errors']    # deg
 
     has_live = 'live_t_rel' in s and s['live_t_rel'] is not None
     if has_live:
