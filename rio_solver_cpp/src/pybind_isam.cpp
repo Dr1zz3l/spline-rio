@@ -44,6 +44,7 @@ PYBIND11_MODULE(rio_isam, m) {
         .def_readwrite("relinearize_skip", &IsamConfig::relinearize_skip)
         .def_readwrite("extra_iters", &IsamConfig::extra_iters)
         .def_readwrite("extra_iters_rtol", &IsamConfig::extra_iters_rtol)
+        .def_readwrite("extra_iters_dnorm", &IsamConfig::extra_iters_dnorm)
         .def_readwrite("use_qr", &IsamConfig::use_qr)
         .def_readwrite("fej", &IsamConfig::fej)
         .def_readwrite("warm_start_align", &IsamConfig::warm_start_align)

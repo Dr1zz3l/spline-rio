@@ -692,6 +692,7 @@ def _solve_cpp_isam(initial_state, solver_radar_frames, imu_data,
     cfg.lag = solver_cfg.get('window_duration', 1.5)
     cfg.extra_iters = int(solver_cfg.get('extra_iters', 3))
     cfg.extra_iters_rtol = solver_cfg.get('extra_iters_rtol', 0.0)
+    cfg.extra_iters_dnorm = solver_cfg.get('extra_iters_dnorm', 0.0)
     cfg.bias_rw_sigma = solver_cfg.get('bias_rw_sigma', 1e-3)
     # universal weighting (aggressive dynamics / backflips); 0 = off
     cfg.lambda_gyro_omega_sigma = solver_cfg.get('lambda_gyro_omega_sigma', 0.0)
@@ -710,6 +711,7 @@ def _solve_cpp_isam(initial_state, solver_radar_frames, imu_data,
     cfg.floor_cluster = bool(int(solver_cfg.get('floor_cluster', 0)))
     cfg.floor_slab = solver_cfg.get('floor_slab', 0.4)
     cfg.warm_start_align = bool(int(solver_cfg.get('warm_start_align', 1)))
+    cfg.use_qr = bool(int(solver_cfg.get('use_qr', 1)))
     cfg.adapt_noise_stride = int(solver_cfg.get('adapt_noise_stride', 0))
     cfg.adapt_noise_alpha = solver_cfg.get('adapt_noise_alpha', 0.3)
     cfg.relinearize_threshold = solver_cfg.get('relinearize_threshold', 0.01)
@@ -836,11 +838,18 @@ def integrate_gyro_orientation(
     t_start: float,
     t_end: float,
     noise_sigma_rad_per_sqrts: float = 0.0,
+    comp_gain: float = 0.0,
+    g_mag: float = 9.81,
 ) -> tuple:
     """
     Forward-integrate gyroscope measurements to produce a dense rotation array.
 
     Model: R(t + dt) = R(t) @ exp((z_gyro - b_g + noise) * dt)
+
+    comp_gain > 0 adds a Mahony-style complementary correction: during near-1g
+    (low linear-accel) samples, nudge roll/pitch so the predicted gravity direction
+    tracks the accelerometer, killing the pure-gyro roll/pitch drift (yaw untouched).
+    This gives the iSAM live edge a much better entering-knot init -> fewer extra_iters.
 
     Args:
         imu_data     : list of IMU messages with .timestamp and .angular_velocity
@@ -873,6 +882,13 @@ def integrate_gyro_orientation(
         omega = msgs[i].angular_velocity - b_g
         if noise_sigma_rad_per_sqrts > 0:
             omega = omega + rng.normal(0.0, noise_sigma_rad_per_sqrts * np.sqrt(dt), 3)
+        if comp_gain > 0.0:
+            acc = np.asarray(msgs[i].linear_acceleration, dtype=float)
+            an = np.linalg.norm(acc)
+            if an > 1e-6 and abs(an - g_mag) < 0.3 * g_mag:   # gate: near-1g only
+                v_meas = acc / an                              # measured up in body
+                v_pred = R_cur.T @ np.array([0.0, 0.0, 1.0])   # predicted up in body
+                omega = omega + comp_gain * np.cross(v_meas, v_pred)
         dR = so3_exp(omega * dt)
         R_cur = R_cur @ dR
         times.append(msgs[i].timestamp)
@@ -1349,6 +1365,13 @@ def main():
             noise_deg_per_sqrts = float(sys.argv[idx_n + 1])
     noise_rad_per_sqrts = np.radians(noise_deg_per_sqrts)
 
+    # Complementary-filter gain for the gyro init (roll/pitch accel correction; 0=off)
+    comp_filter_gain = 0.0
+    if '--comp-filter' in sys.argv:
+        _idx_cf = sys.argv.index('--comp-filter')
+        if _idx_cf + 1 < len(sys.argv):
+            comp_filter_gain = float(sys.argv[_idx_cf + 1])
+
     # MoCap usage flags (decoupled):
     #   --mocap-init    : use MoCap position + orientation at t=0 only
     #   --mocap-heading : build continuous heading priors from MoCap (pseudo-magnetometer)
@@ -1722,7 +1745,10 @@ def main():
         t_start=t_ref,
         t_end=imu_data[-1].timestamp,
         noise_sigma_rad_per_sqrts=noise_rad_per_sqrts,
+        comp_gain=comp_filter_gain,
     )
+    if comp_filter_gain > 0.0:
+        print(f"  [--comp-filter {comp_filter_gain}] complementary roll/pitch correction ON")
 
     gyro_euler = np.degrees(np.array(
         [Rotation.from_matrix(R).as_euler('xyz') for R in gyro_Rs]))

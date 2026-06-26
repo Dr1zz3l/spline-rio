@@ -69,6 +69,12 @@ struct IsamConfig {
     double extra_iters_rtol{0.0}; // early-stop the extra updates when the relative
                                   // error reduction < rtol (0 = always do all
                                   // extra_iters; >0 reclaims compute on easy strides)
+                                  // NOTE: cost-based -> FAILS (orientation hidden under
+                                  // the dominant gyro/radar residuals); use _dnorm.
+    double extra_iters_dnorm{0.0};// early-stop when the ISAM2 step (max-abs getDelta())
+                                  // < dnorm (0 = off). Step-norm catches the slow-mode
+                                  // (roll/pitch) convergence the cost criterion misses,
+                                  // so easy strides stop at ~1 iter, hard ones run full.
     int    adapt_noise_stride{0}; // NIS-adaptive noise: every N strides, set each
                                   // sensor's sigma = std of its residuals at the
                                   // solution (data-driven whitening; 0 = off)

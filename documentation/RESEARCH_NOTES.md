@@ -436,3 +436,60 @@ plus the linear solve itself (~0.70s). Both are unaffected by analytic Jacobians
 
 **Remaining 5-7× real-time gap requires structural changes**: reduce `compute_prior` frequency
 (recompute every N>1 windows), or iSAM2 for O(k²) incremental updates.
+
+## §11 iSAM2 Backend Speedup Investigation (2026-06-26)
+
+The iSAM2 backend (`--isam`) already beat the Ceres SW 2-3x (slow ~177ms/update vs SW
+350-700ms). Question: can we get a SUBSTANTIAL further speedup (2-10x)? Investigated on
+slow_racing (the slowest case). **Answer: no substantial win; ~1.3-1.6x available via
+adaptive iterations, the rest is structurally blocked (1 kHz factors + cond(H)~5.5e10),
+exactly as §9/§10 concluded for the Ceres SW.**
+
+### Cost structure (slow, extra_iters=3, QR)
+`extra_iters` is the dominant cost: it does 1 main + 3 extra empty ISAM2 updates/stride
+(re-linearize + re-solve to converge roll/pitch from the weak P1-P3 init).
+| config | ms/update | pos RMSE | ori RMSE |
+|---|---|---|---|
+| extra3 QR (baseline) | 177 | 0.165 | 1.39 |
+| extra2 | 155 | 0.210 | 1.66 |
+| extra1 | 113 | 0.227 | 2.65 |
+| extra0 | 64 | **4.33 / 75deg DIVERGES** | |
+So one update floor is ~64ms (full linearize of ~3000 IMU factors + 1 QR solve); each
+extra iter ~38ms; extra_iters<1 diverges (roll/pitch never recovers).
+
+### Cholesky vs QR -> QR wins (counter-intuitive)
+extra3 Cholesky = 247ms (SLOWER than QR 177ms) AND less accurate (0.200 vs 0.165). At
+cond(H)~5.5e10 Cholesky does more work / recovers poorly; QR (cond(J)=sqrt(cond H)~2.3e5)
+is both faster and more accurate. Confirms the §1/Caveat-1 conditioning story.
+
+### Approach 1: adaptive extra_iters (step-norm early-stop) -- WORKS, modest
+`extra_iters_dnorm`: stop the extra updates when max-abs ISAM2 getDelta() (tangent rad/m)
+< dnorm. The earlier COST-based rtol failed (orientation hidden under dominant gyro/radar
+residuals); the STEP-norm catches the slow-mode (roll/pitch) convergence. The delta floor
+is ~0.2 (NOT ~0.01): every stride's entering knots carry real roll/pitch error, so most
+strides still need the iters -- the early-stop only reclaims compute on the easy ones.
+| dnorm | slow ms (pos/ori) | fast ms (pos/ori) |
+|---|---|---|
+| off (extra3) | 177 (0.165/1.39) | 107 (0.517/2.26) |
+| 0.2 | **132 -25% (0.173/1.41)** | **66 -38% (0.524/2.33)** |
+Beats fixed extra2 on BOTH speed and accuracy (full iters on hard strides, stop on easy).
+A real ~1.3x (slow) / ~1.6x (fast) at ~1-5% accuracy cost. Kept (off by default,
+extra_iters_dnorm=0). Recommended speed/accuracy knob: extra_iters=3 + dnorm~0.2.
+
+### Approach 2: complementary-filter init (Mahony roll/pitch from accel) -- NEGATIVE
+`--comp-filter GAIN` adds a Mahony correction to `integrate_gyro_orientation` (nudge
+predicted-gravity toward the accelerometer during near-1g samples). Hypothesis: a better
+roll/pitch init -> fewer extra_iters. **Fails on our dynamic data:** (1) the near-1g gate
+rarely fires during racing (high linear accel != gravity), so the init barely changes
+(roll drift 42->33deg, pitch unchanged); (2) more fundamentally, the extra_iters need is
+the ILL-CONDITIONED per-stride convergence (soft modes), not init quality -- the solver
+re-derives roll/pitch from its own accel factors regardless of init. comp+extra1
+(0.27/2.9) is no better than plain extra1 (0.227/2.65). Code kept (off by default,
+correct Mahony filter -- could help a low-dynamics platform; useless here).
+
+### Verdict
+No substantial (2-10x) iSAM2 speedup without changing the formulation (preintegration
+costs 0.96->6.0deg ori, §3; IMU downsample hurts the spline bandwidth). The cost is the
+1 kHz factor density + intrinsic cond(H)~5.5e10. ~1.3-1.6x is available now via adaptive
+extra_iters (Approach 1) at small accuracy cost. The honest real-time story is unchanged:
+iSAM2 hits the 0.3s stride with modest margin (fast) to none (slow/backflips spikes).

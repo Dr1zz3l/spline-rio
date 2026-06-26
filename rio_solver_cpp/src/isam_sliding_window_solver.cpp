@@ -501,7 +501,14 @@ double IsamSolver::update(
     double prev_err = res.getError();
     for (int e = 0; e < cfg_.extra_iters; ++e) {
         auto r2 = smoother_->update();
-        if (cfg_.extra_iters_rtol > 0.0) {
+        if (cfg_.extra_iters_dnorm > 0.0) {
+            // step-norm early-stop: max-abs ISAM2 delta (tangent: rad / m). Tracks the
+            // slow-mode (roll/pitch) convergence the cost criterion can't see.
+            const gtsam::VectorValues& d = smoother_->getISAM2().getDelta();
+            double dmax = 0.0;
+            for (const auto& kv : d) dmax = std::max(dmax, kv.second.lpNorm<Eigen::Infinity>());
+            if (dmax < cfg_.extra_iters_dnorm) break;
+        } else if (cfg_.extra_iters_rtol > 0.0) {
             const double err = r2.getError();
             if ((prev_err - err) < cfg_.extra_iters_rtol * std::max(prev_err, 1e-9)) break;
             prev_err = err;
