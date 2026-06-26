@@ -64,7 +64,10 @@ and translation $\mathbf{t}_\mathrm{align} =
 \mathbf{p}_{\mathrm{est},0}$ are fixed at frame~0 (no scale).
 The final 3\,s is trimmed.  Velocity \ac{rmse} is computed from the
 analytical first derivative of the position B-spline, not from finite
-differences of the estimated trajectory.
+differences of the estimated trajectory; the reference is the Vicon-fed
+onboard state-estimate velocity, zero-phase low-pass filtered (4th-order
+Butterworth, \SI{10}{\hertz}), not a raw finite difference of \ac{mocap}
+position.
 \emph{Position drift} (\%) is position \ac{rmse} normalised by the total
 GT path length, the standard odometry metric for a
 dead-reckoning system with no loop closure (per-segment \ac{rpe} in

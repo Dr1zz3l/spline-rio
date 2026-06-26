@@ -370,14 +370,16 @@ headline uses (Vicon-fed velocity, slerp attitude), after masking windows at
 $\chi^2_3$ with \emph{mean}~3; we report the per-window mean and, as its
 spread depends on the window count $N$, the 95\% interval for the
 $N$-window mean (not the wide per-sample $\chi^2_3$ interval).
-On the racing flights both channels are calibrated to slightly conservative:
-\emph{orientation} \ac{nees} mean $1.6$ (slow, $N{=}49$) and $3.2$ (fast,
-$N{=}20$), \emph{velocity} $2.0$ and $1.0$, within or just below the
-$N$-window 95\% interval (slow $[2.4,3.7]$, fast $[2.0,4.2]$) --- the
-weights approximate effective-noise whitening, mildly over-reporting
-velocity uncertainty.  These are \emph{calibration checks}, not powered
-hypothesis tests: consecutive windows are temporally correlated, so the
-expectation holds only heuristically.  On backflips only 6 of 50 windows
+On the racing flights the covariance is \emph{calibrated} on fast-racing
+orientation (\ac{nees} mean $3.2$, $N{=}20$, inside the $N$-window 95\%
+interval $[2.0,4.2]$) and \emph{moderately conservative} on the other three
+channels --- slow orientation $1.6$ ($N{=}49$), slow velocity $2.0$, fast
+velocity $1.0$, all below their lower bounds (slow $[2.4,3.7]$) --- i.e.\ the
+weights over-report uncertainty, most strongly for fast-racing velocity
+(${\sim}3\times$ in variance).  Conservative is the safe direction for a fusion
+factor.  These are \emph{calibration checks}, not powered hypothesis tests:
+consecutive windows are temporally correlated, so the expectation holds only
+heuristically.  On backflips only 6 of 50 windows
 survive the ground-truth mask (\autoref{sec:setup}), too few for a
 consistency statement; there the covariance is overconfident (orientation
 \ac{nees} mean~38, ${\sim}3.5\times$ in standard deviation; velocity~9.6),

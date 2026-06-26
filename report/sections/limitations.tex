@@ -17,22 +17,28 @@ strengthening, and is left to future data collection.
 Yaw is a gauge freedom for Doppler: rotating the entire trajectory
 about the world gravity axis leaves all radial velocity measurements
 unchanged, so absolute heading cannot be recovered from radar and \ac{imu}
-alone.  A magnetometer resolves this and is standard on virtually all
-flight platforms; here \ac{mocap} yaw serves that role.  Because that
+alone.  A magnetometer resolves this and is standard on flight platforms;
+here \ac{mocap} yaw serves that role.  Because that
 \ac{mocap} yaw is noise- and bias-free (unlike a real magnetometer),
 the heading-aided orientation numbers are an \emph{upper bound}; we bound
-the real-sensor gap two ways.  The dominant magnetometer error is a roughly
-\emph{constant} hard-iron bias (often $5$--$15\degree$ uncalibrated), which
-under our start-anchored alignment is a \emph{gauge} it absorbs, leaving
-drift, velocity, and orientation \ac{rmse} unchanged however large.  Only the
-\emph{time-varying} residual costs: perturbing the prior with a $2\degree$
-slowly-varying drift plus $1.5\degree$ noise (three seeds) degrades live
-orientation by up to ${\sim}1.5\degree$ on slow racing ($2.1$--$3.5\degree$
-from $1.97\degree$; the estimate tracks the prior) and ${\sim}0.4$/$0.6\degree$
-on fast/backflips, and a $\lambda_\psi$ sweep shows this is the sensor's
-floor, not over-trust ($\lambda_\psi{=}10$ is near-optimal).  A
-throttle-correlated real magnetometer, validated against ground truth, is
-future work.  The
+the real-sensor gap two ways.  The dominant magnetometer error is a hard-iron
+offset: a constant vector in the \emph{body} frame (often $5$--$15\degree$
+uncalibrated).  In near-level flight its tilt-compensated horizontal
+projection is essentially time-constant, hence a heading \emph{gauge} that
+our start-anchored alignment absorbs, leaving drift, velocity, and
+orientation \ac{rmse} unchanged to first order however large the offset.
+Only the \emph{time-varying} residual costs: perturbing the prior with a
+$2\degree$ slowly-varying drift plus $1.5\degree$ noise (three seeds) degrades
+live orientation by up to ${\sim}1.5\degree$ on slow racing ($2.1$--$3.5\degree$
+from $1.97\degree$; the estimate tracks the prior) and ${\sim}0.4\degree$ on
+fast racing, and a $\lambda_\psi$ sweep shows this is the sensor's floor, not
+over-trust ($\lambda_\psi{=}10$ near-optimal).  Under large attitude
+excursions this fails: as the body inverts the body-frame offset swings
+through the horizontal plane, making the heading error attitude-correlated
+rather than a gauge; our heading-frame perturbation misses this, so the
+${\sim}0.6\degree$ backflip figure is a lower bound.  Modeling an attitude-
+and throttle-correlated real magnetometer against ground truth is future
+work.  The
 heading-\emph{independent} roll/pitch decomposition
 (\autoref{tab:baselines}(b)) and the unaided-yaw check (\autoref{sec:baselines})
 isolate attitude from this idealization.
@@ -82,11 +88,10 @@ At the batch $0.8$\,ms a 3\,s window is rank-deficient
 ($\sim$11{,}250 orientation DoF vs $\sim$9{,}000 gyroscope constraints) and
 the solver freezes near its initialization; 8\,ms is well-conditioned
 (62.5\,Hz bandwidth covers the 10--20\,Hz flip dynamics).
-The same density is what makes the \emph{batch} problem bistable (the
-$\sim$8\degree/$\sim$25\degree\ oscillation noted above): the final cost
-\emph{anti-correlates} with accuracy (the underconstrained problem
-overfits the wrong global orientation), so single-run comparisons at
-this density are not trustworthy.
+This same over-dense parameterization is the source of the batch bistability noted
+above: the final cost \emph{anti-correlates} with accuracy (the
+underconstrained problem overfits the wrong global orientation), so
+single-run batch comparisons at this density are not trustworthy.
 
 \emph{Attributing the z-axis failure, and what $b$ really is.}
 A visual trajectory check (numeric \ac{rmse} conceals it) showed the SW
@@ -186,10 +191,9 @@ non-monotone slow-racing orientation maximum at $10^{-6}$
 (\autoref{tab:prior_scale}) shows no single scale is universally optimal.
 
 The information asymmetry in the inconsistent $S$ (orientation
-eigenvalues $\sim$$5.5{\times}10^{14}$, position $\sim$$10^4$) meant no
-single scalar could address both modalities, and eigenvalue clipping and
-Cauchy robustification also failed (Cauchy down-weights the bag that needs
-the prior most).
+eigenvalues $\sim$$5.5{\times}10^{14}$ vs.\ position $\sim$$10^4$) blocks any
+single scalar, and eigenvalue clipping and Cauchy robustification also fail
+(Cauchy down-weights the bag that needs the prior most).
 
 \textbf{Resolution.}
 With the Markov-blanket factor-selection rule of \autoref{sec:sw},
@@ -206,10 +210,8 @@ prior-consistency effect at a fixed pre-\ac{ransac} operating point; the
 jumps in the settled trajectory also disappear (settled velocity \ac{rmse}
 0.89\,$\to$\,0.21\,m/s on slow racing).
 
-\subsection{Other Negative Results}
+\subsection{Adaptive Knot Density}
 \label{sec:negative}
-
-\textbf{Adaptive knot density.}
 We tested whether denser orientation knots reduce the residual backflip
 attitude error; they do not.  At $\Delta t_o{=}8$\,ms the orientation
 spline already represents the MoCap attitude to 1.28\degree\ \ac{rmse}
@@ -217,18 +219,8 @@ spline already represents the MoCap attitude to 1.28\degree\ \ac{rmse}
 across $\Delta t_o\in\{16,8,4\}$\,ms, at the rate-independent vibration
 floor 0.17\,rad/s).  The gap is therefore \emph{not} a spline-bandwidth
 limit: the spline can represent the motion but the optimizer does not
-rotate to it (open-loop gyro dead-reckoning, 7.8\degree, already beats the
-9.2\degree\ this fusion reaches at the diagnostic configuration, before the
-rate-adaptive gyro trust of \autoref{sec:backflips} brings it to the
-\SI{6.4}{\degree} headline).  The lever is measurement weighting
-(\autoref{sec:backflips}), not knot density, \emph{disproving} the
-adaptive-knot-density hypothesis and obviating the non-uniform-basis extension.
-
-\textbf{\ac{imu} preintegration.}
-Replacing per-sample gyro/accel factors with Forster
-TRO-2017~\cite{forster2017manifold} preintegrated factors at 100\,Hz
-reduces constraint density from 8:1 (samples per knot) to 1:1,
-degrading orientation \ac{rmse} from 1.02\degree\ to 6.40\degree\ and
-position \ac{rmse} from 0.169\,m to 0.288\,m on slow racing.
-The smaller Jacobian iterates faster, but the accuracy loss is
-unacceptable.
+rotate to it (open-loop gyro dead-reckoning at 7.8\degree\ already beats the
+9.2\degree\ this fusion reaches before the rate-adaptive gyro trust of
+\autoref{sec:backflips}).  The lever is measurement weighting, not knot
+density, \emph{disproving} the adaptive-knot-density hypothesis and obviating
+the non-uniform-basis extension.
