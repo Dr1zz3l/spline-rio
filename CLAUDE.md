@@ -17,7 +17,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `analysis/lib/rosbag_loader/README.md` | Rosbag loader API and ROS topic reference |
 | `rio_solver_cpp/README.md` | C++ Ceres solver: build instructions, Phase status, Python API |
 | `documentation/ISAM2_MIGRATION.md` | **GTSAM IncrementalFixedLagSmoother backend (branch `isam2-backend`): WORKING — beats the Ceres SW on racing (accuracy+speed), matches backflips pos/vel; backflips ori +4° = characterized FEJ freeze-vs-relinearize trade-off. Run via `--isam`. Vendored GTSAM in `rio_solver_cpp/gtsam_vendored_install/` (source-built, unstable+march=native).** |
-| `documentation/ALGO_IMPROVEMENTS.md` | Forward-looking algorithm-improvement brainstorm + tested-and-rejected ideas (radar smear negligible, per-chirp deskew dead, early-stop negative, selective FEJ worse-everywhere); open research items (GP/WNOA, plane-mapping) |
+| `documentation/ALGO_IMPROVEMENTS.md` | Forward-looking algorithm-improvement brainstorm + tested-and-rejected ideas (radar smear negligible, per-chirp deskew dead, early-stop negative, selective FEJ worse-everywhere); FLOOR-plane abs-z anchor (D5: qualified win, fast vert/vel -45%, not universal, off by default); open research items (GP/WNOA, wall/full-3D plane SLAM) |
 
 ## Project Overview
 

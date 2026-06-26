@@ -39,6 +39,11 @@ struct IsamConfig {
     double radar_pos_split{0.0};          // gated radar's (1-w) weight -> position-
                                           // only factor (frozen R,w): keep radar
                                           // velocity for position during flips
+    // --- floor-plane absolute-z anchor (plane mapping); 0 = off ---
+    double lambda_floor{0.0};             // weight of the floor point-to-plane factor
+    double floor_z{0.0};                  // world height of the floor plane (init frame)
+    double floor_band{0.5};               // |z_pred_world - floor_z| < band => floor
+    double floor_huber{0.3};              // Huber delta on the floor residual (m)
     double boundary_sigma{1e-3};           // strong gauge anchor on first knots
     double min_range{0.2};
     double lag{1.5};
@@ -89,6 +94,7 @@ public:
     std::array<double, 6> biases() const { return last_bias_; }
     int num_active() const { return num_active_; }
     int num_fixed() const;   // FEJ: variables whose linearization is frozen by marg
+    int num_floor() const { return n_floor_; }  // cumulative floor factors added
 
 private:
     bool ori_active(double t_abs, int& k, double& u) const;
@@ -111,6 +117,7 @@ private:
     std::set<int> added_ori_, added_pos_, added_snap_, added_aacc_;
     int bias_k_{0};
     bool first_{true};
+    int n_floor_{0};
 
     std::map<int, std::array<double, 4>> live_ori_;
     std::map<int, std::array<double, 3>> live_pos_;

@@ -104,6 +104,9 @@ why it helps HERE, value/effort, and grounding.
    fluctuate. Bounds the 0.3-1.7m drift using known geometry. Two nested cuboids
    (hall + mesh) give redundancy; the closer mesh could give fine position. Large
    effort but it attacks the ONE thing the system structurally cannot do.
+   **FLOOR sub-case IMPLEMENTED + tested 2026-06-26 (D5 below): QUALIFIED WIN --
+   fast vertical -45% / velocity -45%, but not universal. The full multi-plane
+   SLAM (walls + Manhattan prior) remains the open large-effort item.**
 
 ## E. Metrics / diagnostics (sparked by user, 2026-06-25)
 **Our metrics may be too simple for backflips degradation.** GT flies many
@@ -172,6 +175,7 @@ not the smear.
    marginal. Feature kept (off by default). Confirms: the backend is well-optimized;
    remaining wins are research-grade (GP/WNOA, plane mapping).
 3. **Plane mapping** (D-section): the real absolute-position win (structured env).
+   FLOOR anchor now DONE (D5, qualified win: fast vert/vel -45%); walls/full-3D open.
 
 ## D4. Selective FEJ -- IMPLEMENTED + tested (2026-06-26): REJECTED (worse everywhere)
 The backflips ori gap is FEJ-freeze staleness (ISAM2_MIGRATION.md ROOT CAUSE). The
@@ -188,6 +192,54 @@ marginal mis-constrain. Not a tuning artifact (slow_racing degrades too). Repo
 plumbing reverted (patch is gitignored-build-only); full recipe + table in
 ISAM2_MIGRATION.md "Selective FEJ". => the gap is intrinsic to incremental FEJ
 marginalization under strong nonlinearity; accept it (regime-dependent property).
+
+## D5. FLOOR-plane absolute-z anchor -- IMPLEMENTED + tested (2026-06-26): QUALIFIED WIN
+Feature-tracking for ABSOLUTE position (the structural radar returns as plane
+features). Doppler+IMU cannot observe absolute position -> pure dead-reckoning, and
+the VERTICAL error DOMINATES it (radar z-bias signature): of the iSAM2 position RMSE,
+vertical is 73% on slow (0.141 of 0.165m) and 84% on fast (0.552 of 0.604m). The
+floor is the cheapest, strongest plane feature.
+
+Feasibility spike (`analysis/plane_mapping/`, MoCap-oracle): static returns (Doppler
+matches ego-motion) are 93%/75%/65% of all returns on slow/fast/backflips, ~5-7 per
+frame. FLOOR observable (>=3 floor returns) in 79%/27%/20% of frames. The floor is
+CLEANLY SEPARABLE: classifying by the factor statistic z_pred_world (= (R_ws*p_body).z
++ traj_z) with band 0.4 around floor_z gives 94% purity / 100% recall (diag_floor_stat.py).
+Anchor precision = floor-return z spread ~0.15m.
+
+Implementation: `FloorPlaneFactor` (position-only, frozen warm-start ori like
+radar_pos_split; residual r = z_off + traj_z - floor_z linear in pos-CP z), Huber-
+robust, classified online by predicted world-z. Config: lambda_floor (0=off, DEFAULT),
+floor_z, floor_band, floor_huber. `floor_factor_math.h` + factors.h + IsamSolver.
+
+Result (tuned per bag):
+| bag        | baseline pos/vert/vel | floor ON              | best (band,wt) |
+|------------|-----------------------|-----------------------|----------------|
+| fast       | 0.604 / 0.552 / 0.733 | 0.398 / 0.303 / 0.406 | band0.2 lf30   |
+| slow       | 0.165 / 0.141 / --    | ~0.16 / 0.114 / --    | band0.4 lf5    |
+| backflips  | 1.67  / 0.949 / --    | ~1.68 / 0.88  / --    | (floor 20%)    |
+=> FAST is a BIG win: vertical -45%, velocity -45% (pinning z also kills the
+z-bias vertical-velocity error), total position -34%, ori -4%, horizontal +6%.
+slow modest (-19% vert, already accurate, near the 0.15m floor-precision floor),
+backflips neutral (floor barely visible).
+
+NOT UNIVERSAL (the catch): the optimal band is OPPOSITE per bag -- slow wants WIDE
+(0.4) + gentle, fast wants TIGHT (0.2) + strong. Cause = CHICKEN-AND-EGG: floor
+classification by predicted-z is coupled to the very vertical error we fix. On fast
+(0.55m error) a wide band admits error-correlated returns that REINFORCE the drift
+(0.552 -> 0.83 WORSE); only a tight band (admit floor returns just when the estimate
+is momentarily accurate) helps. On slow (0.14m error) a tight band clips the floor's
+0.15m spread and biases it (-> 0.5m). No single (band,weight) helps both, so it
+violates the universal-config principle -> kept OFF by default. Also floor_z must be
+~0 in the solver frame and is sensitive (+-0.1m -> linear vertical error; a -1.19
+mis-set was catastrophic 1.1m): a real deployment needs floor_z BOOTSTRAP.
+
+Path to robustness (future): EM-style iterative reclassify->solve->reclassify to break
+the chicken-and-egg; adaptive band from the vertical covariance; online floor_z
+bootstrap; then the multi-plane walls (D2) for horizontal anchoring (only ONE wall
+y~+4 is reliably visible here -> full 3D plane SLAM still the large-effort open item).
+Verdict: feature/plane tracking for abs-position is VALIDATED and gives a large fast
+vertical/velocity win, but not yet robust/universal. Feature retained (off by default).
 
 ## E. Other
 - Learned radar front-end (static/dynamic + ground/structure classification) to

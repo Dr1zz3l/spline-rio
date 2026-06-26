@@ -273,10 +273,14 @@ double IsamSolver::update(
 
         double w_omega = 1.0;
         if (cfg_.omega_soft_sigma > 0.0) { double q = gmag_near(f.timestamp) / cfg_.omega_soft_sigma; w_omega = 1.0 / (1.0 + q * q); }
-        // radar_pos_split: warm-start R, omega (frozen) for the position-only factor
+        // radar_pos_split: warm-start R, omega (frozen) for the position-only factor.
+        // The floor factor also needs the frozen warm-start R (and the predicted
+        // world-z baseline) to classify + anchor floor returns.
         Eigen::Matrix3d R_ws = Eigen::Matrix3d::Identity(); Eigen::Vector3d w_ws = Eigen::Vector3d::Zero();
         const bool do_split = (cfg_.radar_pos_split > 0.0 && w_omega < 1.0);
-        if (do_split) {
+        const bool do_floor = (cfg_.lambda_floor > 0.0);
+        double pz_pred = 0.0;   // warm-start predicted trajectory z at this frame
+        if (do_split || do_floor) {
             double qk[N_ORI][4]; const double* qp[N_ORI];
             for (int j = 0; j < N_ORI; ++j) {
                 const int idx = std::max(0, std::min(ko - 3 + j, n_ori_ - 1));
@@ -284,7 +288,18 @@ double IsamSolver::update(
                 qk[j][0] = qq.x(); qk[j][1] = qq.y(); qk[j][2] = qq.z(); qk[j][3] = qq.w(); qp[j] = qk[j];
             }
             R_ws = analytic::rotation_with_jacobian_manual<N_ORI>(qp, uo, inv_dt_ori_, nullptr).matrix();
-            w_ws = analytic::body_velocity_with_jacobian_manual<N_ORI>(qp, uo, inv_dt_ori_, nullptr);
+            if (do_split)
+                w_ws = analytic::body_velocity_with_jacobian_manual<N_ORI>(qp, uo, inv_dt_ori_, nullptr);
+            if (do_floor) {
+                using Helper = CeresSplineHelper<N_POS>;
+                Eigen::Matrix<double, N_POS, 1> p0;
+                Helper::template baseCoeffsWithTime<0>(p0, up);
+                const Eigen::Matrix<double, N_POS, 1> wv = Helper::blending_matrix_ * p0;
+                for (int i = 0; i < N_POS; ++i) {
+                    const int idx = std::max(0, std::min(kp - 5 + i, n_pos_ - 1));
+                    pz_pred += wv[i] * (init_pos_[idx][2] + align_t[2]);
+                }
+            }
         }
         gtsam::KeyVector pkeys(keys.begin() + N_ORI, keys.end());   // 6 pos CPs
         double inv_med_I = 0.0;
@@ -317,6 +332,20 @@ double IsamSolver::update(
                         gtsam::noiseModel::mEstimator::Huber::Create(cfg_.huber_delta),
                         gtsam::noiseModel::Isotropic::Sigma(1, 1.0 / std::sqrt(ws)));
                     g.add(gtsam_factors::RadarPosOnlyFactor(ns, pkeys, R_ws, w_ws, u_body, v_c, t_bs_, up, inv_dt_pos_));
+                }
+            }
+            // floor-plane absolute-z anchor: classify by predicted world-z, then add
+            // a point-to-plane factor (frozen ori) pinning the vertical position.
+            if (do_floor) {
+                const Eigen::Vector3d p_body = R_bs_ * xyz + t_bs_;
+                const double z_off = (R_ws * p_body).z();
+                const double z_pred_world = z_off + pz_pred;
+                if (std::abs(z_pred_world - cfg_.floor_z) <= cfg_.floor_band) {
+                    auto nf = gtsam::noiseModel::Robust::Create(
+                        gtsam::noiseModel::mEstimator::Huber::Create(cfg_.floor_huber),
+                        gtsam::noiseModel::Isotropic::Sigma(1, 1.0 / std::sqrt(cfg_.lambda_floor)));
+                    g.add(gtsam_factors::FloorPlaneFactor(nf, pkeys, z_off, cfg_.floor_z, up));
+                    ++n_floor_;
                 }
             }
         }

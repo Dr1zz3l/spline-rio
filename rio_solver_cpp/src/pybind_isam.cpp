@@ -56,7 +56,11 @@ PYBIND11_MODULE(rio_isam, m) {
         .def_readwrite("radar_zbias_fixed", &IsamConfig::radar_zbias_fixed)
         .def_readwrite("radar_intensity_weight", &IsamConfig::radar_intensity_weight)
         .def_readwrite("lambda_pos_init_prior", &IsamConfig::lambda_pos_init_prior)
-        .def_readwrite("radar_pos_split", &IsamConfig::radar_pos_split);
+        .def_readwrite("radar_pos_split", &IsamConfig::radar_pos_split)
+        .def_readwrite("lambda_floor", &IsamConfig::lambda_floor)
+        .def_readwrite("floor_z", &IsamConfig::floor_z)
+        .def_readwrite("floor_band", &IsamConfig::floor_band)
+        .def_readwrite("floor_huber", &IsamConfig::floor_huber);
 
     py::class_<ExtrinsicConfig>(m, "ExtrinsicConfig")
         .def(py::init<>())
@@ -103,5 +107,6 @@ PYBIND11_MODULE(rio_isam, m) {
         .def("pos_cps", &IsamSolver::pos_cps)
         .def("biases", &IsamSolver::biases)
         .def("num_active", &IsamSolver::num_active)
-        .def("num_fixed", &IsamSolver::num_fixed);
+        .def("num_fixed", &IsamSolver::num_fixed)
+        .def("num_floor", &IsamSolver::num_floor);
 }

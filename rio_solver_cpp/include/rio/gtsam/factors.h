@@ -25,6 +25,7 @@
 #include <rio/gtsam/reg_factor_math.h>
 #include <rio/gtsam/heading_factor_math.h>
 #include <rio/gtsam/radar_pos_only_factor_math.h>
+#include <rio/gtsam/floor_factor_math.h>
 
 namespace rio {
 namespace gtsam_factors {
@@ -193,6 +194,30 @@ public:
 private:
     Eigen::Matrix3d R_ws_; Eigen::Vector3d omega_ws_, u_body_; double v_meas_;
     Eigen::Vector3d t_bs_; double u_p_, idt_p_;
+};
+
+// ------------------------------------------------ Floor plane / abs-z (1D)
+class FloorPlaneFactor : public gtsam::NoiseModelFactor {
+public:
+    // keys = the N_POS position CPs only; z_off = (R_ws * p_body).z (frozen ori).
+    FloorPlaneFactor(const gtsam::SharedNoiseModel& m, const gtsam::KeyVector& keys,
+                     double z_off, double floor_z, double u_pos)
+        : gtsam::NoiseModelFactor(m, keys), z_off_(z_off), floor_z_(floor_z), u_p_(u_pos) {}
+
+    gtsam::Vector unwhitenedError(
+        const gtsam::Values& x,
+        boost::optional<std::vector<gtsam::Matrix>&> H = boost::none) const override {
+        double cp[N_POS][3]; const double* cpp[N_POS];
+        for (int i = 0; i < N_POS; ++i) {
+            const gtsam::Vector3 c = x.at<gtsam::Vector3>(keys()[i]);
+            cp[i][0] = c[0]; cp[i][1] = c[1]; cp[i][2] = c[2]; cpp[i] = cp[i];
+        }
+        auto r = floor_residual_gtsam(cpp, z_off_, floor_z_, u_p_, bool(H));
+        if (H) { auto& Hs = *H; Hs.resize(N_POS); for (int i = 0; i < N_POS; ++i) Hs[i] = r.d_r_d_cp[i]; }
+        return (gtsam::Vector(1) << r.residual).finished();
+    }
+private:
+    double z_off_, floor_z_, u_p_;
 };
 
 // ---------------------------------------------------------------- Heading (1D)
