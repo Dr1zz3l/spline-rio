@@ -372,23 +372,27 @@ covariance.  Each window we extract the live-edge joint covariance of
 $(\vv_w, \vR)$ from the converged problem (\texttt{ceres::Covariance},
 active support control points, tangent space, marginalization prior
 included) and compute the \ac{nees} against \ac{mocap}; for a consistent
-estimator each 3-DoF block is $\chi^2_3$-distributed with mean~3.
-On the racing flights, by per-window median for \emph{both} channels, the
-\emph{orientation} \ac{nees} is $1.2$--$2.6$ and the velocity \ac{nees}
-$1.4$--$5.4$ (consistent value~3): orientation is essentially calibrated
-(slightly conservative on slow racing, near-exact on fast, as the weights
-approximate effective-noise whitening) and velocity mildly overconfident.
-We report the median because the means (velocity especially) are inflated
-by a few windows where the finite-difference \ac{mocap} velocity reference
-is unreliable.  Both are \emph{calibration checks}, not powered hypothesis
-tests: consecutive windows are temporally correlated, so the $\chi^2_3$
-mean-3 expectation holds only heuristically.  On backflips the orientation
-covariance is overconfident by ${\sim}3\times$ in standard deviation
-(unmodeled flip-time error), and only 6 of 50 windows survive the
-ground-truth quality mask (\autoref{sec:setup}), too few for a consistency
-statement, so we report it as a caveat.  Deployment recipe: inflate the
-emitted covariance per regime ($1\times$ gentle, $3\times$ aggressive), or
-calibrate online from innovations.
+estimator each 3-DoF block is $\chi^2_3$ with \emph{mean}~3.  We report the
+per-window \emph{mean} after a ground-truth-quality mask (the dropout/glitch
+mask used on backflips, applied per channel; the finite-difference \ac{mocap}
+velocity reference is additionally discarded where a near-duplicate
+timestamp makes it return an implausible speed).
+On the racing flights the \emph{orientation} \ac{nees} mean is $1.6$ (slow)
+and $3.2$ (fast), within or just below the $\chi^2_3$ 95\% interval for the
+window count (${\approx}[2.0,3.7]$): orientation covariance is calibrated on
+fast racing and slightly conservative on slow, as the weights approximate
+effective-noise whitening.  Where the finite-difference velocity reference is
+clean (slow racing) the velocity \ac{nees} mean is $2.7$, also calibrated;
+on the faster and tumbling flights that reference is itself too noisy
+(${\sim}1$\,m/s) for a powered velocity check.  These are \emph{calibration
+checks}, not powered hypothesis tests: consecutive windows are temporally
+correlated, so the $\chi^2$ expectation holds only heuristically.  On
+backflips the orientation covariance is overconfident (\ac{nees} mean~38,
+${\sim}3.5\times$ in standard deviation, unmodeled flip-time error), and only
+6 of 50 windows survive the ground-truth mask (\autoref{sec:setup}), too few
+for a consistency statement, so we report it as a caveat.  Deployment recipe:
+inflate the emitted covariance per regime ($1\times$ gentle, $3\times$
+aggressive), or calibrate online from innovations.
 
 \subsection{Ablation Studies}
 \autoref{tab:ablations} summarizes key design choices.

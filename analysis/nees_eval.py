@@ -53,23 +53,33 @@ t_v = 0.5 * (tp[:-1] + tp[1:])
 w = max(1, int(round(0.04 / np.median(np.diff(tp)))))
 vel_s = np.column_stack([np.convolve(vel_fd[:, k], np.ones(w) / w, 'same') for k in range(3)])
 
-# glitch mask (mocap dropouts / FD spikes — relevant on backflips)
+# Ground-truth-quality masks.  Orientation GT (slerp) fails only at mocap
+# dropouts / large angular glitches.  Velocity GT (finite-difference of mocap
+# position) fails there AND at position-glitch FD spikes (a single bad mocap
+# sample -> a several-m/s velocity spike); we mask those *separately* so the
+# velocity mean is not dominated by GT artifacts rather than estimator error.
 om = np.linalg.norm(
     Rotation.from_matrix(
         np.einsum('nij,njk->nik', rots[:-1].as_matrix().transpose(0, 2, 1),
                   rots[1:].as_matrix())).as_rotvec(), axis=1) / np.diff(tp)
 gap = np.diff(tp) > 0.02
-bad_t = t_v[(om > 25.0) | gap]
+bad_o_t = t_v[(om > 25.0) | gap]            # orientation-GT-bad (mocap dropouts/glitches)
+# Velocity GT (finite difference of mocap position) is unusable where it returns
+# an implausible speed: a near-duplicate mocap timestamp divides a normal
+# displacement by a tiny dt, giving >100 m/s spikes (the estimate is fine).  Cut
+# per-window at 1.5x the platform's 99th-percentile *estimated* speed.
+v_gt_max = 1.5 * np.percentile(np.linalg.norm(vel_w, axis=1), 99)
 
 
-def is_clean(t):
-    return not len(bad_t) or np.min(np.abs(bad_t - t)) > 0.15
+def _clean(t, bad):
+    return not len(bad) or np.min(np.abs(bad - t)) > 0.15
 
 
-nees_v, nees_o, nees_f, kept = [], [], [], 0
+from scipy.stats import chi2 as _chi2
+nees_v, nees_o, nees_f = [], [], []
 err_v, err_o = [], []
 for i, t in enumerate(t_w):
-    if not (tp[0] + 0.05 < t < tp[-1] - 0.05) or not is_clean(t):
+    if not (tp[0] + 0.05 < t < tp[-1] - 0.05):
         continue
     R_gt = slerp(t).as_matrix()
     v_gt = np.column_stack([np.interp(t, t_v, vel_s[:, k]) for k in range(3)])[0]
@@ -78,23 +88,28 @@ for i, t in enumerate(t_w):
     e_o = Rotation.from_matrix(R_est.T @ R_gt).as_rotvec()  # right tangent
     S = Sig_w[i]
     Svv, Soo = S[:3, :3], S[3:, 3:]
+    v_ok = _clean(t, bad_o_t) and np.linalg.norm(v_gt) <= v_gt_max
     try:
-        nv = float(e_v @ np.linalg.solve(Svv, e_v))
-        no = float(e_o @ np.linalg.solve(Soo, e_o))
-        e6 = np.concatenate([e_v, e_o])
-        nf = float(e6 @ np.linalg.solve(S, e6))
+        if _clean(t, bad_o_t):
+            nees_o.append(float(e_o @ np.linalg.solve(Soo, e_o)))
+            err_o.append(np.degrees(np.linalg.norm(e_o)))
+        if v_ok:
+            nees_v.append(float(e_v @ np.linalg.solve(Svv, e_v)))
+            err_v.append(np.linalg.norm(e_v))
+            e6 = np.concatenate([e_v, e_o])
+            nees_f.append(float(e6 @ np.linalg.solve(S, e6)))
     except np.linalg.LinAlgError:
         continue
-    nees_v.append(nv); nees_o.append(no); nees_f.append(nf)
-    err_v.append(np.linalg.norm(e_v)); err_o.append(np.degrees(np.linalg.norm(e_o)))
-    kept += 1
 
 nees_v, nees_o, nees_f = map(np.array, (nees_v, nees_o, nees_f))
-print(f"\nbag {bag_key}: {kept}/{len(t_w)} windows (glitch/range-masked)")
-print(f"  raw errors: vel RMSE {np.sqrt(np.mean(np.array(err_v)**2)):.3f} m/s, "
+print(f"\nbag {bag_key}: {len(t_w)} windows; kept ori={len(nees_o)} vel={len(nees_v)} "
+      f"(per-channel GT-quality mask)")
+print(f"  raw errors (kept): vel RMSE {np.sqrt(np.mean(np.array(err_v)**2)):.3f} m/s, "
       f"ori RMSE {np.sqrt(np.mean(np.array(err_o)**2)):.2f} deg")
-print(f"  predicted 1σ (median): vel {np.median(np.sqrt([Sig_w[i][:3,:3].trace()/3 for i in range(len(t_w))])):.4f} m/s, "
-      f"ori {np.degrees(np.median(np.sqrt([Sig_w[i][3:,3:].trace()/3 for i in range(len(t_w))]))):.4f} deg")
 for name, n, dof in (("vel", nees_v, 3), ("ori", nees_o, 3), ("full", nees_f, 6)):
-    print(f"  NEES {name:4s}: mean {n.mean():9.1f} median {np.median(n):9.1f} "
-          f"(consistent={dof}) -> inflation x{n.mean()/dof:8.1f}, sigma_scale x{np.sqrt(n.mean()/dof):6.1f}")
+    N = len(n)
+    # 95% interval for the mean NEES of N consistent dof-NEES samples: chi2_{N*dof}/N
+    lo, hi = _chi2.ppf([0.025, 0.975], N * dof) / N
+    flag = "OK" if lo <= n.mean() <= hi else ("OVERCONF" if n.mean() > hi else "CONSERV")
+    print(f"  NEES {name:4s}: MASKED MEAN {n.mean():6.2f}  (median {np.median(n):5.2f}) "
+          f"vs {dof}  95%CI[{lo:.2f},{hi:.2f}]  {flag}  sigma_scale x{np.sqrt(n.mean()/dof):.2f}")
