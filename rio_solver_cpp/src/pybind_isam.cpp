@@ -117,5 +117,10 @@ PYBIND11_MODULE(rio_isam, m) {
         .def("num_fixed", &IsamSolver::num_fixed)
         .def("num_floor", &IsamSolver::num_floor)
         .def("floor_offset", &IsamSolver::floor_offset)
-        .def("zbias", &IsamSolver::zbias);
+        .def("zbias", &IsamSolver::zbias)
+        .def("nees_cov", [](const IsamSolver& s) -> py::object {
+            Eigen::MatrixXd C; int p0 = -1, o0 = -1;
+            if (!s.nees_cov(C, p0, o0)) return py::none();
+            return py::make_tuple(C, p0, o0);
+        });
 }

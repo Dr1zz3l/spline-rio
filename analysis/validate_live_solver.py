@@ -754,6 +754,9 @@ def _solve_cpp_isam(initial_state, solver_radar_frames, imu_data,
     t_hi = cpp_radar_all[-1][0] if cpp_radar_all else imu_t[-1]
     print(f"  [--isam] lag={cfg.lag:.1f}s stride={stride:.2f}s extra_iters={cfg.extra_iters} "
           f"lambda_h={cfg.lambda_heading:g}")
+    nees_on = bool(int(solver_cfg.get('nees', 0)))
+    global _ISAM_NEES_SNAPS
+    _ISAM_NEES_SNAPS = []
     t_prev, t_now, dts = t_lo, t_lo + stride, []
     while t_now <= t_hi + 1e-6:
         m = (imu_t > t_prev) & (imu_t <= t_now)
@@ -764,6 +767,20 @@ def _solve_cpp_isam(initial_state, solver_radar_frames, imu_data,
         radar_list = [(t, pts) for (t, pts) in cpp_radar_all if t_prev < t <= t_now]
         heading_blk = [(t, y) for (t, y) in all_heading if t_prev < t <= t_now]
         dts.append(solver.update(radar_list, imu_blk, heading_blk, float(t_now)))
+        # NEES: snapshot the live-edge joint covariance + the current knot estimates
+        if nees_on and hasattr(solver, 'nees_cov'):
+            nc = solver.nees_cov()
+            if nc is not None:
+                C, p0, o0 = nc
+                ofs = all_ori_quats.copy()
+                for idx, q in solver.ori_knots():
+                    ofs[idx] = q
+                pfs = all_pos_cps.copy()
+                for idx, c in solver.pos_cps():
+                    pfs[idx] = c
+                _ISAM_NEES_SNAPS.append({'t': float(t_now) - 1e-4, 'C': np.array(C),
+                                         'p0': int(p0), 'o0': int(o0),
+                                         'ori': ofs, 'pos': pfs})
         t_prev, t_now = t_now, t_now + stride
     if dts:
         tail = dts[len(dts) // 3:]
@@ -794,7 +811,94 @@ def _solve_cpp_isam(initial_state, solver_radar_frames, imu_data,
         radar_extrinsic_delta=np.zeros(3))
 
 
+def _isam_nees_pose(snap, deg_p, dt_pos, dt_ori, t_ref):
+    """Propagate a live-edge knot covariance C (layout [6 pos x3 | 4 ori x3], right-
+    tangent) to Sigma of (v_world(t_live), ori-right-tangent(t_live)). Mirrors the SW
+    NEES block. Returns (t, v_est(3), R0(3x3), Sigma(6x6)) or None."""
+    C, p0, o0 = snap['C'], snap['p0'], snap['o0']
+    t_live = snap['t']; t_rel = t_live - t_ref
+    pos_sp = UniformBSpline(snap['pos'], deg_p, dt_pos); pos_sp.t_ref = t_ref
+    ori_sp = CumulativeSO3BSpline.from_rotation_samples(
+        Rotation.from_quat(snap['ori']).as_matrix(), dt=dt_ori, t_ref=t_ref)
+    kp = pos_sp.find_knot_span(t_rel)
+    bN = pos_sp.basis_functions(t_rel, kp, derivative=1)
+    A = np.zeros((6, C.shape[0]))
+    for l in range(deg_p + 1):
+        li = (kp - deg_p + l) - p0
+        if not (0 <= li < 6):
+            return None
+        for ax in range(3):
+            A[ax, 3 * li + ax] = bN[l]
+    R0 = ori_sp.evaluate(t_rel)
+    k_ori, _, _ = ori_sp._cumulative_basis(t_rel)
+    eps = 1e-6
+    quats = snap['ori']
+    for l in range(4):
+        gi = k_ori - 3 + l
+        li = gi - o0
+        if not (0 <= li < 4):
+            return None
+        Rk = Rotation.from_quat(quats[gi]).as_matrix()
+        for ax in range(3):
+            dv = np.zeros(3); dv[ax] = eps
+            qs = quats[gi].copy()
+            quats[gi] = Rotation.from_matrix(Rk @ Rotation.from_rotvec(dv).as_matrix()).as_quat()
+            sp_p = CumulativeSO3BSpline.from_rotation_samples(
+                Rotation.from_quat(quats).as_matrix(), dt=dt_ori, t_ref=t_ref)
+            R_p = sp_p.evaluate(t_rel)
+            quats[gi] = qs
+            A[3:6, 18 + 3 * li + ax] = Rotation.from_matrix(R0.T @ R_p).as_rotvec() / eps
+    v_est = pos_sp(t_rel, derivative=1)
+    return t_live, v_est, R0, A @ C @ A.T
+
+
+def _run_isam_nees(snaps, opt_state, t_ref, mocap_slerp, mc_times, mc_pos):
+    """Compute live-edge NEES (velocity + orientation, 3-DOF each) of the iSAM estimate
+    vs MoCap. ANEES ~ 3 = consistent; > 3 overconfident; < 3 conservative."""
+    try:
+        from scipy.stats import chi2 as _chi2
+    except Exception:
+        _chi2 = None
+    deg_p = opt_state.pos_bspline.degree
+    dt_pos = opt_state.pos_bspline.dt
+    dt_ori = opt_state.ori_spline.dt
+    mc_vel = np.gradient(mc_pos, mc_times, axis=0)
+    nees_v, nees_r, terr = [], [], []
+    for snap in snaps:
+        res = _isam_nees_pose(snap, deg_p, dt_pos, dt_ori, t_ref)
+        if res is None:
+            continue
+        t, v_est, R0, Sig = res
+        if t < mc_times[0] or t > mc_times[-1]:
+            continue
+        v_gt = np.array([np.interp(t, mc_times, mc_vel[:, i]) for i in range(3)])
+        R_gt = mocap_slerp(np.clip(t, mc_times[0], mc_times[-1])).as_matrix()
+        e_v = v_est - v_gt
+        e_r = Rotation.from_matrix(R_gt.T @ R0).as_rotvec()
+        Sv, Sr = Sig[:3, :3] + 1e-12 * np.eye(3), Sig[3:, 3:] + 1e-12 * np.eye(3)
+        try:
+            nv = float(e_v @ np.linalg.solve(Sv, e_v))
+            nr = float(e_r @ np.linalg.solve(Sr, e_r))
+        except np.linalg.LinAlgError:
+            continue
+        nees_v.append(nv); nees_r.append(nr); terr.append(t)
+    if not nees_v:
+        print("  [NEES] no valid snapshots"); return
+    nv, nr = np.array(nees_v), np.array(nees_r)
+    lo, hi = (_chi2.ppf(0.025, 3), _chi2.ppf(0.975, 3)) if _chi2 else (0.216, 9.348)
+    print(f"  [NEES] {len(nv)} live-edge snapshots (3-DOF each, consistent ANEES=3.0, "
+          f"single-sample 95% chi2 in [{lo:.2f},{hi:.2f}])")
+    for name, arr in (("velocity", nv), ("orientation", nr)):
+        inb = float(np.mean((arr >= lo) & (arr <= hi)))
+        verdict = ("CONSISTENT" if 2.0 <= arr.mean() <= 4.5 else
+                   "OVERCONFIDENT" if arr.mean() > 4.5 else "conservative")
+        print(f"    {name:11s}: ANEES {arr.mean():6.2f}  median {np.median(arr):6.2f}  "
+              f"in-95%% {100*inb:3.0f}%%  -> {verdict}")
+    np.savez(Path('../plots/isam_nees_last.npz'), t=np.array(terr), nees_v=nv, nees_r=nr)
+
+
 # ==================== Config ====================
+_ISAM_NEES_SNAPS = []   # live-edge covariance snapshots from the --isam path (NEES study)
 _cfg = load_config()
 BAGS = _cfg['bags']['bags']
 FLIPPED_BAGS = set(_cfg['bags']['flipped'])
@@ -2136,6 +2240,9 @@ def main():
             solver_cfg=_SOLVER_CFG,
             heading_priors=heading_priors if heading_priors else None,
         )
+        if _ISAM_NEES_SNAPS and mocap_slerp is not None and _mc_times is not None:
+            _run_isam_nees(_ISAM_NEES_SNAPS, optimized_state, t_ref, mocap_slerp,
+                           _mc_times, mocap_pos_arr)
     elif USE_CPP and USE_SLIDING_WINDOW:
         optimized_state, live_snapshots = _solve_cpp_sliding_window(
             initial_state=initial_state,

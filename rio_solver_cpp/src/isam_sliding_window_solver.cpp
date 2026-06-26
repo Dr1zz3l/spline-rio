@@ -13,6 +13,7 @@
 #include <gtsam/slam/PriorFactor.h>
 #include <gtsam/slam/BetweenFactor.h>
 #include <gtsam/nonlinear/ISAM2Params.h>
+#include <gtsam/nonlinear/Marginals.h>
 
 namespace rio {
 
@@ -583,6 +584,35 @@ double IsamSolver::update(
         adapt_noise(est, radar, imu);
     first_ = false;
     return dt;
+}
+
+// NEES: live-edge joint covariance over the trailing N_POS pos CPs + N_ORI ori knots,
+// right-tangent, layout [6 pos x3 | 4 ori x3]. gtsam::Marginals (QR) over the smoother's
+// factors+estimate -> includes the marginalization priors (so the gauge is anchored and
+// the absolute-position/yaw nullspace is finite). Offline only.
+bool IsamSolver::nees_cov(Eigen::MatrixXd& C, int& pos_idx0, int& ori_idx0) const {
+    if (added_pos_.empty() || added_ori_.empty()) return false;
+    pos_idx0 = *added_pos_.rbegin() - (N_POS - 1);
+    ori_idx0 = *added_ori_.rbegin() - (N_ORI - 1);
+    if (pos_idx0 < 0 || ori_idx0 < 0) return false;
+    gtsam::KeyVector keys;
+    for (int i = 0; i < N_POS; ++i) keys.push_back(PK(pos_idx0 + i));
+    for (int j = 0; j < N_ORI; ++j) keys.push_back(RK(ori_idx0 + j));
+    const gtsam::Values est = smoother_->calculateEstimate();
+    for (const auto& k : keys) if (!est.exists(k)) return false;
+    try {
+        gtsam::Marginals marg(smoother_->getISAM2().getFactorsUnsafe(), est,
+                              gtsam::Marginals::QR);
+        gtsam::JointMarginal jm = marg.jointMarginalCovariance(keys);
+        const int D = 3 * static_cast<int>(keys.size());
+        C.setZero(D, D);
+        for (size_t a = 0; a < keys.size(); ++a)
+            for (size_t b = 0; b < keys.size(); ++b)
+                C.block(3 * a, 3 * b, 3, 3) = jm(keys[a], keys[b]);
+    } catch (const std::exception&) {
+        return false;
+    }
+    return true;
 }
 
 // NIS-adaptive noise: set each sensor's sigma = std of its residuals at the

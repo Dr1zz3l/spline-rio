@@ -135,6 +135,12 @@ public:
     double floor_offset() const { return floor_off_est_; }  // estimated f0 (free floor)
     double zbias() const { return bz_est_; }     // estimated radar z-velocity bias b_z
 
+    // NEES study: live-edge joint covariance over the trailing N_POS pos CPs + N_ORI ori
+    // knots (30x30, right-tangent, layout [6 pos x3 | 4 ori x3]) via gtsam::Marginals
+    // over the smoother's factors+estimate (includes the marginalization priors). Offline
+    // only (re-linearizes the active graph). Returns false if unavailable/singular.
+    bool nees_cov(Eigen::MatrixXd& C, int& pos_idx0, int& ori_idx0) const;
+
 private:
     bool ori_active(double t_abs, int& k, double& u) const;
     bool pos_active(double t_abs, int& k, double& u) const;

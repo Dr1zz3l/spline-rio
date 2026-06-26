@@ -25,7 +25,10 @@ radar + fast 5m/s circle; no SW/batch reference run -- just confirms it generali
 SW on racing (accuracy AND speed) and matches it on backflips position/velocity.**
 The one deficit (backflips orientation, +4deg) is a CHARACTERIZED freeze-vs-
 relinearize trade-off (FEJ-freeze stale under extreme nonlinearity), not a bug --
-see "ROOT CAUSE" below. Improvement experiments that came back dead/negative/marginal
+see "ROOT CAUSE" below. The NEES/consistency study (2026-06-26) QUANTIFIES it:
+iSAM2 is NEES-calibrated on racing (ANEES~2-3, never overconfident) but overconfident
+~85x in backflips orientation (ANEES 257) -- the stale marginal; adaptive lag fixes
+both the error and the overconfidence together (see "NEES / consistency study"). Improvement experiments that came back dead/negative/marginal
 (so the backend is well-optimized): radar smear (negligible, 2.7% of flip noise),
 cost-based extra_iters early-stop (orientation hidden under dominant residuals),
 radar_pos_split (small pos win, small ori cost), NIS-adaptive (= hand-tuned, not
@@ -496,6 +499,36 @@ marginalize in):**
   (c) Re-linearizing marginal (Ceres-style) in GTSAM -> not natively supported.
   (d) Accept it: iSAM2 wins racing, trails on the hardest flip orientation -- a
       characterized, regime-dependent property. (a) buys it back offline at a compute cost.
+
+## NEES / consistency study (2026-06-26): the FEJ-freeze staleness QUANTIFIED
+
+The design-study Phase-3 consistency gate, done at full rate. `IsamSolver::nees_cov()`
+returns the live-edge joint covariance over the trailing 6 pos CPs + 4 ori knots via
+gtsam::Marginals(QR) over the smoother's factors+estimate (includes the marginalization
+priors -> the gauge is anchored, nullspace finite). Python propagates it through the
+spline to Sigma of (v_world, ori-right-tangent) at the live edge and computes NEES vs
+MoCap (`--set nees=1`, 3-DOF each; consistent ANEES=3.0, single-sample 95% chi2
+[0.22, 9.35]).
+
+| bag | velocity ANEES | orientation ANEES | verdict |
+|-----|----------------|-------------------|---------|
+| slow_racing | 2.07 | 1.15 | consistent / slightly conservative |
+| fast_racing | 2.27 | 2.64 | CONSISTENT (both) |
+| backflips | 28.2 | **257** | massively OVERCONFIDENT |
+
+**Result:** on racing the iSAM2 backend is NEES-calibrated (ANEES ~ 3, never
+overconfident -- the safe regime). On backflips it is overconfident by ~85x in
+orientation (257/3): the stale frozen marginal makes the filter BELIEVE its orientation
+far more than warranted. This is the quantitative confirmation of the FEJ-freeze
+staleness root cause (and Caveat-2 from the migration plan), at full rate in C++.
+
+**The overconfidence and the point error share one cause:** the adaptive lag (fix (a))
+improves BOTH -- backflips lag_flip=8 drops orientation ANEES 257 -> 116 AND ori RMSE
+9.99 -> 7.07deg. Delaying marginalization (less stale freezing) de-biases the estimate
+and de-shrinks the covariance together. (Still overconfident -- continuous backflips
+never fully escape marginalization.) So: iSAM2 is consistent where it should be trusted
+(racing) and its one failure mode (extreme-flip orientation) is now both characterized
+AND flagged by its own NEES -> a deployable consistency monitor.
 
 ## Selective FEJ (2026-06-26): IMPLEMENTED + TESTED -> REJECTED (worse everywhere)
 
