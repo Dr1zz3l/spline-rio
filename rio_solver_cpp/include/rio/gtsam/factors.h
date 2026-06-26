@@ -220,6 +220,37 @@ private:
     double z_off_, floor_z_, u_p_;
 };
 
+// ------------------------------------ Floor plane, FREE offset landmark (1D)
+// Phase 1 (plane-SLAM design study): the floor offset is a persistent graph
+// variable f0 (gtsam::Vector1) jointly estimated, instead of a hardcoded floor_z.
+// Residual r = z_off + traj_z - f0; keys = [N_POS pos CPs, f0]. d r / d f0 = -1.
+class FloorPlaneFreeFactor : public gtsam::NoiseModelFactor {
+public:
+    FloorPlaneFreeFactor(const gtsam::SharedNoiseModel& m, const gtsam::KeyVector& keys,
+                         double z_off, double u_pos)
+        : gtsam::NoiseModelFactor(m, keys), z_off_(z_off), u_p_(u_pos) {}
+
+    gtsam::Vector unwhitenedError(
+        const gtsam::Values& x,
+        boost::optional<std::vector<gtsam::Matrix>&> H = boost::none) const override {
+        double cp[N_POS][3]; const double* cpp[N_POS];
+        for (int i = 0; i < N_POS; ++i) {
+            const gtsam::Vector3 c = x.at<gtsam::Vector3>(keys()[i]);
+            cp[i][0] = c[0]; cp[i][1] = c[1]; cp[i][2] = c[2]; cpp[i] = cp[i];
+        }
+        const double f0 = x.at<gtsam::Vector1>(keys()[N_POS])[0];
+        auto r = floor_residual_gtsam(cpp, z_off_, 0.0, u_p_, bool(H));  // = z_off + traj_z
+        if (H) {
+            auto& Hs = *H; Hs.resize(N_POS + 1);
+            for (int i = 0; i < N_POS; ++i) Hs[i] = r.d_r_d_cp[i];
+            Hs[N_POS] = (gtsam::Matrix(1, 1) << -1.0).finished();
+        }
+        return (gtsam::Vector(1) << (r.residual - f0)).finished();
+    }
+private:
+    double z_off_, u_p_;
+};
+
 // ---------------------------------------------------------------- Heading (1D)
 class HeadingFactor : public gtsam::NoiseModelFactor {
 public:

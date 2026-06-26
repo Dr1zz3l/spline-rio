@@ -241,6 +241,28 @@ y~+4 is reliably visible here -> full 3D plane SLAM still the large-effort open 
 Verdict: feature/plane tracking for abs-position is VALIDATED and gives a large fast
 vertical/velocity win, but not yet robust/universal. Feature retained (off by default).
 
+A full multi-plane SLAM design study (researched externally) is in
+`absolute-position-layer-design-study.md` (anchored closest-point plane landmarks,
+normal-based classification, free offsets, soft online Atlanta normal-prior, mesh as
+parallel double-plane). **Phase 0 EXECUTED (2026-06-26, phase0_per_axis.py) partly
+REFUTES its premise:** the NATIVE dominant position error is z (vertical, radar z-bias:
+82-85% of total on racing), NOT x. Post-floor the racing error is ~isotropic (~0.21
+each axis), not x-dominated; x only dominates on backflips, where structure is invisible
+(floor 20%, walls ~0% mid-flip) so plane-SLAM cannot help it. => the floor (z) was the
+high-coverage win (done); walls give a small, partial, where-visible y gain. Pursuing
+Phase 1 (universal floor: normal-classified + free-offset CP plane, removes the per-bag
+band + floor_z tuning); full multi-plane SLAM (study Phases 3-5) is optional, modest
+payoff on these flights. See the study Appendix A.
+
+**Phase 1a DONE (2026-06-26): free-offset floor landmark (`floor_free=1`).** The floor
+offset is a persistent gtsam::Vector1 landmark f0 (`FloorPlaneFreeFactor`), bootstrapped
+from the first ~1.5 s lowest return cluster, jointly estimated. Self-calibrates per bag
+with NO floor_z input: slow -0.04 m (vert 0.084, best yet), fast -0.09 m (vert 0.274,
+big win), backflips -0.82 m (neutral). The floor_z sensitivity (the -1.19 catastrophe)
+is GONE -- deployment-safe. Remaining (1b): the classification BAND is still per-bag
+(chicken-and-egg); replace with the drift-invariant lowest-z-cluster (width = physical
+floor thickness, a sensor constant) to remove the last knob. Study Appendix B.
+
 ## E. Other
 - Learned radar front-end (static/dynamic + ground/structure classification) to
   beat RANSAC's crude filtering, esp. elevation-biased single-chip returns.

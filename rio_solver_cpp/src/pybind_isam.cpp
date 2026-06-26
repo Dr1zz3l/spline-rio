@@ -60,7 +60,8 @@ PYBIND11_MODULE(rio_isam, m) {
         .def_readwrite("lambda_floor", &IsamConfig::lambda_floor)
         .def_readwrite("floor_z", &IsamConfig::floor_z)
         .def_readwrite("floor_band", &IsamConfig::floor_band)
-        .def_readwrite("floor_huber", &IsamConfig::floor_huber);
+        .def_readwrite("floor_huber", &IsamConfig::floor_huber)
+        .def_readwrite("floor_free", &IsamConfig::floor_free);
 
     py::class_<ExtrinsicConfig>(m, "ExtrinsicConfig")
         .def(py::init<>())
@@ -108,5 +109,6 @@ PYBIND11_MODULE(rio_isam, m) {
         .def("biases", &IsamSolver::biases)
         .def("num_active", &IsamSolver::num_active)
         .def("num_fixed", &IsamSolver::num_fixed)
-        .def("num_floor", &IsamSolver::num_floor);
+        .def("num_floor", &IsamSolver::num_floor)
+        .def("floor_offset", &IsamSolver::floor_offset);
 }

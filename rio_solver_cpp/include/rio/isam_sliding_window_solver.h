@@ -42,8 +42,15 @@ struct IsamConfig {
     // --- floor-plane absolute-z anchor (plane mapping); 0 = off ---
     double lambda_floor{0.0};             // weight of the floor point-to-plane factor
     double floor_z{0.0};                  // world height of the floor plane (init frame)
-    double floor_band{0.5};               // |z_pred_world - floor_z| < band => floor
+    double floor_band{0.5};               // |z_pred_world - floor_ref| < band => floor
     double floor_huber{0.3};              // Huber delta on the floor residual (m)
+    bool   floor_free{false};             // Phase 1: estimate the floor offset as a
+                                          // persistent landmark f0 (FK(0)) instead of
+                                          // hardcoding floor_z; bootstrapped from the
+                                          // first stride's lowest return cluster, then
+                                          // the band gates on the current f0 estimate
+                                          // (self-calibrating: no floor_z / start-height
+                                          // knowledge, robust to warm-start z error).
     double boundary_sigma{1e-3};           // strong gauge anchor on first knots
     double min_range{0.2};
     double lag{1.5};
@@ -95,6 +102,7 @@ public:
     int num_active() const { return num_active_; }
     int num_fixed() const;   // FEJ: variables whose linearization is frozen by marg
     int num_floor() const { return n_floor_; }  // cumulative floor factors added
+    double floor_offset() const { return floor_off_est_; }  // estimated f0 (free floor)
 
 private:
     bool ori_active(double t_abs, int& k, double& u) const;
@@ -118,6 +126,10 @@ private:
     int bias_k_{0};
     bool first_{true};
     int n_floor_{0};
+    bool floor_init_{false};       // FK(0) inserted (Phase-1 free-offset floor)
+    double floor_off_est_{0.0};    // current estimate of the floor offset f0
+    std::vector<double> floor_cand_;  // bootstrap buffer (lowest-cluster -> f0 init)
+    int floor_boot_strides_{0};
 
     std::map<int, std::array<double, 4>> live_ori_;
     std::map<int, std::array<double, 3>> live_pos_;

@@ -27,6 +27,7 @@ namespace nm = gtsam::noiseModel;
 static Key RK(int i) { return Symbol('r', i); }
 static Key PK(int i) { return Symbol('p', i); }
 static Key BK(int i) { return Symbol('b', i); }
+static Key FK(int i) { return Symbol('f', i); }   // floor-offset landmark (Phase 1)
 
 static Rot3 quat_to_rot3(const std::array<double, 4>& q) {  // q = xyzw
     return Rot3(Eigen::Quaterniond(q[3], q[0], q[1], q[2]).normalized());
@@ -196,6 +197,60 @@ double IsamSolver::update(
     }
     ts[bkey] = t_now;
 
+    // --- floor-offset landmark f0 (Phase 1, free-offset floor) ---
+    // Bootstrap once from the first stride's LOWEST return cluster (drift-free: the
+    // lowest dense layer is the floor regardless of absolute z), then keep f0 alive
+    // (persistent, never marginalized) by refreshing its timestamp each stride.
+    if (cfg_.floor_free) {
+        if (!floor_init_) {
+            // Buffer candidate world-z over the first ~1.5 s (a single 0.3 s stride is
+            // too short to reliably see the floor on slow flight) before committing f0.
+            for (const auto& f : radar) {
+                if (f.points.empty() || !in_domain(f.timestamp)) continue;
+                int ko, kp; double uo, up;
+                ori_active(f.timestamp, ko, uo); pos_active(f.timestamp, kp, up);
+                double qk[N_ORI][4]; const double* qp[N_ORI];
+                for (int j = 0; j < N_ORI; ++j) {
+                    const int idx = std::max(0, std::min(ko - 3 + j, n_ori_ - 1));
+                    const Eigen::Quaterniond qq = (align_R3 * quat_to_rot3(init_ori_[idx])).toQuaternion();
+                    qk[j][0] = qq.x(); qk[j][1] = qq.y(); qk[j][2] = qq.z(); qk[j][3] = qq.w(); qp[j] = qk[j];
+                }
+                const Eigen::Matrix3d Rw =
+                    analytic::rotation_with_jacobian_manual<N_ORI>(qp, uo, inv_dt_ori_, nullptr).matrix();
+                using Helper = CeresSplineHelper<N_POS>;
+                Eigen::Matrix<double, N_POS, 1> p0; Helper::template baseCoeffsWithTime<0>(p0, up);
+                const Eigen::Matrix<double, N_POS, 1> wv = Helper::blending_matrix_ * p0;
+                double pz = 0.0;
+                for (int i = 0; i < N_POS; ++i) {
+                    const int idx = std::max(0, std::min(kp - 5 + i, n_pos_ - 1));
+                    pz += wv[i] * (init_pos_[idx][2] + align_t[2]);
+                }
+                for (const auto& pt : f.points) {
+                    Eigen::Vector3d xyz(pt.x, pt.y, pt.z);
+                    if (xyz.norm() < cfg_.min_range) continue;
+                    floor_cand_.push_back((Rw * (R_bs_ * xyz + t_bs_)).z() + pz);
+                }
+            }
+            ++floor_boot_strides_;
+            if (floor_cand_.size() >= 200 || floor_boot_strides_ >= 6) {
+                double f0 = cfg_.floor_z;
+                if (!floor_cand_.empty()) {
+                    std::sort(floor_cand_.begin(), floor_cand_.end());
+                    const size_t n = std::max<size_t>(1, floor_cand_.size() / 4);  // lowest 25%
+                    f0 = floor_cand_[n / 2];                                        // its median
+                }
+                floor_off_est_ = f0;
+                v.insert(FK(0), (gtsam::Vector1() << f0).finished());
+                g.add(gtsam::PriorFactor<gtsam::Vector1>(
+                    FK(0), (gtsam::Vector1() << f0).finished(),
+                    gtsam::noiseModel::Isotropic::Sigma(1, 1.0)));   // weak (1 m) gauge anchor
+                floor_init_ = true;
+                std::vector<double>().swap(floor_cand_);
+            }
+        }
+        if (floor_init_) ts[FK(0)] = t_now;   // persistent: never ages out of the lag
+    }
+
     // --- ensure knots for all measurements first ---
     std::vector<int> imu_ko(imu.size()), imu_kp(imu.size());
     std::vector<double> imu_uo(imu.size()), imu_up(imu.size());
@@ -278,7 +333,7 @@ double IsamSolver::update(
         // world-z baseline) to classify + anchor floor returns.
         Eigen::Matrix3d R_ws = Eigen::Matrix3d::Identity(); Eigen::Vector3d w_ws = Eigen::Vector3d::Zero();
         const bool do_split = (cfg_.radar_pos_split > 0.0 && w_omega < 1.0);
-        const bool do_floor = (cfg_.lambda_floor > 0.0);
+        const bool do_floor = (cfg_.lambda_floor > 0.0) && (!cfg_.floor_free || floor_init_);
         double pz_pred = 0.0;   // warm-start predicted trajectory z at this frame
         if (do_split || do_floor) {
             double qk[N_ORI][4]; const double* qp[N_ORI];
@@ -340,11 +395,19 @@ double IsamSolver::update(
                 const Eigen::Vector3d p_body = R_bs_ * xyz + t_bs_;
                 const double z_off = (R_ws * p_body).z();
                 const double z_pred_world = z_off + pz_pred;
-                if (std::abs(z_pred_world - cfg_.floor_z) <= cfg_.floor_band) {
+                // free-offset: gate on the current f0 estimate (self-calibrating);
+                // fixed: gate on the hardcoded floor_z.
+                const double ref = cfg_.floor_free ? floor_off_est_ : cfg_.floor_z;
+                if (std::abs(z_pred_world - ref) <= cfg_.floor_band) {
                     auto nf = gtsam::noiseModel::Robust::Create(
                         gtsam::noiseModel::mEstimator::Huber::Create(cfg_.floor_huber),
                         gtsam::noiseModel::Isotropic::Sigma(1, 1.0 / std::sqrt(cfg_.lambda_floor)));
-                    g.add(gtsam_factors::FloorPlaneFactor(nf, pkeys, z_off, cfg_.floor_z, up));
+                    if (cfg_.floor_free) {
+                        gtsam::KeyVector fk(pkeys); fk.push_back(FK(0));
+                        g.add(gtsam_factors::FloorPlaneFreeFactor(nf, fk, z_off, up));
+                    } else {
+                        g.add(gtsam_factors::FloorPlaneFactor(nf, pkeys, z_off, cfg_.floor_z, up));
+                    }
                     ++n_floor_;
                 }
             }
@@ -424,6 +487,8 @@ double IsamSolver::update(
         const Vector6 b = est.at<Vector6>(bkey);
         for (int i = 0; i < 6; ++i) last_bias_[i] = b[i];
     }
+    if (cfg_.floor_free && est.exists(FK(0)))
+        floor_off_est_ = est.at<gtsam::Vector1>(FK(0))[0];   // next stride's gate ref
     num_active_ = static_cast<int>(smoother_->timestamps().size());
     bkey_last_ = bkey;
     if (cfg_.adapt_noise_stride > 0 && (++stride_count_ % cfg_.adapt_noise_stride == 0))
