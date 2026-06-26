@@ -14,9 +14,7 @@ The radar-to-body pitch is a fixed mount angle, measured at
 30\degree\ \ac{cad} design (3D-printed, hand-assembled fixture).  We lock it
 rather than estimate it online because it is only weakly observable from
 Doppler: the self-calibration is init-dependent and orientation \ac{rmse} is
-pitch-insensitive (\autoref{sec:backflips}).  The batch estimate is
-shown for reference (dashed) in the error-vs-time curves
-(\autoref{fig:error_time}).
+pitch-insensitive (\autoref{sec:backflips}).
 
 \subsection{Sliding Window: Settled vs.\ Live}
 \label{sec:sw_results}
@@ -155,12 +153,11 @@ Regime & Win./str.\ (s) & Solve (s) & Live pos (m) & Live ori (\degree) \\
 \begin{figure*}[t]
   \centering
   \includegraphics[width=\textwidth]{figures/error_over_time.pdf}
-  \caption{Position, velocity, and orientation error vs.\ time for slow
-    racing (top) and fast racing (bottom).  Batch estimate (red dashed)
-    and SW live edge (orange dotted).  Fast racing position error
-    accumulates monotonically with trajectory length; velocity and
-    orientation errors spike at high-speed, high-dynamics sections.
-    Backflips omitted (flip-time GT mask gaps, bistable batch reference;
+  \caption{SW live-edge (deployed) position, velocity, and orientation
+    error vs.\ time for slow racing (top) and fast racing (bottom).  Fast
+    racing position error accumulates monotonically with trajectory length;
+    velocity and orientation errors spike at high-speed, high-dynamics
+    sections.  Backflips omitted (flip-time GT mask gaps;
     \autoref{sec:backflips}).}
   \label{fig:error_time}
 \end{figure*}

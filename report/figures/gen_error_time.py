@@ -91,11 +91,9 @@ for row, (bag_key, bag_label) in enumerate(BAGS):
     ax_ori = axes[row, 2]
 
     # Position error
-    ax_pos.plot(t_batch, pos_err_b, color=C_BATCH, linestyle='--',
-                label='Batch estimate', zorder=2)
     if has_live:
-        ax_pos.plot(t_live, pos_err_l, color=C_LIVE, linestyle=':',
-                    alpha=0.9, label='SW live edge', zorder=3)
+        ax_pos.plot(t_live, pos_err_l, color=C_LIVE, linestyle='-',
+                    label='SW live edge', zorder=3)
     ax_pos.set_xlabel('Time (s)')
     ax_pos.set_ylabel('Position error (m)')
     ax_pos.set_title(f'{bag_label} — position')
@@ -103,11 +101,9 @@ for row, (bag_key, bag_label) in enumerate(BAGS):
     ax_pos.set_ylim(bottom=0)
 
     # Velocity error
-    ax_vel.plot(t_batch, vel_err_b, color=C_BATCH, linestyle='--',
-                label='Batch estimate', zorder=2)
     if has_live:
-        ax_vel.plot(t_live, vel_err_l, color=C_LIVE, linestyle=':',
-                    alpha=0.9, label='SW live edge', zorder=3)
+        ax_vel.plot(t_live, vel_err_l, color=C_LIVE, linestyle='-',
+                    label='SW live edge', zorder=3)
     ax_vel.set_xlabel('Time (s)')
     ax_vel.set_ylabel('Velocity error (m/s)')
     ax_vel.set_title(f'{bag_label} — velocity')
@@ -115,11 +111,9 @@ for row, (bag_key, bag_label) in enumerate(BAGS):
     ax_vel.set_ylim(bottom=0)
 
     # Orientation error
-    ax_ori.plot(t_batch, rot_err_b, color=C_BATCH, linestyle='--',
-                label='Batch estimate', zorder=2)
     if has_live:
-        ax_ori.plot(t_live, rot_err_l, color=C_LIVE, linestyle=':',
-                    alpha=0.9, label='SW live edge', zorder=3)
+        ax_ori.plot(t_live, rot_err_l, color=C_LIVE, linestyle='-',
+                    label='SW live edge', zorder=3)
     ax_ori.set_xlabel('Time (s)')
     ax_ori.set_ylabel('Orientation error (°)')
     ax_ori.set_title(f'{bag_label} — orientation')
