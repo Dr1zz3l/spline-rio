@@ -20,20 +20,20 @@ unchanged, so absolute heading cannot be recovered from radar and \ac{imu}
 alone.  A magnetometer resolves this and is standard on virtually all
 flight platforms; here \ac{mocap} yaw serves that role.  Because that
 \ac{mocap} yaw is noise- and bias-free (unlike a real magnetometer),
-the heading-aided orientation numbers are in principle optimistic.  We
-bound this by re-running with a magnetometer surrogate on the heading prior
-(a slowly-varying $2\degree$ heading drift, a half-period sine that the
-start-anchored alignment cannot cancel, plus $1.5\degree$ white noise,
-seeded): live orientation degrades by at most $0.3\degree$ (fast racing
-$2.88\to3.17\degree$; slow $1.97\to1.88\degree$, backflips
-$6.35\to6.34\degree$ unchanged).  The \SI{1}{\kilo\hertz} gyroscope
-constrains yaw \emph{rate} so the slow drift is resisted, the white noise
-averages out, and backflip orientation error is roll/pitch- not
-yaw-dominated, so the headline is robust to heading-sensor imperfection;
-the heading-\emph{independent} roll/pitch decomposition
-(\autoref{tab:baselines}(b)) and the unaided-yaw check
-(\autoref{sec:baselines}) further isolate attitude from this idealization.
-This is a sensor-architecture requirement, not an open research problem.
+the heading-aided orientation numbers are an \emph{upper bound} on accuracy.
+We characterize the gap with a perturbed heading prior (a slowly-varying
+$2\degree$ drift, a low-frequency sinusoid with random phase/frequency, zero
+at the start, plus $1.5\degree$ white noise; three seeds).  The estimate
+\emph{tracks} the prior, so the effect is regime- and realization-dependent:
+live orientation ranges $2.1$--$3.5\degree$ on slow racing (from
+$1.97\degree$: a sustained drift propagates into yaw at $\lambda_\psi{=}10$),
+$2.9$--$3.3\degree$ on fast (from $2.88\degree$, weaker prior), and
+$6.4$--$6.9\degree$ on backflips (from $6.35\degree$, roll/pitch-dominated).
+Real magnetometers can be larger and throttle-correlated, so this is an
+optimistic floor; real-mag validation is future work (\autoref{sec:models}).
+The heading-\emph{independent} roll/pitch decomposition
+(\autoref{tab:baselines}(b)) and the unaided-yaw check (\autoref{sec:baselines})
+isolate attitude from this idealization.
 
 \subsection{Extreme Dynamics: Backflips}
 \label{sec:backflips}

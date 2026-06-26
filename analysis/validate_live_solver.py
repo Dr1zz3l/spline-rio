@@ -1797,29 +1797,35 @@ def main():
         print(f"  Built {len(heading_priors)} heading priors at {1/heading_dt:.0f} Hz  "
               f"lambda_heading={LAMBDA_HEADING}")
 
-        # --- Realistic magnetometer model (#1 robustness experiment) ---
-        # Replace the noise-/bias-free MoCap yaw with a magnetometer surrogate:
-        # a SLOWLY-VARYING heading bias (a half-period sine drift over the flight,
-        # amplitude mag_heading_bias_deg, zero at t0 so it is not a pure gauge the
-        # start-anchored alignment cancels) + per-sample white heading noise,
-        # injected as a world-z rotation Rz(drift_t + noise_t) @ R_gt.  Seeded
-        # (default_rng(0)).  Both knobs default 0 (off = idealized yaw).
+        # --- Perturbed heading prior (#1 robustness experiment) ---
+        # Replace the noise-/bias-free MoCap yaw with a perturbed heading prior:
+        # a SLOWLY-VARYING heading drift (a low-frequency sinusoid, amplitude
+        # mag_heading_bias_deg, random phase + frequency per seed, shifted to be
+        # zero at t0 so it is not a pure gauge the start-anchored alignment
+        # cancels) + per-sample white heading noise, injected as a world-z
+        # rotation Rz(drift_t + noise_t) @ R_gt.  Seeded via mag_heading_seed so
+        # multiple realizations can be run.  Both knobs default 0 (off = idealized).
         mag_bias_deg  = float(_SOLVER_CFG.get('mag_heading_bias_deg', 0.0))
         mag_noise_deg = float(_SOLVER_CFG.get('mag_heading_noise_deg', 0.0))
+        mag_seed      = int(_SOLVER_CFG.get('mag_heading_seed', 0))
         if mag_bias_deg != 0.0 or mag_noise_deg > 0.0:
-            _mag_rng = np.random.default_rng(0)
-            _t0 = heading_priors[0][0]
+            _mag_rng = np.random.default_rng(mag_seed)
+            _t0   = heading_priors[0][0]
             _span = max(heading_priors[-1][0] - _t0, 1e-6)
+            _phase  = _mag_rng.uniform(0.0, 2.0 * np.pi)
+            _cycles = _mag_rng.uniform(0.5, 1.5)   # cycles of drift over the flight
+            _amp    = np.deg2rad(mag_bias_deg)
             _perturbed = []
             for t_abs, R_gt in heading_priors:
-                drift = np.deg2rad(mag_bias_deg) * np.sin(np.pi * (t_abs - _t0) / _span)
+                u = 2.0 * np.pi * _cycles * (t_abs - _t0) / _span + _phase
+                drift = _amp * (np.sin(u) - np.sin(_phase))   # zero at t0
                 d = drift + np.deg2rad(mag_noise_deg) * _mag_rng.standard_normal()
                 cz, sz = np.cos(d), np.sin(d)
                 Rz = np.array([[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]])
                 _perturbed.append((t_abs, Rz @ R_gt))
             heading_priors = _perturbed
-            print(f"  [mag] heading perturbed: slow bias drift amp={mag_bias_deg}deg "
-                  f"+ white noise std={mag_noise_deg}deg (seed 0)")
+            print(f"  [mag] heading perturbed (seed {mag_seed}): drift amp={mag_bias_deg}deg "
+                  f"phase={_phase:.2f} cycles={_cycles:.2f} + white noise std={mag_noise_deg}deg")
 
     # ==================== Create initial state ====================
     initial_state = TrajectoryState(
