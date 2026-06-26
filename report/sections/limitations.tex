@@ -20,12 +20,21 @@ unchanged, so absolute heading cannot be recovered from radar and \ac{imu}
 alone.  A magnetometer resolves this and is standard on virtually all
 flight platforms; here \ac{mocap} yaw serves that role.  Because that
 \ac{mocap} yaw is noise- and bias-free (unlike a real magnetometer),
-the heading-aided orientation numbers are correspondingly optimistic;
-the heading-\emph{independent} roll/pitch decomposition
-(\autoref{tab:baselines}(b)) and the unaided-yaw check
-(\autoref{sec:baselines}) isolate attitude accuracy from this
-idealization.  This is a sensor-architecture requirement, not an open
-research problem.
+the heading-aided orientation numbers are in principle optimistic.  We
+bound this by re-running with a magnetometer surrogate on the heading
+prior: a slowly-varying $2\degree$ heading drift (a half-period sine over
+the flight, so it is not a gauge the start-anchored alignment cancels)
+plus $1.5\degree$ white noise, seeded.  Live orientation degrades by at
+most $0.3\degree$ (fast racing $2.88\to3.17\degree$) and is essentially
+unchanged on slow racing ($1.97\to1.88\degree$) and backflips
+($6.35\to6.34\degree$): the \SI{1}{\kilo\hertz} gyroscope constrains yaw
+\emph{rate} so the slow drift is resisted, the white noise is averaged by
+the prior, and backflip orientation error is dominated by flip-time
+roll/pitch, not yaw.  The headline orientation is therefore robust to
+heading-sensor imperfection, and the heading-\emph{independent} roll/pitch
+decomposition (\autoref{tab:baselines}(b)) and the unaided-yaw check
+(\autoref{sec:baselines}) further isolate attitude from this idealization.
+This is a sensor-architecture requirement, not an open research problem.
 
 \subsection{Extreme Dynamics: Backflips}
 \label{sec:backflips}
