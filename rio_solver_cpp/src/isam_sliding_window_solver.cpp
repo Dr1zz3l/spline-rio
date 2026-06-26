@@ -29,6 +29,7 @@ static Key RK(int i) { return Symbol('r', i); }
 static Key PK(int i) { return Symbol('p', i); }
 static Key BK(int i) { return Symbol('b', i); }
 static Key FK(int i) { return Symbol('f', i); }   // floor-offset landmark (Phase 1)
+static Key ZK(int i) { return Symbol('z', i); }   // radar z-velocity bias state b_z
 
 static Rot3 quat_to_rot3(const std::array<double, 4>& q) {  // q = xyzw
     return Rot3(Eigen::Quaterniond(q[3], q[0], q[1], q[2]).normalized());
@@ -300,6 +301,21 @@ double IsamSolver::update(
         }
     }
 
+    // --- radar z-velocity bias state b_z (estimated, persistent) ---
+    // Seeded at radar_zbias_fixed; a weak prior anchors the gauge, the RadarBiasFactors
+    // calibrate it. Observable only with the floor anchor on (else absorbed by z drift).
+    if (cfg_.radar_zbias_estimate) {
+        if (!bz_init_) {
+            bz_est_ = cfg_.radar_zbias_fixed;
+            v.insert(ZK(0), (gtsam::Vector1() << bz_est_).finished());
+            g.add(gtsam::PriorFactor<gtsam::Vector1>(
+                ZK(0), (gtsam::Vector1() << bz_est_).finished(),
+                gtsam::noiseModel::Isotropic::Sigma(1, 1.0)));   // weak (1 m/s) gauge
+            bz_init_ = true;
+        }
+        ts[ZK(0)] = t_now;   // persistent
+    }
+
     // --- ensure knots for all measurements first ---
     std::vector<int> imu_ko(imu.size()), imu_kp(imu.size());
     std::vector<double> imu_uo(imu.size()), imu_up(imu.size());
@@ -398,7 +414,10 @@ double IsamSolver::update(
             if (rng < cfg_.min_range) continue;
             const Eigen::Vector3d u_sensor = xyz / rng;
             const Eigen::Vector3d u_body = R_bs_ * u_sensor;
-            const double v_c = pt.v - cfg_.radar_zbias_fixed * u_sensor.z();
+            // z-bias correction: estimated state b_z (frozen here for the pos-split /
+            // intensity paths) or the fixed constant.
+            const double b_eff = cfg_.radar_zbias_estimate ? bz_est_ : cfg_.radar_zbias_fixed;
+            const double v_c = pt.v - b_eff * u_sensor.z();
             double w_int = 1.0;
             if (inv_med_I > 0.0 && pt.intensity > 0.0)
                 w_int = std::min(4.0, std::max(0.25, std::pow(pt.intensity * inv_med_I, cfg_.radar_intensity_weight)));
@@ -407,7 +426,13 @@ double IsamSolver::update(
                       : gtsam::noiseModel::Robust::Create(
                             gtsam::noiseModel::mEstimator::Huber::Create(cfg_.huber_delta),
                             gtsam::noiseModel::Isotropic::Sigma(1, 1.0 / std::sqrt(std::max(w, 1e-6))));
-            g.add(gtsam_factors::RadarFactor(nr, keys, u_body, v_c, t_bs_, uo, inv_dt_ori_, up, inv_dt_pos_));
+            if (cfg_.radar_zbias_estimate) {
+                gtsam::KeyVector rk(keys); rk.push_back(ZK(0));   // + b_z state
+                g.add(gtsam_factors::RadarBiasFactor(nr, rk, u_body, pt.v, t_bs_,
+                                                     u_sensor.z(), uo, inv_dt_ori_, up, inv_dt_pos_));
+            } else {
+                g.add(gtsam_factors::RadarFactor(nr, keys, u_body, v_c, t_bs_, uo, inv_dt_ori_, up, inv_dt_pos_));
+            }
             // complementary position-only factor (radar velocity -> position, frozen ori)
             if (do_split) {
                 const double ws = (1.0 - w_omega) * cfg_.radar_pos_split * w_int;
@@ -537,6 +562,8 @@ double IsamSolver::update(
     }
     if (cfg_.floor_free && est.exists(FK(0)))
         floor_off_est_ = est.at<gtsam::Vector1>(FK(0))[0];   // next stride's gate ref
+    if (cfg_.radar_zbias_estimate && est.exists(ZK(0)))
+        bz_est_ = est.at<gtsam::Vector1>(ZK(0))[0];          // next stride's correction
     num_active_ = static_cast<int>(smoother_->timestamps().size());
     bkey_last_ = bkey;
     if (cfg_.adapt_noise_stride > 0 && (++stride_count_ % cfg_.adapt_noise_stride == 0))

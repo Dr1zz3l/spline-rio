@@ -125,6 +125,46 @@ private:
     double u_o_, idt_o_, u_p_, idt_p_;
 };
 
+// -------------------------------------------- Radar + estimated z-bias (1D)
+// Like RadarFactor, but the elevation (z) Doppler bias is a jointly-estimated state
+// b_z (gtsam::Vector1) instead of a hardcoded constant: v_corr = v_raw - b_z*u_sz, so
+// residual r = (v_raw - b_z*u_sz) - v_pred, d r / d b_z = -u_sz. Observable once the
+// floor anchor pins absolute z (else b_z and the vertical drift are confounded -- the
+// reason the old radar_zbias_fixed was a hand-tuned per-regime proxy).
+class RadarBiasFactor : public gtsam::NoiseModelFactor {
+public:
+    RadarBiasFactor(const gtsam::SharedNoiseModel& m, const gtsam::KeyVector& keys,
+                    const Eigen::Vector3d& u_body, double v_meas_raw, const Eigen::Vector3d& t_bs,
+                    double u_sz, double u_ori, double inv_dt_ori, double u_pos, double inv_dt_pos)
+        : gtsam::NoiseModelFactor(m, keys), u_body_(u_body), v_meas_(v_meas_raw), t_bs_(t_bs),
+          u_sz_(u_sz), u_o_(u_ori), idt_o_(inv_dt_ori), u_p_(u_pos), idt_p_(inv_dt_pos) {}
+
+    gtsam::Vector unwhitenedError(
+        const gtsam::Values& x,
+        boost::optional<std::vector<gtsam::Matrix>&> H = boost::none) const override {
+        double q[N_ORI][4]; const double* qp[N_ORI];
+        for (int i = 0; i < N_ORI; ++i) { rot3_to_xyzw(x.at<gtsam::Rot3>(keys()[i]), q[i]); qp[i] = q[i]; }
+        double cp[N_POS][3]; const double* cpp[N_POS];
+        for (int i = 0; i < N_POS; ++i) {
+            const gtsam::Vector3 c = x.at<gtsam::Vector3>(keys()[N_ORI + i]);
+            cp[i][0] = c[0]; cp[i][1] = c[1]; cp[i][2] = c[2]; cpp[i] = cp[i];
+        }
+        const double bz = x.at<gtsam::Vector1>(keys()[N_ORI + N_POS])[0];
+        const double v_c = v_meas_ - bz * u_sz_;
+        auto r = radar_residual_gtsam(qp, cpp, u_body_, v_c, t_bs_, u_o_, idt_o_, u_p_, idt_p_, bool(H));
+        if (H) {
+            auto& Hs = *H; Hs.resize(N_ORI + N_POS + 1);
+            for (int i = 0; i < N_ORI; ++i) Hs[i] = r.d_r_d_knot[i];
+            for (int i = 0; i < N_POS; ++i) Hs[N_ORI + i] = r.d_r_d_cp[i];
+            Hs[N_ORI + N_POS] = (gtsam::Matrix(1, 1) << -u_sz_).finished();
+        }
+        return (gtsam::Vector(1) << r.residual).finished();
+    }
+private:
+    Eigen::Vector3d u_body_; double v_meas_; Eigen::Vector3d t_bs_;
+    double u_sz_, u_o_, idt_o_, u_p_, idt_p_;
+};
+
 // ---------------------------------------------------------------- MinSnap (3D)
 class MinSnapFactor : public gtsam::NoiseModelFactor {
 public:

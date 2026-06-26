@@ -700,6 +700,7 @@ def _solve_cpp_isam(initial_state, solver_radar_frames, imu_data,
     cfg.omega_soft_sigma = solver_cfg.get('omega_soft_sigma', 0.0)
     cfg.accel_soft_sigma = solver_cfg.get('accel_soft_sigma', 0.0)
     cfg.radar_zbias_fixed = solver_cfg.get('radar_zbias_fixed', 0.0)
+    cfg.radar_zbias_estimate = bool(int(solver_cfg.get('radar_zbias_estimate', 0)))
     cfg.radar_intensity_weight = solver_cfg.get('radar_intensity_weight', 0.0)
     cfg.lambda_pos_init_prior = solver_cfg.get('lambda_pos_init_prior', 0.0)
     cfg.radar_pos_split = solver_cfg.get('radar_pos_split', 0.0)
@@ -767,9 +768,11 @@ def _solve_cpp_isam(initial_state, solver_radar_frames, imu_data,
         _floor = solver.num_floor() if hasattr(solver, 'num_floor') else 0
         _foff = (f"@{solver.floor_offset():+.2f}m" if (_floor and hasattr(solver, 'floor_offset')
                  and bool(int(solver_cfg.get('floor_free', 0)))) else "")
+        _zb = (f", b_z={solver.zbias():+.2f}m/s" if (hasattr(solver, 'zbias')
+               and bool(int(solver_cfg.get('radar_zbias_estimate', 0)))) else "")
         print(f"  [--isam] {len(dts)} strides, {1000*np.mean(tail):.0f}ms/update mean "
               f"({1000*np.max(tail):.0f}ms max), active vars {solver.num_active()}, FEJ-fixed vars {solver.num_fixed()}"
-              + (f", floor factors {_floor}{_foff}" if _floor else ""))
+              + (f", floor factors {_floor}{_foff}" if _floor else "") + _zb)
 
     ori_full = all_ori_quats.copy()
     pos_full = all_pos_cps.copy()

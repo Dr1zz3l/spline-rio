@@ -55,6 +55,7 @@ PYBIND11_MODULE(rio_isam, m) {
         .def_readwrite("omega_soft_sigma", &IsamConfig::omega_soft_sigma)
         .def_readwrite("accel_soft_sigma", &IsamConfig::accel_soft_sigma)
         .def_readwrite("radar_zbias_fixed", &IsamConfig::radar_zbias_fixed)
+        .def_readwrite("radar_zbias_estimate", &IsamConfig::radar_zbias_estimate)
         .def_readwrite("radar_intensity_weight", &IsamConfig::radar_intensity_weight)
         .def_readwrite("lambda_pos_init_prior", &IsamConfig::lambda_pos_init_prior)
         .def_readwrite("radar_pos_split", &IsamConfig::radar_pos_split)
@@ -113,5 +114,6 @@ PYBIND11_MODULE(rio_isam, m) {
         .def("num_active", &IsamSolver::num_active)
         .def("num_fixed", &IsamSolver::num_fixed)
         .def("num_floor", &IsamSolver::num_floor)
-        .def("floor_offset", &IsamSolver::floor_offset);
+        .def("floor_offset", &IsamSolver::floor_offset)
+        .def("zbias", &IsamSolver::zbias);
 }

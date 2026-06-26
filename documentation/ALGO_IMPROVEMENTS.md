@@ -270,6 +270,31 @@ Phase-1 gate (match/beat z, zero per-env tuning) is met+exceeded; the floor anch
 universal + deployment-safe. Study Appendix B/C. Remaining: Phase 2 (wall->y, small) +
 multi-plane SLAM (Phases 3-5, optional).
 
+## D6. Online radar z-velocity bias estimation (2026-06-26): SCIENCE win, retires the -1.5 hack
+The radar z-bias was a hardcoded `radar_zbias_fixed` (per-point v_corr = v - b*u_sz), a
+HAND-TUNED per-regime constant (0 racing / -1.5 backflips), documented as "a flip-regime
+proxy, not physical" -- because without absolute vertical, b and the z-drift are
+confounded. The floor anchor (D5) pins absolute z -> b becomes OBSERVABLE. Added
+`RadarBiasFactor` + a persistent `b_z` state (gtsam::Vector1, key 'z', seeded at
+radar_zbias_fixed, weak prior; d r/d b_z = -u_sz), enabled by `radar_zbias_estimate=1`.
+
+Findings (all with the floor anchor on):
+- **b_z self-calibrates INDEPENDENT of init**: backflips -1.5 init -> +0.19, 0 init ->
+  +0.22 (converges to the same ~+0.2). fast -> +0.02. Observability confirmed.
+- **The true bias is SMALL (~0 racing post-RANSAC, ~+0.2 backflips), NOT -1.5.** The
+  -1.5 was a non-physical proxy (RANSAC already removes the elevation-biased single-chip
+  returns -> ~0 racing bias, validating the front-end).
+- **The floor anchor RETIRES the -1.5 hack:** backflips floor + b=0 (no z-bias term) =
+  1.707 / 0.935 / 2.116 / **9.83deg** BEATS floor + fixed -1.5 (1.718 / 0.939 / 2.142 /
+  10.23) on ALL metrics, and == floor + estimate(+0.2). The -1.5 was compensating for
+  the vertical drift the floor now fixes directly. => with the floor anchor, drop the
+  z-bias hack (radar_zbias_fixed=0).
+- The EXPLICIT estimate is accuracy-neutral-to-slightly-negative (a weakly-observable
+  extra DOF; fast 0.344->0.378). So `radar_zbias_estimate` is kept OFF by default as a
+  CALIBRATION/diagnostic tool (it produced the insight); the deployment win is the
+  simplification (b=0 under the floor). Without the floor, the -1.5 backflips rescue
+  still applies (it proxies the vertical drift the floor would otherwise remove).
+
 ## E. Other
 - Learned radar front-end (static/dynamic + ground/structure classification) to
   beat RANSAC's crude filtering, esp. elevation-biased single-chip returns.

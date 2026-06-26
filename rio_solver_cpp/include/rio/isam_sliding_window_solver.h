@@ -34,6 +34,10 @@ struct IsamConfig {
     double omega_soft_sigma{0.0};         // radar down-weight: w=1/(1+(|w|/sigma)^2)
     double accel_soft_sigma{0.0};         // accel down-weight (same form)
     double radar_zbias_fixed{0.0};        // v_corr = v - b*u_sensor.z()
+    bool   radar_zbias_estimate{false};   // estimate b (above) as a self-calibrating
+                                          // state b_z instead of hardcoding it; init =
+                                          // radar_zbias_fixed. Needs the floor anchor on
+                                          // for observability (RadarBiasFactor).
     double radar_intensity_weight{0.0};   // per-point w_int=clamp((I/I_med)^a,0.25,4)
     double lambda_pos_init_prior{0.0};    // per-CP tether to the (aligned) init
     double radar_pos_split{0.0};          // gated radar's (1-w) weight -> position-
@@ -116,6 +120,7 @@ public:
     int num_fixed() const;   // FEJ: variables whose linearization is frozen by marg
     int num_floor() const { return n_floor_; }  // cumulative floor factors added
     double floor_offset() const { return floor_off_est_; }  // estimated f0 (free floor)
+    double zbias() const { return bz_est_; }     // estimated radar z-velocity bias b_z
 
 private:
     bool ori_active(double t_abs, int& k, double& u) const;
@@ -144,6 +149,8 @@ private:
     std::vector<double> floor_cand_;  // bootstrap buffer (lowest-cluster -> f0 init)
     int floor_boot_strides_{0};
     double floor_zlo_{0.0};           // this stride's floor level (Phase-1b cluster)
+    bool   bz_init_{false};           // BZK(0) inserted (estimated radar z-bias)
+    double bz_est_{0.0};              // current estimate of b_z
 
     std::map<int, std::array<double, 4>> live_ori_;
     std::map<int, std::array<double, 3>> live_pos_;
