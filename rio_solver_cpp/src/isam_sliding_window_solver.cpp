@@ -198,14 +198,24 @@ double IsamSolver::update(
     }
     ts[bkey] = t_now;
 
-    // --- floor-offset landmark f0 (Phase 1, free-offset floor) ---
-    // Predicted world-z of every static return, using the (aligned) warm-start pose.
-    // The floor is the lowest dense layer here, regardless of absolute-z drift (the
-    // whole stride shares the drift) -> used for both the f0 bootstrap and the Phase-1b
-    // drift-invariant per-stride classification.
-    auto floor_cands = [&](const std::vector<RadarFrame>& frames) {
-        std::vector<double> cand;
-        for (const auto& f : frames) {
+    // --- per-frame warm-start cache (R_ws, w_ws, pz_pred) ---
+    // R_ws/pz_pred (and w_ws for radar_pos_split) are the aligned-init warm-start pose
+    // at each radar frame; the floor classification (z_lo + bootstrap) AND the radar
+    // factor loop both need them. Compute the spline evals ONCE per frame here instead
+    // of twice (floor pre-pass + radar loop) -> bit-identical, just cached.
+    const bool need_floor_c = (cfg_.lambda_floor > 0.0);
+    const bool need_split_c = (cfg_.radar_pos_split > 0.0);
+    std::vector<Eigen::Matrix3d> fRws;
+    std::vector<Eigen::Vector3d> fWws;
+    std::vector<double> fPz;
+    std::vector<char> fOk;
+    if (need_floor_c || need_split_c) {
+        fRws.assign(radar.size(), Eigen::Matrix3d::Identity());
+        fWws.assign(radar.size(), Eigen::Vector3d::Zero());
+        fPz.assign(radar.size(), 0.0);
+        fOk.assign(radar.size(), 0);
+        for (size_t fi = 0; fi < radar.size(); ++fi) {
+            const auto& f = radar[fi];
             if (f.points.empty() || !in_domain(f.timestamp)) continue;
             int ko, kp; double uo, up;
             ori_active(f.timestamp, ko, uo); pos_active(f.timestamp, kp, up);
@@ -215,20 +225,36 @@ double IsamSolver::update(
                 const Eigen::Quaterniond qq = (align_R3 * quat_to_rot3(init_ori_[idx])).toQuaternion();
                 qk[j][0] = qq.x(); qk[j][1] = qq.y(); qk[j][2] = qq.z(); qk[j][3] = qq.w(); qp[j] = qk[j];
             }
-            const Eigen::Matrix3d Rw =
-                analytic::rotation_with_jacobian_manual<N_ORI>(qp, uo, inv_dt_ori_, nullptr).matrix();
-            using Helper = CeresSplineHelper<N_POS>;
-            Eigen::Matrix<double, N_POS, 1> p0; Helper::template baseCoeffsWithTime<0>(p0, up);
-            const Eigen::Matrix<double, N_POS, 1> wv = Helper::blending_matrix_ * p0;
-            double pz = 0.0;
-            for (int i = 0; i < N_POS; ++i) {
-                const int idx = std::max(0, std::min(kp - 5 + i, n_pos_ - 1));
-                pz += wv[i] * (init_pos_[idx][2] + align_t[2]);
+            fRws[fi] = analytic::rotation_with_jacobian_manual<N_ORI>(qp, uo, inv_dt_ori_, nullptr).matrix();
+            if (need_split_c)
+                fWws[fi] = analytic::body_velocity_with_jacobian_manual<N_ORI>(qp, uo, inv_dt_ori_, nullptr);
+            if (need_floor_c) {
+                using Helper = CeresSplineHelper<N_POS>;
+                Eigen::Matrix<double, N_POS, 1> p0; Helper::template baseCoeffsWithTime<0>(p0, up);
+                const Eigen::Matrix<double, N_POS, 1> wv = Helper::blending_matrix_ * p0;
+                double pz = 0.0;
+                for (int i = 0; i < N_POS; ++i) {
+                    const int idx = std::max(0, std::min(kp - 5 + i, n_pos_ - 1));
+                    pz += wv[i] * (init_pos_[idx][2] + align_t[2]);
+                }
+                fPz[fi] = pz;
             }
-            for (const auto& pt : f.points) {
+            fOk[fi] = 1;
+        }
+    }
+
+    // --- floor-offset landmark f0 (Phase 1, free-offset floor) ---
+    // Predicted world-z of every static return (cached warm-start pose). The floor is
+    // the lowest dense layer here, regardless of absolute-z drift (the whole stride
+    // shares the drift) -> used for both the f0 bootstrap and the Phase-1b classifier.
+    auto floor_cands = [&]() {
+        std::vector<double> cand;
+        for (size_t fi = 0; fi < radar.size(); ++fi) {
+            if (!fOk[fi]) continue;
+            for (const auto& pt : radar[fi].points) {
                 Eigen::Vector3d xyz(pt.x, pt.y, pt.z);
                 if (xyz.norm() < cfg_.min_range) continue;
-                cand.push_back((Rw * (R_bs_ * xyz + t_bs_)).z() + pz);
+                cand.push_back((fRws[fi] * (R_bs_ * xyz + t_bs_)).z() + fPz[fi]);
             }
         }
         return cand;
@@ -239,7 +265,7 @@ double IsamSolver::update(
         if (!floor_init_) {
             // Buffer candidates over the first ~1.5 s (a single 0.3 s stride is too short
             // to reliably see the floor on slow flight) before committing f0.
-            auto c = floor_cands(radar);
+            auto c = floor_cands();
             floor_cand_.insert(floor_cand_.end(), c.begin(), c.end());
             ++floor_boot_strides_;
             if (floor_cand_.size() >= 200 || floor_boot_strides_ >= 6) {
@@ -265,7 +291,7 @@ double IsamSolver::update(
             // the established f0) gets floor factors; the slab around z_lo then captures
             // the whole floor cluster without the absolute-band clipping.
             if (cfg_.floor_cluster) {
-                auto c = floor_cands(radar);
+                auto c = floor_cands();
                 if (!c.empty()) {
                     std::sort(c.begin(), c.end());
                     floor_zlo_ = c[std::min(c.size() - 1, c.size() / 10)];   // 10th pct
@@ -341,7 +367,8 @@ double IsamSolver::update(
     }
 
     // --- radar (omega soft-gate + per-point intensity + z-bias) ---
-    for (const auto& f : radar) {
+    for (size_t fi = 0; fi < radar.size(); ++fi) {
+        const auto& f = radar[fi];
         if (f.points.empty() || !in_domain(f.timestamp)) continue;
         int ko, kp; double uo, up;
         ori_active(f.timestamp, ko, uo); pos_active(f.timestamp, kp, up);
@@ -351,34 +378,13 @@ double IsamSolver::update(
 
         double w_omega = 1.0;
         if (cfg_.omega_soft_sigma > 0.0) { double q = gmag_near(f.timestamp) / cfg_.omega_soft_sigma; w_omega = 1.0 / (1.0 + q * q); }
-        // radar_pos_split: warm-start R, omega (frozen) for the position-only factor.
-        // The floor factor also needs the frozen warm-start R (and the predicted
-        // world-z baseline) to classify + anchor floor returns.
-        Eigen::Matrix3d R_ws = Eigen::Matrix3d::Identity(); Eigen::Vector3d w_ws = Eigen::Vector3d::Zero();
         const bool do_split = (cfg_.radar_pos_split > 0.0 && w_omega < 1.0);
         const bool do_floor = (cfg_.lambda_floor > 0.0) && (!cfg_.floor_free || floor_init_);
-        double pz_pred = 0.0;   // warm-start predicted trajectory z at this frame
-        if (do_split || do_floor) {
-            double qk[N_ORI][4]; const double* qp[N_ORI];
-            for (int j = 0; j < N_ORI; ++j) {
-                const int idx = std::max(0, std::min(ko - 3 + j, n_ori_ - 1));
-                const Eigen::Quaterniond qq = (align_R3 * quat_to_rot3(init_ori_[idx])).toQuaternion();
-                qk[j][0] = qq.x(); qk[j][1] = qq.y(); qk[j][2] = qq.z(); qk[j][3] = qq.w(); qp[j] = qk[j];
-            }
-            R_ws = analytic::rotation_with_jacobian_manual<N_ORI>(qp, uo, inv_dt_ori_, nullptr).matrix();
-            if (do_split)
-                w_ws = analytic::body_velocity_with_jacobian_manual<N_ORI>(qp, uo, inv_dt_ori_, nullptr);
-            if (do_floor) {
-                using Helper = CeresSplineHelper<N_POS>;
-                Eigen::Matrix<double, N_POS, 1> p0;
-                Helper::template baseCoeffsWithTime<0>(p0, up);
-                const Eigen::Matrix<double, N_POS, 1> wv = Helper::blending_matrix_ * p0;
-                for (int i = 0; i < N_POS; ++i) {
-                    const int idx = std::max(0, std::min(kp - 5 + i, n_pos_ - 1));
-                    pz_pred += wv[i] * (init_pos_[idx][2] + align_t[2]);
-                }
-            }
-        }
+        // warm-start R/omega/pz from the per-frame cache (computed once above).
+        const bool cached = !fOk.empty() && fOk[fi];
+        const Eigen::Matrix3d R_ws = cached ? fRws[fi] : Eigen::Matrix3d::Identity();
+        const Eigen::Vector3d w_ws = cached ? fWws[fi] : Eigen::Vector3d::Zero();
+        const double pz_pred = cached ? fPz[fi] : 0.0;
         gtsam::KeyVector pkeys(keys.begin() + N_ORI, keys.end());   // 6 pos CPs
         double inv_med_I = 0.0;
         if (cfg_.radar_intensity_weight > 0.0) {
