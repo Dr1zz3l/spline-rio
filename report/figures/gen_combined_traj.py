@@ -80,14 +80,15 @@ for col, (bag, title) in enumerate(BAGS):
         ax.set_ylabel(yl, labelpad=1)
         ax.grid(True, alpha=0.3)
         ax.tick_params(length=2, pad=1.5)
-        # Equal data-to-print scaling via the data limits (not the box): every
-        # panel fills its grid cell, so all panels are the SAME width and the
-        # shared Y axis is scaled identically across a column's two rows; the
-        # vertical (X / Z) limits expand as needed to keep 1 m square.
-        ax.set_aspect('equal', adjustable='datalim')
-        ax.margins(0.06)
+        # Equal data-to-print scaling.  adjustable='box' keeps the autoscaled
+        # data limits (all trajectory data + margins stay visible) and shrinks
+        # the drawing box to hold 1 m square; 'datalim' was clipping loop-tops
+        # because, under sharex, it shrank the vertical (X / Z) limits below the
+        # data range.
+        ax.margins(0.08)
+        ax.set_aspect('equal', adjustable='box')
         if row == 0:
-            ax.set_title(title, fontweight='bold', pad=3)
+            ax.set_title(title, fontweight='bold', pad=2)
         else:
             ax.set_xlabel('Y (m)', labelpad=1)
 
@@ -97,10 +98,10 @@ handles = [Line2D([0], [0], color=C_MOCAP, lw=1.8, ls='-'),
            Line2D([0], [0], color=C_MOCAP, marker='s', ls='none', markersize=5)]
 labels  = ['MoCap ground truth', 'SW live edge', 'start']
 fig.legend(handles, labels, loc='lower center', ncol=3,
-           frameon=False, bbox_to_anchor=(0.5, -0.01),
+           frameon=False, bbox_to_anchor=(0.5, 0.005),
            columnspacing=1.8, handlelength=2.2)
 
-fig.tight_layout(rect=[0, 0.055, 1, 1], w_pad=1.2, h_pad=0.8)
+fig.tight_layout(rect=[0, 0.04, 1, 1], w_pad=1.2, h_pad=0.2)
 
 out = OUT_DIR / 'traj_combined.pdf'
 fig.savefig(out, bbox_inches='tight')

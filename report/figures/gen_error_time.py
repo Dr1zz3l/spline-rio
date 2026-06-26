@@ -37,8 +37,8 @@ TAG = 'mocap-init_mocap-heading'
 matplotlib.rcParams.update({
     # authored ~13in, displayed full text width ~7.16in (figure*, ~0.55x);
     # fonts kept near body text (~8pt on page) and not clipping
-    'font.size':       14,
-    'axes.labelsize':  14,
+    'font.size':       13,
+    'axes.labelsize':  12,
     'axes.titlesize':  13,
     'xtick.labelsize': 12,
     'ytick.labelsize': 12,
@@ -50,7 +50,7 @@ matplotlib.rcParams.update({
 C_BATCH = '#d62728'
 C_LIVE  = 'darkorange'
 
-fig, axes = plt.subplots(len(BAGS), 3, figsize=(13, 1.95 * len(BAGS)))
+fig, axes = plt.subplots(len(BAGS), 3, figsize=(13, 1.84 * len(BAGS)))
 if len(BAGS) == 1:
     axes = axes[np.newaxis, :]
 
@@ -109,8 +109,8 @@ fig.tight_layout()
 
 out_pdf = OUT_DIR / 'error_over_time.pdf'
 out_png = OUT_DIR / 'error_over_time.png'
-fig.savefig(out_pdf, bbox_inches='tight')
-fig.savefig(out_png, dpi=150, bbox_inches='tight')
+fig.savefig(out_pdf, bbox_inches='tight', pad_inches=0.12)
+fig.savefig(out_png, dpi=150, bbox_inches='tight', pad_inches=0.12)
 print(f"Saved: {out_pdf}")
 print(f"Saved: {out_png}")
 plt.close(fig)
