@@ -232,17 +232,3 @@ degrading orientation \ac{rmse} from 1.02\degree\ to 6.40\degree\ and
 position \ac{rmse} from 0.169\,m to 0.288\,m on slow racing.
 The smaller Jacobian iterates faster, but the accuracy loss is
 unacceptable.
-
-\textbf{GNC (Graduated Non-Convexity).}
-Geman-McClure loss annealing~\cite{yang2020gnc} on radar residuals
-improved results only when extrinsics were incorrect (masking
-calibration errors as outliers); with correct calibration it degraded
-both bags and added $3\times$ runtime.
-
-\textbf{Full extrinsic optimization.}
-The C++ solver exposes only the 1-DoF pitch offset $\delta_\text{pitch}$
-(\autoref{sec:state}): Doppler cannot observe roll or yaw, and an earlier
-Python solver that freed all three angles let roll and yaw drift
-5--7\degree\ into the unobservable modes as a residual trash can,
-corrupting orientation by 6--8\degree.  The C++ design avoids this by
-construction.
