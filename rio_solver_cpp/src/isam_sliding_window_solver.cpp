@@ -306,7 +306,7 @@ double IsamSolver::update(
     // calibrate it. Observable only with the floor anchor on (else absorbed by z drift).
     if (cfg_.radar_zbias_estimate) {
         if (!bz_init_) {
-            bz_est_ = cfg_.radar_zbias_fixed;
+            bz_est_ = 0.0;   // physical seed (bias is ~0; converges independent of init)
             v.insert(ZK(0), (gtsam::Vector1() << bz_est_).finished());
             g.add(gtsam::PriorFactor<gtsam::Vector1>(
                 ZK(0), (gtsam::Vector1() << bz_est_).finished(),
@@ -414,10 +414,10 @@ double IsamSolver::update(
             if (rng < cfg_.min_range) continue;
             const Eigen::Vector3d u_sensor = xyz / rng;
             const Eigen::Vector3d u_body = R_bs_ * u_sensor;
-            // z-bias correction: estimated state b_z (frozen here for the pos-split /
-            // intensity paths) or the fixed constant.
-            const double b_eff = cfg_.radar_zbias_estimate ? bz_est_ : cfg_.radar_zbias_fixed;
-            const double v_c = pt.v - b_eff * u_sensor.z();
+            // z-bias correction: the estimated state b_z (frozen here for the pos-split
+            // / intensity paths) when enabled, else none (b=0; the floor anchor makes the
+            // old hardcoded correction obsolete -- retired).
+            const double v_c = cfg_.radar_zbias_estimate ? (pt.v - bz_est_ * u_sensor.z()) : pt.v;
             double w_int = 1.0;
             if (inv_med_I > 0.0 && pt.intensity > 0.0)
                 w_int = std::min(4.0, std::max(0.25, std::pow(pt.intensity * inv_med_I, cfg_.radar_intensity_weight)));

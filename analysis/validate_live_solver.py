@@ -699,7 +699,6 @@ def _solve_cpp_isam(initial_state, solver_radar_frames, imu_data,
     cfg.lambda_gyro_omega_pow = solver_cfg.get('lambda_gyro_omega_pow', 2.0)
     cfg.omega_soft_sigma = solver_cfg.get('omega_soft_sigma', 0.0)
     cfg.accel_soft_sigma = solver_cfg.get('accel_soft_sigma', 0.0)
-    cfg.radar_zbias_fixed = solver_cfg.get('radar_zbias_fixed', 0.0)
     cfg.radar_zbias_estimate = bool(int(solver_cfg.get('radar_zbias_estimate', 0)))
     cfg.radar_intensity_weight = solver_cfg.get('radar_intensity_weight', 0.0)
     cfg.lambda_pos_init_prior = solver_cfg.get('lambda_pos_init_prior', 0.0)

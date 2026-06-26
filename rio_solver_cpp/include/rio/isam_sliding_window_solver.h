@@ -33,11 +33,16 @@ struct IsamConfig {
     double lambda_gyro_omega_pow{2.0};
     double omega_soft_sigma{0.0};         // radar down-weight: w=1/(1+(|w|/sigma)^2)
     double accel_soft_sigma{0.0};         // accel down-weight (same form)
-    double radar_zbias_fixed{0.0};        // v_corr = v - b*u_sensor.z()
-    bool   radar_zbias_estimate{false};   // estimate b (above) as a self-calibrating
-                                          // state b_z instead of hardcoding it; init =
-                                          // radar_zbias_fixed. Needs the floor anchor on
-                                          // for observability (RadarBiasFactor).
+    bool   radar_zbias_estimate{false};   // estimate the radar elevation Doppler bias as
+                                          // a self-calibrating state b_z (v_corr = v -
+                                          // b_z*u_sz, init 0). Needs the floor anchor on
+                                          // for observability (RadarBiasFactor). The old
+                                          // hardcoded radar_zbias_fixed was retired here:
+                                          // the floor anchor makes b=0 optimal (the -1.5
+                                          // backflips value was a non-physical proxy for
+                                          // the vertical drift the floor now fixes). The
+                                          // Ceres SW backend keeps it (no floor anchor;
+                                          // reproduces the frozen paper). ALGO_IMPROVEMENTS D6.
     double radar_intensity_weight{0.0};   // per-point w_int=clamp((I/I_med)^a,0.25,4)
     double lambda_pos_init_prior{0.0};    // per-CP tether to the (aligned) init
     double radar_pos_split{0.0};          // gated radar's (1-w) weight -> position-
