@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<!-- Standalone reve ego-velocity estimator on our converted bags:
+     isolates the radar processing chain from the EKF for diagnosis.
+     Output twist is the ego velocity in the (rio-remapped) RADAR frame. -->
+<launch>
+    <arg name="rosbag"/>
+    <arg name="out_bag"/>
+    <arg name="dataset_dir" default="/workspace/baselines/datasets/our_bags"/>
+    <arg name="topic_twist" default="/reve/twist"/>
+
+    <node name="radar_ego_velocity_estimator" pkg="radar_ego_velocity_estimator"
+          type="radar_ego_velocity_estimation_rosbag_node" output="screen"
+          launch-prefix="bash -c 'sleep 2; $0 $@' ">
+        <param name="rosbag_path" value="$(arg dataset_dir)/$(arg rosbag)" type="string"/>
+        <param name="bag_start" value="0." type="double"/>
+        <param name="bag_duration" value="-1" type="double"/>
+        <param name="sleep_ms" value="5" type="double"/>
+        <rosparam file="$(find radar_ego_velocity_estimator)/config/params_demo_dataset.yaml" command="load"/>
+        <param name="topic_radar_scan" value="/sensor_platform/radar/scan" type="string"/>
+        <param name="run_without_trigger" value="true" type="bool"/>
+        <param name="topic_twist" value="$(arg topic_twist)" type="string"/>
+    </node>
+
+    <node name="recorder" pkg="rosbag" type="record"
+          args="record -O $(arg out_bag) $(arg topic_twist)"/>
+</launch>

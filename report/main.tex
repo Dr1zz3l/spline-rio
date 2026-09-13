@@ -1,0 +1,171 @@
+\documentclass[journal]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{url}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{amsthm}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{siunitx}
+\usepackage{bm}
+\usepackage{gensymb}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, shapes.geometric, fit, backgrounds, calc, decorations.pathreplacing}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+% Math shortcuts
+\newcommand{\vR}{\mathbf{R}}
+\newcommand{\vp}{\mathbf{p}}
+\newcommand{\vv}{\mathbf{v}}
+\newcommand{\va}{\mathbf{a}}
+\newcommand{\vom}{\boldsymbol{\omega}}
+\newcommand{\vg}{\mathbf{g}}
+\newcommand{\vu}{\hat{\mathbf{u}}}
+\newcommand{\vb}{\mathbf{b}}
+\newcommand{\vz}{\mathbf{z}}
+\newcommand{\vOm}{\boldsymbol{\Omega}}
+\newcommand{\SO}{\mathrm{SO}(3)}
+\newcommand{\so}{\mathfrak{so}(3)}
+\newcommand{\Exp}{\mathrm{Exp}}
+\newcommand{\Log}{\mathrm{Log}}
+\newcommand{\calX}{\mathcal{X}}
+
+% Review-markup macros from earlier drafts: now no-ops (the markup is kept in
+% the sources where it still exists, so old diffs stay readable).
+\newcommand{\rev}[1]{#1}
+\newenvironment{revblock}{\par}{\par}
+
+% --- Cut markup of the 2026-09-03 page review: items 2-7 were applied
+%     (text deleted) on 2026-09-07, item 1 (fig:error_time) was kept.  The
+%     macro stays defined for any future review pass.
+\definecolor{cutred}{RGB}{185,0,0}
+\newcommand{\cut}[2]{{\color{cutred}\textbf{[cut #1]} #2}}
+
+% --- \anti{...}: an "X rather than Y" antithesis, flagged for review because
+%     the construction reads as written-for-effect.  Keep it where the contrast
+%     carries information, drop it where it is only rhetoric.  Each \anti stays
+%     within one source line so the authorship colours cannot cut across it.
+%     Grep for \anti{ to find them all; delete the wrapper to accept a phrase.
+\newcommand{\anti}[1]{{\color{cutred}#1}}
+
+% --- Cross-references: \autoref with IEEE-style names ---
+\usepackage[hidelinks]{hyperref}
+\renewcommand{\sectionautorefname}{Section}
+\renewcommand{\subsectionautorefname}{Section}
+\renewcommand{\subsubsectionautorefname}{Section}
+\renewcommand{\figureautorefname}{Fig.}
+\renewcommand{\tableautorefname}{Table}
+\renewcommand{\equationautorefname}{Eq.}
+
+% --- Acronyms: first \ac{} use writes out the long form + short; later
+%     uses print the short form only (\printacronyms lists them). ---
+\usepackage{acro}
+\acsetup{list/template=tabular}  % auto-size the short-form column
+\input{acronyms}
+
+\begin{document}
+
+\title{Continuous-Time Radar-Inertial Odometry\\with B-Spline Sliding-Window Optimization}
+
+\author{Timo~Weiss%
+\thanks{Guided Research project report (10 ECTS), Chair of Autonomous
+Aerial Systems, Department of Aerospace and Geodesy, TUM School of
+Engineering and Design, Technical University of Munich, Germany.
+Supervisor: Lukas Pries.  Submitted Month~XX,~2026.}%
+\thanks{Code and datasets are available at
+\protect\url{https://github.com/Dr1zz3l/spline-rio}.}}
+
+\maketitle
+
+%------------------------------------------------------------------
+\begin{abstract}
+Millimeter-wave radar offers an alternative when visibility limits
+optical sensing, but single-chip sensors provide sparse, noisy Doppler
+returns.  This report investigates radar-inertial state estimation
+during indoor quadrotor flight using a single-chip 60\,GHz radar
+(TI IWR6843) and a 1\,kHz IMU, through flight regimes
+from hover to aggressive racing and aerobatic backflips at
+$10$\,rad/s.  We first characterize the radar
+measurements against motion-capture ground truth.  A per-return
+bearing-uncertainty law describes the Gaussian core, whose width grows
+with transverse speed and off-boresight angle.  The errors also contain
+a frame-shared component and outliers.  On the backflip flight, 38\% of
+returns are Doppler-aliased.  The estimator uses a continuous-time
+B-spline trajectory with one Doppler factor per return and a fixed-lag
+smoother with marginalization.  A consensus front end rejects outliers,
+while the per-return law, frame covariance, and measured stream error
+budgets determine the weighting.  The measurement-derived noise model
+and stream weights are held fixed across all evaluated flights and
+platforms.
+With reference yaw used as an idealized heading sensor, the causal
+live-edge velocity RMSE is $0.16$--$0.28$\,m/s and orientation RMSE
+is below $3\degree$ on racing, with position drift of
+$0.3$--$1.3\%$ of path length.  Backflip velocity and orientation RMSE
+rise to $1.66$\,m/s and $12.1\degree$, reflecting both radar measurement
+limitations and the racing-oriented configuration.  The solver runs
+in real time on a laptop CPU and reports conservative covariances on
+the racing flights.  It transfers unchanged to a held-out fast-racing
+flight, but performance degrades on a separate held-out flight with
+extensive Doppler aliasing.  On four public flights from a
+different platform with the same radar chip, velocity errors
+are comparable to EKF baselines without retuning the noise model or
+stream weights, although position drift is higher on three of the
+four flights.  Radar and IMU with heading aiding thus provide a usable
+velocity and orientation estimate; absolute position drifts with distance.
+\end{abstract}
+
+\begin{IEEEkeywords}
+radar-inertial odometry, continuous-time estimation, B-spline,
+sliding window, marginalization, mmWave radar, Doppler velocity
+\end{IEEEkeywords}
+
+% --- Declaration on the use of AI tools (required by the chair; DRAFT for
+%     the author to adjust to the chair's wording) ---
+\section*{Declaration on the Use of AI Tools}
+Parts of the text of this report were formulated with the help of AI
+language models (Anthropic Claude, OpenAI ChatGPT, Google Gemini)
+from the author's notebooks,
+measurements, worklog and instructions, and were subsequently revised
+by the author throughout.  Model wording is most concentrated in
+\autoref{sec:conclusion} (conclusion), \autoref{sec:results}
+(results) and \autoref{sec:overview} (system overview), at $30$,
+$28$ and $22$\,\% of their lines. The models were also used as a discussion
+partner, for rewording and drafting text throughout, and for
+software development support during the project.  All experiments and
+measurements are the author's own, and the author takes full
+responsibility for the entire content.
+
+For transparency, a colour-coded copy of this report is published
+alongside it as \texttt{report/main\_authorship.pdf} in the repository
+above, with a key on each of its pages.  The marking is a
+reconstruction from the commit history: the marked text is the model
+wording that history can attribute.  Wording from earlier iterations
+of the report predates the records that would identify a model, and
+is left unmarked, as is wording introduced by any other means.
+Only passages of at least three consecutive lines are marked, so the
+copy shows blocks rather than scattered words.  It is an estimate of
+origin, not a per-letter record of who typed what.
+
+% ---- Body: one file per section (sections/) ----
+\input{sections/00_introduction}
+\input{sections/01_related_work}
+\input{sections/02_preliminaries}
+\input{sections/03_system_overview}
+\input{sections/04_characterization}
+\input{sections/05_methodology}
+\input{sections/06_experimental_setup}
+\input{sections/07_results}
+\input{sections/08_limitations}
+\input{sections/09_conclusion}
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}

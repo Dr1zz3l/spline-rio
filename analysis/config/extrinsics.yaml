@@ -1,0 +1,27 @@
+# Radar-to-body extrinsics
+# Body frame: x=forward, y=left, z=up
+# rotation_euler_deg: [roll, pitch, yaw] in degrees
+rotation_euler_deg: [180.0, 25.5, 0.0]   # 180 roll, no yaw. pitch 25.5 = stale batch self-cal SEED only (do NOT change: reseeding shifts the free-pitch batch). As-built pitch MEASURED 27-28deg (inclinometer); deployed runs LOCK 27.5 via --set-ext.
+translation_body_m: [0.08, 0.02, -0.01]   # 2 cm left (+y), 1 cm down (-z) (confirmed correct, except maybe 180deg yaw flip around drone coordinates)
+
+
+# Time offsets below are empirically tuned — current values (0.02, 0.14) give best solver results.
+# Time offsets — sign conventions:
+#
+#   imu_mocap_offset_sec:
+#     Added directly to raw IMU timestamps before MoCap interpolation.
+#     Positive  → IMU clock is AHEAD of MoCap (timestamps too early; offset shifts lookup forward)
+#     Negative  → IMU clock is BEHIND MoCap (current: IMU is ~10 ms behind MoCap)
+#     Calibrated via gyro cross-correlation (correlate(imu_gyro, mocap_omega); positive peak lag = IMU ahead)
+#
+#   radar_imu_offset_sec:
+#     A latency: how far the radar timestamp is BEHIND the IMU clock (USB/processing delay).
+#     Always positive in practice. Applied as:
+#       radar_total_offset = imu_mocap_offset_sec - radar_imu_offset_sec
+#     i.e. radar_total_offset is added to raw radar timestamps to align them on the MoCap axis.
+#     With current values: 0.020 - 0.140 = -0.120 s  (radar data arrives ~120 ms late)
+#
+imu_mocap_offset_sec: 0.0150
+radar_imu_offset_sec: 0.1350
+# imu_mocap_offset_sec: -0.0100
+# radar_imu_offset_sec: 0.1118

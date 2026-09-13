@@ -1,0 +1,133 @@
+\section{Preliminaries}
+\label{sec:prelim}
+
+This section introduces the two mathematical tools the rest of the
+report builds on: uniform B-splines as a continuous-time trajectory
+representation, both in $\mathbb{R}^3$ and, in cumulative form, on
+$\SO$; and the \ac{map} estimator that fits them to the measurements as
+a weighted nonlinear least-squares problem. 
+
+\subsection{Uniform B-splines in $\mathbb{R}^3$}
+\label{sec:prelim_bspline}
+An order-$N$ (degree $N{-}1$) uniform B-spline with control points
+$\{\mathbf{P}_i\}\subset\mathbb{R}^3$ and constant knot spacing $\Delta t$
+represents a curve as a weighted sum of basis functions,
+\begin{equation}
+  \vp(t) = \sum_i \mathbf{P}_i\, B_{i,N}(t),
+  \label{eq:bspline_def}
+\end{equation}
+where the $B_{i,N}$ are the Cox--de Boor basis
+functions~\cite{furgale2013unified}.  Two properties make this
+representation attractive for asynchronous sensor fusion.
+
+\emph{Local support.}  At any instant only $N$ consecutive control
+points have nonzero basis, so on the segment $t\in[t_i,t_{i+1})$, with
+normalized time $u=(t-t_i)/\Delta t\in[0,1)$, the curve is a fixed
+blending of $N$ control points,
+\begin{equation}
+  \begin{gathered}
+  \vp(t) = \sum_{j=0}^{N-1} B_j(u)\,\mathbf{P}_{i+j}, \\
+  \bigl[B_0(u)\,\cdots\,B_{N-1}(u)\bigr]
+     = \mathbf{u}^{\top}\mathbf{M}^{(N)},
+  \end{gathered}
+  \label{eq:bspline_blend}
+\end{equation}
+with $\mathbf{u}=[1,u,\dots,u^{N-1}]^{\top}$ and a constant $N\times N$
+blending matrix $\mathbf{M}^{(N)}$~\cite{usenko2020basalt}.  Local
+support limits each measurement's Jacobian to $N$ control points and
+supports the marginalization described in \autoref{sec:sw}.
+
+\emph{Analytic derivatives.}  Differentiating the basis in
+\eqref{eq:bspline_blend} yields the velocity $\dot{\vp}(t)$ and
+acceleration $\ddot{\vp}(t)$ in closed form at \emph{any} $t$, as
+lower-order splines over the same control points, with no finite
+differencing or inter-sample interpolation.  This is what lets the
+accelerometer factor (which needs $\ddot{\vp}$) and the min-snap
+regularizer (which needs $\vp^{(4)}$) be evaluated exactly at each
+measurement's timestamp.  We use a quintic ($N{=}6$) position spline so
+that snap is well defined and continuous.
+
+\subsection{Cumulative $\SO$ B-splines}
+\label{sec:prelim_so3}
+Orientation lives on the manifold $\SO$, on which a weighted sum of
+rotations $\sum_i \vR_i B_i$ is not itself a rotation, so
+\eqref{eq:bspline_def} does not transfer directly.  The
+\emph{cumulative} parameterization of Sommer et
+al.~\cite{sommer2020efficient}, used in the basalt
+\ac{vio}~\cite{usenko2020basalt}, instead writes the orientation as a
+base rotation followed by a product of incremental rotations, each
+mapped back onto the manifold by the exponential map,
+\begin{equation}
+  \begin{aligned}
+  \vR(t) &= \vR_{i}
+           \prod_{j=1}^{N-1}
+           \Exp\!\bigl(\tilde{B}_j(u)\,\vOm_j\bigr), \\
+  \vOm_j &= \Log\!\bigl(\vR_{i+j-1}^{-1}\vR_{i+j}\bigr)\in\so,
+  \end{aligned}
+  \label{eq:prelim_so3}
+\end{equation}
+where the increments $\vOm_j$ are the relative rotations between
+consecutive \emph{absolute} orientation control points $\vR_i\in\SO$
+(the optimization variables, basalt convention).  These orientation
+control points are also called ``knots'' in the continuous-time
+estimation literature~\cite{sommer2020efficient}; here, we use
+``control points'' for both coefficient sets and reserve ``knots''
+for the time values defining the spline intervals.  The cumulative
+basis is the tail sum of the ordinary basis of \eqref{eq:bspline_blend},
+\begin{equation}
+  \tilde{B}_j(u) = \sum_{l=j}^{N-1} B_l(u).
+  \label{eq:cumbasis}
+\end{equation}
+Because each $\Exp(\cdot)$ returns a rotation, $\vR(t)\in\SO$ holds by
+construction for any orientation control points.  This form retains
+absolute orientation control points, preserves local support over $N$
+control points exactly as in the $\mathbb{R}^3$ case, and yields the body
+angular velocity $\vom_b(t)$ in
+closed form by differentiating the product, with no numerical
+differentiation.  We use a cubic ($N{=}4$) orientation spline;
+\eqref{eq:ori_spline} in \autoref{sec:state} is this construction with
+$N{=}4$ (base control point $\vR_{k-3}$, three increments).
+
+\subsection{\ac{map} Estimation as Weighted Least Squares}
+\label{sec:prelim_map}
+The control points and biases above form the finite-dimensional state
+$\calX$ (\autoref{sec:problem}).  Each measurement $\vz_i$ relates to
+the state through a known model $\mathbf{h}_i$,
+$\vz_i = \mathbf{h}_i(\calX) + \mathbf{n}_i$, with the noise
+$\mathbf{n}_i$ zero-mean Gaussian of covariance
+$\boldsymbol{\Sigma}_i$ and independent across measurements.  The
+likelihood is then
+$p(\vz\mid\calX)\propto\prod_i
+ \exp(-\tfrac12\mathbf{r}_i^{\top}\boldsymbol{\Sigma}_i^{-1}\mathbf{r}_i)$
+with residuals $\mathbf{r}_i=\vz_i-\mathbf{h}_i(\calX)$, so its negative
+logarithm is a weighted sum of squared residuals: maximum-likelihood
+estimation minimizes
+$\tfrac12\sum_i\mathbf{r}_i^{\top}\boldsymbol{\Sigma}_i^{-1}\mathbf{r}_i$,
+in which each residual is weighted by its inverse covariance
+(information) $\boldsymbol{\Sigma}_i^{-1}$.  For a scalar residual this
+is a scalar weight $\lambda_i=1/\sigma_i^2$: a more certain sensor is
+trusted more.  The variance measurements in \autoref{sec:char}
+inform the stream weights $\lambda_a,\lambda_g$ of
+\autoref{sec:models} and the per-return radar weights of
+\autoref{sec:robust}.
+
+Prior knowledge $p(\calX)$, here trajectory smoothness and, online, the
+marginalization prior summarizing past data, turns the estimate into a
+\ac{map} one, $\arg\max_{\calX} p(\vz\mid\calX)\,p(\calX)$; its negative
+log contributes the extra quadratic terms $E_{\text{reg}}$ and
+$E_{\text{prior}}$.  In a sliding window the prior is itself a
+posterior: the previous window's posterior over the states both
+windows share, with the states that left the window integrated out
+(\autoref{sec:sw}).  Radar Doppler residuals have heavy tails
+(\autoref{sec:char_noise} measures both the Gaussian core and the
+tails); the identifiable outliers are removed before the solve
+(\autoref{sec:char_outliers}), so every residual that reaches the
+cost enters it quadratically.  Collecting all terms gives the weighted nonlinear
+least-squares objective instantiated for our sensors in
+\eqref{eq:map}.  We minimize it with Levenberg--Marquardt and
+analytic Jacobians.  Rotation updates are applied on the manifold,
+$\vR\mapsto\vR\,\Exp(\boldsymbol{\delta})$, so every iterate
+remains a valid rotation.  The Jacobians use spline values and
+derivatives at each measurement's exact timestamp, provided in
+closed form by \autoref{sec:prelim_bspline} and
+\autoref{sec:prelim_so3}.

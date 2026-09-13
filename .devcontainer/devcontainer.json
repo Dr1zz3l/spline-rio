@@ -1,0 +1,38 @@
+{
+  "name": "IWR6843 ROS Development",
+  "dockerComposeFile": "../docker/docker-compose.yml",
+  "service": "iwr6843",
+  "workspaceFolder": "/workspace",
+  
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-vscode.cpptools",
+        "ms-iot.vscode-ros",
+        "dotjoshjohnson.xml",
+        "redhat.vscode-yaml"
+      ],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "python.defaultInterpreterPath": "/usr/bin/python3"
+      }
+    }
+  },
+  
+  "remoteUser": "root",
+  "postCreateCommand": "chmod 700 ~/.ssh && chmod 600 ~/.ssh/* && echo 'source /opt/ros/noetic/setup.bash' >> ~/.bashrc && echo 'source /workspace/mmwave_ti_ros/ros1_driver/devel/setup.bash 2>/dev/null || true' >> ~/.bashrc",
+  "postStartCommand": "chmod 700 ~/.ssh && chmod 600 ~/.ssh/* 2>/dev/null || true && rosdep update || true",
+  
+  "mounts": [
+    "source=/dev/bus/usb,target=/dev/bus/usb,type=bind",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.ssh,target=/root/.ssh,type=bind,readonly"
+  ],
+  
+  "runArgs": [
+    "--privileged",
+    "--network=host"
+  ],
+  
+  "features": {}
+}

@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  iwr6843:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: iwr6843-dev
+    privileged: true  # Required for USB device access
+    volumes:
+      # Mount entire repository for development and git access
+      - ..:/workspace
+      # Persist build artifacts (optional, comment out for clean builds)
+      - catkin_build:/workspace/mmwave_ti_ros/ros1_driver/build
+      - catkin_devel:/workspace/mmwave_ti_ros/ros1_driver/devel
+      # GUI support (X11 forwarding)
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - $HOME/.Xauthority:/root/.Xauthority:rw
+    devices:
+      # USB device access for radar
+      - /dev/bus/usb:/dev/bus/usb
+      # TI mmWave radar serial ports (Silicon Labs CP2105 dual UART)
+      - /dev/ttyUSB0:/dev/ttyUSB0
+      - /dev/ttyUSB1:/dev/ttyUSB1
+    network_mode: host  # Use host networking for ROS communication
+    environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+      - RADAR_CONFIG_PATH=/root/config/radar_config.cfg
+    stdin_open: true
+    tty: true
+    command: /bin/bash -lc "/workspace/scripts/setup_usb_devices.sh || true; exec /bin/bash"
+
+volumes:
+  catkin_build:
+  catkin_devel:

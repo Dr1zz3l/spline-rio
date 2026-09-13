@@ -1,0 +1,62 @@
+{
+  "meta": {
+    "label": "preintegrated",
+    "timestamp": "20260325_101559",
+    "flags": "--mocap-yaw --no-plot --preintegrate",
+    "bags": [
+      "slow_racing_best_velocity",
+      "fast_racing_best_velocity"
+    ],
+    "python": "/home/mouse/MyData/radar-iwr6843-driver/.venv/bin/python3"
+  },
+  "results": [
+    {
+      "bag": "slow_racing_best_velocity",
+      "flags": "--mocap-yaw --no-plot --preintegrate",
+      "returncode": 0,
+      "metrics": {
+        "pos_rmse_m": 0.3616,
+        "pos_max_m": 0.5462,
+        "vel_rmse_mps": 0.2186,
+        "angvel_rmse_rads": 0.6102,
+        "accel_rmse_mps2": 0.8007,
+        "ori_rmse_deg": 3.6,
+        "ori_max_deg": 12.0023,
+        "ori_rmse_roll_deg": 3.666,
+        "ori_rmse_pitch_deg": 1.376,
+        "ori_rmse_yaw_deg": 8.123,
+        "lm_iterations": 40,
+        "imu_samples_used": 6408,
+        "preintegrated_factors": 257,
+        "radar_frames": 258,
+        "wall_time_s": 383.7
+      },
+      "stdout_tail": "----------------------------------Iteration 12----------------------------------\nOrientation RMSE: 6.7 deg | |\u03a9| max: 87.86\u00b0 mean: 0.48\u00b0\nAcc bias: [-0.159, -0.308, 0.087]  Gyr bias: [0.013, -0.003, -0.040]\nComputing analytical Jacobian...\nCost: total=3963.84 | radar=225.5 accel=3111.3 gyro=160.5 snap=2.6 preint=2.0 heading=14.1 bnd_vel=58.9 bnd_pos=385.3 bnd_ori=3.2 bnd_acc=0.0 bnd_gyr=0.1 ori_reg=0.0 bias_prior=0.2 ext_prior=0.1\nJacobian: (54902, 25194), nnz=2478625, sparsity=99.82%\n  ||J^T r||_inf / n_residuals = 0.040737\n  [REJECT] cost 3963.84 -> 4642.72, rho=-83.619, new lambda=3.59e+04\nUpdate norm: 0.026062\nLM damping: 3.59e+04\nIteration time: 26.459s\n\n----------------------------------Iteration 13----------------------------------\nOrientation RMSE: 6.7 deg | |\u03a9| max: 87.86\u00b0 mean: 0.48\u00b0\nAcc bias: [-0.159, -0.308, 0.087]  Gyr bias: [0.013, -0.003, -0.040]\n  [CACHE] Reusing Jacobian (lambda=3.59e+04, cost=3963.84)\n  [REJECT] cost 3963.84 -> 4227.86, rho=-51.125, new lambda=3.59e+05\nUpdate norm: 0.009882\nLM damping: 3.59e+05\nIteration time: 8.728s\n\n----------------------------------Iteration 14----------------------------------\nOrientation RMSE: 6.7 deg | |\u03a9| max: 87.86\u00b0 mean: 0.48\u00b0\nAcc bias: [-0.159, -0.308, 0.087]  Gyr bias: [0.013, -0.003, -0.040]\n  [CACHE] Reusing Jacobian (lambda=3.59e+05, cost=3963.84)\n  [REJECT] cost 3963.84 -> 3965.30, rho=-1.243, new lambda=3.59e+06\nUpdate norm: 0.001760\nLM damping: 3.59e+06\nIteration time: 8.749s\n\n----------------------------------Iteration 15----------------------------------\nOrientation RMSE: 6.7 deg | |\u03a9| max: 87.86\u00b0 mean: 0.48\u00b0\nAcc bias: [-0.159, -0.308, 0.087]  Gyr bias: [0.013, -0.003, -0.040]\n  [CACHE] Reusing Jacobian (lambda=3.59e+06, cost=3963.84)\n  Accepted: cost 3963.8 -> 3961.6 rho=15.813 (max |\u03a9|=87.9\u00b0)\nUpdate norm: 0.000194\nLM damping: 1.19e+06\nIteration time: 8.653s\n\n----------------------------------Iteration 16----------------------------------\nOrientation RMSE: 6.8 deg | |\u03a9| max: 87.86\u00b0 mean: 0.48\u00b0\nAcc bias: [-0.159, -0.308, 0.087]  Gyr bias: [0.013, -0.003, -0.040]\nComputing analytical Jacobian...\nCost: total=3961.61 | radar=224.8 accel=3110.7 gyro=160.2 snap=1.4 preint=2.0 heading=14.6 bnd_vel=58.9 bnd_pos=385.3 bnd_ori=3.2 bnd_acc=0.0 bnd_gyr=0.1 ori_reg=0.0 bias_prior=0.2 ext_prior=0.1\nJacobian: (54902, 25194), nnz=2478624, sparsity=99.82%\n  ||J^T r||_inf / n_residuals = 0.002853\n  Accepted: cost 3961.6 -> 3961.0 rho=1.573 (max |\u03a9|=87.9\u00b0)\nUpdate norm: 0.000552\nLM damping: 3.91e+05\nIteration time: 26.417s\n\n----------------------------------Iteration 17----------------------------------\nOrientation RMSE: 6.9 deg | |\u03a9| max: 87.86\u00b0 mean: 0.48\u00b0\nAcc bias: [-0.159, -0.308, 0.087]  Gyr bias: [0.013, -0.003, -0.039]\nComputing analytical Jacobian...\nCost: total=3961.03 | radar=223.9 accel=3109.8 gyro=159.6 snap=1.9 preint=2.0 heading=16.0 bnd_vel=58.9 bnd_pos=385.3 bnd_ori=3.1 bnd_acc=0.0 bnd_gyr=0.1 ori_reg=0.0 bias_prior=0.2 ext_prior=0.1\nJacobian: (54902, 25194), nnz=2478624, sparsity=99.82%\n  ||J^T r||_inf / n_residuals = 0.002774\n  [REJECT] cost 3961.03 -> 3969.34, rho=-9.751, new lambda=3.91e+06\nUpdate norm: 0.001443\nLM damping: 3.91e+06\nIteration time: 26.575s\n\n----------------------------------Iteration 18----------------------------------\nOrientation RMSE: 6.9 deg | |\u03a9| max: 87.86\u00b0 mean: 0.48\u00b0\nAcc bias: [-0.159, -0.308, 0.087]  Gyr bias: [0.013, -0.003, -0.039]\n  [CACHE] Reusing Jacobian (lambda=3.91e+06, cost=3961.03)\n  [REJECT] cost 3961.03 -> 3961.50, rho=-4.940, new lambda=3.91e+07\nUpdate norm: 0.000156\nLM damping: 3.91e+07\nIteration time: 8.779s\n\n----------------------------------Iteration 19----------------------------------\nOrientation RMSE: 6.9 deg | |\u03a9| max: 87.86\u00b0 mean: 0.48\u00b0\nAcc bias: [-0.159, -0.308, 0.087]  Gyr bias: [0.013, -0.003, -0.039]\n  [CACHE] Reusing Jacobian (lambda=3.91e+07, cost=3961.03)\n  [REJECT] cost 3961.03 -> 3961.57, rho=-55.047, new lambda=1.00e+08\nUpdate norm: 0.000016\nLM damping: 1.00e+08\nIteration time: 8.636s\n\n[OK] Converged (delta_norm < 1e-4)!\n\n#############################Optimization Complete##############################\n\n==========Evaluation vs MoCap Ground Truth (not used in optimization)===========\n  Eval range: [0.026, 25.783] s (7697 MoCap points)\n  SE3 alignment R: [0.4, 0.2, 2.5] deg  t: [-0.038, -0.061, 0.056] m\n\n  === RESULTS (mocap-init+mocap-heading+gyro) ===\n  Position RMSE (aligned): 0.3616 m  (max: 0.5462 m)\n  Velocity RMSE:           0.2186 m/s\n  Angular vel RMSE:        0.6102 rad/s\n  Acceleration RMSE:       0.8007 m/s\u00b2\n  Orientation RMSE:        9.0263 deg  (max: 12.0023 deg)\n  Per-axis ori RMSE: roll=3.666  pitch=1.376  yaw=8.123 deg\n  Acc bias: [-0.1589, -0.3078, 0.0867] m/s\u00b2\n  Gyr bias: [0.0129, -0.0030, -0.0394] rad/s\n\n  [--no-plot] Skipping plot generation.",
+      "stderr_tail": ""
+    },
+    {
+      "bag": "fast_racing_best_velocity",
+      "flags": "--mocap-yaw --no-plot --preintegrate",
+      "returncode": 0,
+      "metrics": {
+        "pos_rmse_m": 1.5052,
+        "pos_max_m": 2.5226,
+        "vel_rmse_mps": 0.4137,
+        "angvel_rmse_rads": 0.5657,
+        "accel_rmse_mps2": 2.0721,
+        "ori_rmse_deg": 3.5,
+        "ori_max_deg": 12.5712,
+        "ori_rmse_roll_deg": 7.226,
+        "ori_rmse_pitch_deg": 1.613,
+        "ori_rmse_yaw_deg": 8.634,
+        "lm_iterations": 40,
+        "imu_samples_used": 4469,
+        "preintegrated_factors": 178,
+        "radar_frames": 179,
+        "wall_time_s": 300.7
+      },
+      "stdout_tail": "Computing analytical Jacobian...\nCost: total=3538.12 | radar=510.2 accel=2831.1 gyro=101.1 snap=31.2 preint=7.8 heading=27.0 bnd_vel=6.4 bnd_pos=21.0 bnd_ori=2.0 bnd_acc=0.0 bnd_gyr=0.1 ori_reg=0.0 bias_prior=0.1 ext_prior=0.2\nJacobian: (38193, 17589), nnz=1701230, sparsity=99.75%\n  ||J^T r||_inf / n_residuals = 0.038983\n  Accepted: cost 3538.1 -> 3478.2 rho=6.031 (max |\u03a9|=90.1\u00b0)\nUpdate norm: 0.021451\nLM damping: 3.91e+03\nIteration time: 17.540s\n\n----------------------------------Iteration 16----------------------------------\nOrientation RMSE: 7.3 deg | |\u03a9| max: 90.10\u00b0 mean: 0.90\u00b0\nAcc bias: [-0.189, -0.194, 0.056]  Gyr bias: [-0.005, 0.003, -0.043]\nComputing analytical Jacobian...\nCost: total=3478.19 | radar=488.1 accel=2805.0 gyro=99.4 snap=30.6 preint=5.7 heading=19.6 bnd_vel=6.4 bnd_pos=21.1 bnd_ori=2.0 bnd_acc=0.0 bnd_gyr=0.1 ori_reg=0.0 bias_prior=0.1 ext_prior=0.2\nJacobian: (38193, 17589), nnz=1701229, sparsity=99.75%\n  ||J^T r||_inf / n_residuals = 0.009169\n  Accepted: cost 3478.2 -> 3462.0 rho=4.293 (max |\u03a9|=90.1\u00b0)\nUpdate norm: 0.024641\nLM damping: 1.29e+03\nIteration time: 17.737s\n\n----------------------------------Iteration 17----------------------------------\nOrientation RMSE: 6.0 deg | |\u03a9| max: 90.09\u00b0 mean: 0.90\u00b0\nAcc bias: [-0.190, -0.194, 0.057]  Gyr bias: [-0.009, 0.001, -0.038]\nComputing analytical Jacobian...\nCost: total=3461.99 | radar=492.3 accel=2791.4 gyro=98.5 snap=31.8 preint=5.0 heading=13.2 bnd_vel=6.4 bnd_pos=21.1 bnd_ori=2.0 bnd_acc=0.0 bnd_gyr=0.1 ori_reg=0.0 bias_prior=0.1 ext_prior=0.2\nJacobian: (38193, 17589), nnz=1701235, sparsity=99.75%\n  ||J^T r||_inf / n_residuals = 0.016487\n  [REJECT] cost 3461.99 -> 3494.84, rho=-4.049, new lambda=1.29e+04\nUpdate norm: 0.050827\nLM damping: 1.29e+04\nIteration time: 16.495s\n\n----------------------------------Iteration 18----------------------------------\nOrientation RMSE: 6.0 deg | |\u03a9| max: 90.09\u00b0 mean: 0.90\u00b0\nAcc bias: [-0.190, -0.194, 0.057]  Gyr bias: [-0.009, 0.001, -0.038]\n  [CACHE] Reusing Jacobian (lambda=1.29e+04, cost=3461.99)\n  [REJECT] cost 3461.99 -> 3496.99, rho=-8.438, new lambda=1.29e+05\nUpdate norm: 0.014729\nLM damping: 1.29e+05\nIteration time: 4.887s\n\n----------------------------------Iteration 19----------------------------------\nOrientation RMSE: 6.0 deg | |\u03a9| max: 90.09\u00b0 mean: 0.90\u00b0\nAcc bias: [-0.190, -0.194, 0.057]  Gyr bias: [-0.009, 0.001, -0.038]\n  [CACHE] Reusing Jacobian (lambda=1.29e+05, cost=3461.99)\n  Accepted: cost 3462.0 -> 3460.3 rho=1.604 (max |\u03a9|=90.1\u00b0)\nUpdate norm: 0.002747\nLM damping: 4.26e+04\nIteration time: 4.919s\n\n----------------------------------Iteration 20----------------------------------\nOrientation RMSE: 6.6 deg | |\u03a9| max: 90.09\u00b0 mean: 0.90\u00b0\nAcc bias: [-0.190, -0.194, 0.057]  Gyr bias: [-0.009, 0.001, -0.038]\nComputing analytical Jacobian...\nCost: total=3460.26 | radar=484.8 accel=2797.0 gyro=97.7 snap=30.7 preint=5.2 heading=14.9 bnd_vel=6.4 bnd_pos=21.1 bnd_ori=2.0 bnd_acc=0.0 bnd_gyr=0.1 ori_reg=0.0 bias_prior=0.1 ext_prior=0.2\nJacobian: (38193, 17589), nnz=1701229, sparsity=99.75%\n  ||J^T r||_inf / n_residuals = 0.006929\n  [REJECT] cost 3460.26 -> 3467.12, rho=-10.712, new lambda=4.26e+05\nUpdate norm: 0.003647\nLM damping: 4.26e+05\nIteration time: 14.865s\n\n----------------------------------Iteration 21----------------------------------\nOrientation RMSE: 6.6 deg | |\u03a9| max: 90.09\u00b0 mean: 0.90\u00b0\nAcc bias: [-0.190, -0.194, 0.057]  Gyr bias: [-0.009, 0.001, -0.038]\n  [CACHE] Reusing Jacobian (lambda=4.26e+05, cost=3460.26)\n  [REJECT] cost 3460.26 -> 3461.48, rho=-13.498, new lambda=4.26e+06\nUpdate norm: 0.000456\nLM damping: 4.26e+06\nIteration time: 4.976s\n\n----------------------------------Iteration 22----------------------------------\nOrientation RMSE: 6.6 deg | |\u03a9| max: 90.09\u00b0 mean: 0.90\u00b0\nAcc bias: [-0.190, -0.194, 0.057]  Gyr bias: [-0.009, 0.001, -0.038]\n  [CACHE] Reusing Jacobian (lambda=4.26e+06, cost=3460.26)\n  [REJECT] cost 3460.26 -> 3461.82, rho=-159.353, new lambda=4.26e+07\nUpdate norm: 0.000048\nLM damping: 4.26e+07\nIteration time: 4.914s\n\n[OK] Converged (delta_norm < 1e-4)!\n\n#############################Optimization Complete##############################\n\n==========Evaluation vs MoCap Ground Truth (not used in optimization)===========\n  Eval range: [0.029, 17.983] s (5370 MoCap points)\n  SE3 alignment R: [-0.3, 0.9, 0.1] deg  t: [-0.004, 0.012, 0.041] m\n\n  === RESULTS (mocap-init+mocap-heading+gyro) ===\n  Position RMSE (aligned): 1.5052 m  (max: 2.5226 m)\n  Velocity RMSE:           0.4137 m/s\n  Angular vel RMSE:        0.5657 rad/s\n  Acceleration RMSE:       2.0721 m/s\u00b2\n  Orientation RMSE:        6.5822 deg  (max: 12.5712 deg)\n  Per-axis ori RMSE: roll=7.226  pitch=1.613  yaw=8.634 deg\n  Acc bias: [-0.1900, -0.1938, 0.0569] m/s\u00b2\n  Gyr bias: [-0.0089, 0.0014, -0.0381] rad/s\n\n  [--no-plot] Skipping plot generation.",
+      "stderr_tail": ""
+    }
+  ]
+}

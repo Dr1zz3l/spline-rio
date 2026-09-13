@@ -1,0 +1,91 @@
+\section{Related Work}
+\label{sec:related}
+
+A survey~\cite{harlow2024survey} reviews mmWave radar in robotic
+motion estimation, localization, and mapping.  We focus on
+radar-inertial odometry for aerial platforms.
+
+\textbf{Radar ego-velocity estimation.}
+Doppler-based ego-velocity estimation from mmWave radar was
+demonstrated by Kellner et al.~\cite{kellner2013instantaneous} and
+extended to 3D with weighted least squares by
+Kramer et al.~\cite{kramer2020rve}, whose RVE system fuses radar
+with \ac{imu} in a discrete-time \ac{ekf}.  Doer and
+Trommer~\cite{doer2020ekf} present an \ac{ekf}-based \ac{rio} with online
+extrinsic calibration.  Our work uses per-frame \ac{wls}
+ego-velocity estimates to initialize the position trajectory.
+The continuous-time sliding-window optimizer uses one Doppler factor
+per return (\autoref{sec:init}, \autoref{sec:robust}).
+
+\textbf{Continuous-time trajectory estimation.}
+Furgale et al.~\cite{furgale2013unified} introduced uniform B-splines
+for continuous-time visual-inertial calibration.  The basalt
+\ac{vio}~\cite{usenko2020basalt} uses cumulative B-splines on Lie groups
+for stereo-inertial odometry; we adapt this basalt-style
+cumulative SO(3) B-spline to radar-inertial fusion.
+
+\textbf{Marginalization in sliding-window estimators.}
+OKVIS~\cite{leutenegger2015keyframe} and
+VINS-Mono~\cite{qin2018vins} use Schur complement
+marginalization for visual-inertial systems, propagating information
+from dropped keyframes as a dense Gaussian prior. We apply the same
+principle to continuous-time B-spline control points.
+
+\textbf{Continuous-time radar-inertial odometry.}
+Ng et al.~\cite{ng2021ctrio} formulate continuous-time radar-inertial
+odometry by fusing Doppler measurements from
+\emph{multiple automotive} radars with an \ac{imu} as a least-squares
+problem over a B-spline trajectory, evaluated on passenger vehicles.
+Burnett et al.~\cite{burnett2025gp} use a Gaussian-process motion
+prior for spinning-radar- and lidar-inertial odometry, and
+\v{S}tironja et al.~\cite{stironja2026rio} model the \ac{imu} trajectory
+continuously inside an \ac{rio} estimator with online spatio-temporal
+calibration.  Yang et al.~\cite{yang2025gorio} (Go-RIO)
+similarly fuse radar velocity with an \ac{imu} in continuous time and
+target the same radar elevation drift with a ground-plane model, which
+requires a persistently visible floor.  Our aerobatic flights see it
+only intermittently.  Our front end rejects Doppler outliers but does
+not impose a height constraint.  Huang et al.~\cite{huang2024lessismore}
+exploit radar cross-section and Doppler physics to make a sparse
+single-chip cloud usable in a discrete-time sliding-window
+optimization, evaluated on ground-robot and handheld platforms.
+We study a single-chip radar (10--60 points per frame,
+12-channel array) on a quadrotor in aggressive racing and
+\rev{aerobatic backflip} flight up to $10$\,rad/s.
+The radar measurement errors increase in this regime
+(\autoref{sec:backflips}).
+
+\textbf{Single-chip \ac{rio} on aerial platforms.}
+Single-chip radar-inertial fusion has also been evaluated on multirotors.
+Michalczyk et al.~\cite{michalczyk2022ekf} use a
+discrete-time \ac{ekf} with scan-to-scan point matching and Doppler (a
+factor-graph reformulation follows in~\cite{michalczyk2024fg}); Girod et
+al.~\cite{girod2024brio} run a real-time onboard M-estimator smoother on a
+quadrotor in cities and forests, but cap velocity at
+$2$\,m/s and anchor the vertical channel with a
+barometer.  Our evaluation focuses on continuous-time estimation during
+aggressive and \rev{aerobatic} flight, without a barometric height
+measurement (\autoref{sec:baselines}).  None of the systems above
+covers that combination.
+
+\textbf{Sliding-window marginalization and consistency.}
+Sliding-window marginalization can introduce inconsistency
+in discrete time~\cite{dongsi2012consistency}, where \ac{fej}
+methods fix linearization points to preserve the observability nullspace.
+In continuous time, CLIC~\cite{lv2023clic} and
+LIO-MARS~\cite{quenzel2025liomars} marginalize spline control points leaving the
+window by adjacency to the dropped control points.  We follow the same
+construction and account for the globally shared
+\ac{imu} bias, which couples every \ac{imu} factor of the window and
+requires care when selecting factors for marginalization
+(\autoref{sec:sw}).
+
+\textbf{Positioning against the \ac{ekf}-\ac{rio} baselines.}
+In the discrete-time UAV line, the \ac{ekf}-\ac{rio} family of Doer and
+Trommer~\cite{doer2020ekf} provides our comparison baselines.  Absolute
+\ac{rmse} is not comparable across papers (firmware configuration alone
+changes the Doppler resolution by an order of magnitude), so we
+compare the systems on shared data:
+\autoref{sec:baselines} runs our system on their public ICINS-2021
+flights~\cite{doer2021yrio} and re-evaluates their estimators under
+our causal metrics on the same data.

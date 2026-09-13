@@ -1,0 +1,314 @@
+\section{Results}
+\label{sec:results}
+
+\subsection{Live-Edge Results}
+\label{sec:sw_results}
+
+\autoref{tab:sw} reports live-edge and settled errors for the three
+flights using the configuration in \autoref{sec:setup}.
+\autoref{fig:traj} and \autoref{fig:error_time} show the trajectories
+and live-edge errors.  We report velocity first because Doppler
+constrains it directly.  Position is its integral.
+
+\begin{table}[t]
+\centering
+\caption{Sliding Window: Live Leading-Edge and Settled \ac{rmse}
+  (per-window solve time on a laptop CPU)}
+\label{tab:sw}
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}llcccc@{}}
+\toprule
+Flight & Mode & Vel (m/s) & Ori (\degree) & Drift (\%) & $t_{\mathrm{win}}$ (s) \\
+\midrule
+\multirow{2}{*}{Slow racing}
+  & \textbf{Live edge} & \textbf{0.16} & \textbf{1.65} & \textbf{0.32} & \multirow{2}{*}{0.16} \\
+  & Settled & 0.17\textsuperscript{$\ast$} & 1.16 & 0.29 & \\
+\midrule
+\multirow{2}{*}{Fast racing}
+  & \textbf{Live edge} & \textbf{0.28} & \textbf{2.56} & \textbf{1.33} & \multirow{2}{*}{0.18} \\
+  & Settled & 0.42\textsuperscript{$\ast$} & 2.41 & 1.28 & \\
+\midrule
+\multirow{2}{*}{Backflips}
+  & \textbf{Live edge} & \textbf{1.66} & \textbf{12.1} & \textbf{2.91} & \multirow{2}{*}{0.20} \\
+  & Settled & 1.72\textsuperscript{$\ast$} & 7.91 & 2.75 & \\
+\bottomrule
+\multicolumn{6}{@{}p{\columnwidth}@{}}{\scriptsize
+  The \textbf{bold} live-edge rows are the deployment-relevant figures.
+  $^\ast$The settled trajectory combines control points last optimized
+  in different windows.  Disagreement between those solutions distorts
+  its velocity near stride boundaries and inflates the settled velocity
+  \ac{rmse}, while live velocity comes from each window's own spline.
+  Path lengths 48.1 / 44.9 / 54.1\,m.  Repeated solver runs on the same
+  recordings vary by $<$2\%.}
+\end{tabular}
+\end{table}
+
+On the racing flights, velocity \ac{rmse} is $0.16$--$0.28$\,m/s and
+position drift is $0.3$--$1.3\%$ of the path length.  Errors increase
+on the backflip flight, with orientation \ac{rmse} reaching $12.1\degree$
+(\autoref{sec:backflips}).  All three regimes solve faster than the
+0.3\,s stride on a laptop CPU (\autoref{tab:sw}), i.e.\ the deployed
+settings run in real time.
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=\textwidth]{figures/traj_combined.pdf}
+  \caption{Trajectory overlays for all three flights (columns): \ac{mocap}
+    ground truth vs.\ the sliding-window live edge, X--Y (top) and Y--Z
+    (bottom) projections. Within each column both projections share a
+    common $Y$ range and metric scale (equal aspect, so loops keep their
+    true shape).  The scale differs between columns.  Start~$\blacksquare$.
+    the dotted lead-in is the first window's estimate, available only
+    once that window has been solved (the smoother needs one complete
+    3\,s window), so it is not a live output at those timestamps.  It
+    starts on the ground truth by the start-anchored alignment.
+    The backflip flight circles in the horizontal plane while looping
+    in the vertical plane.  Its position drifts through the flips
+    ($2.9\%$ of the path) while the loops remain visible in the
+    orientation estimate (\autoref{sec:backflips}).}
+  \label{fig:traj}
+\end{figure*}
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=\textwidth]{figures/error_over_time.pdf}
+  \caption{Live-edge velocity, orientation, and position error (the last in percent of the flight's path length, the unit of the drift metric)
+    vs.\ time for slow racing (top), fast racing (middle), and backflips
+    (bottom).  Velocity and orientation errors spike at high-speed,
+    high-dynamics sections.  Fast-racing position error accumulates with
+    trajectory length.  Backflip errors grow step-wise \emph{during} the
+    flips, where the radar measurement model degrades
+    (\autoref{sec:backflips}).}
+  \label{fig:error_time}
+\end{figure*}
+
+\subsection{Held-Out Validation}
+\label{sec:heldout}
+The per-return law and the stream weights were fitted on the two
+racing flights with the backflip flight held out.  The frame-shared
+term, the alias floor, the bias-prior widths and the staleness rates
+were measured on all three.  The configuration was then run
+\emph{unmodified} on flights never used for any decision.
+
+A second, independent fast-racing flight was recorded with the radar's
+on-chip clustering disabled (61 returns per frame instead of 11).  The
+front end then collapses duplicate detections to the physical cluster
+count, a preprocessing step that applies only when on-chip clustering
+is off, with the solver configuration unchanged.  Velocity \ac{rmse}
+is $0.27$\,m/s, compared with $0.28$\,m/s on the fitting flight.
+Orientation \ac{rmse} is $2.7\degree$ and drift is $1.2\%$.
+The four public ICINS flights in \autoref{sec:baselines} test
+transfer to a different platform.
+
+Accuracy degrades on a held-out circular flight at 5\,m/s.
+With the radar's Doppler ambiguity of 3.1\,m/s, $63.8\%$ of its
+returns must be
+alias-unwrapped, the \ac{imu}-integrated unwrapper's alias decisions
+degrade, and the live edge reaches
+$1.30$\,m/s\,/\,$11.7\degree$\,/\,$9.1\%$.
+Down-weighting aliased returns cannot compensate for incorrect wrap selection.
+
+
+
+\subsection{External Cross-Validation Against EKF Baselines}
+\label{sec:baselines}
+We cross-validate against the \ac{ekf}-\ac{rio} family of Doer and
+Trommer~\cite{doer2020ekf,doer2021yrio} in both directions on shared
+data, with their toolbox pinned at a fixed commit and every parameter
+deviation documented in the repository.
+
+\textbf{Our system on their data.}  We run our solver on the four public ICINS-2021 indoor flights~\cite{doer2021yrio} (the same radar chip, a different \ac{imu}
+at 409\,Hz, VINS pseudo ground truth). We use their published extrinsic
+calibration, \emph{all other parameters remain those measured on our sensor and flights}; their own frame-shared term is $\sigma_c = 0.93$, and we kept
+$1.27$.  Their
+estimators (\mbox{ekf-rio} with unaided yaw and \mbox{ekf-yrio} with
+radar yaw aiding) are re-run from their stock configurations and evaluated with
+the same causal protocol.  \autoref{tab:baselines} shows comparable velocity errors on every flight.
+Drift is $0.4$--$1.3\%$ of the path, ahead of the unaided baseline on
+flight~1 and behind both baselines on the other three, with the
+difference in the vertical channel (\autoref{tab:baselines}(b),
+\autoref{sec:vertical}).  The
+orientation column prefers our solver only because we anchor heading 
+ with a pseudo-magnetometer while theirs is sensor-only or
+unaided. On the heading-independent roll and pitch the three systems are
+similar (\autoref{tab:baselines}(b)), and with our heading aiding
+removed our yaw drifts similarly to their unaided filter
+(\autoref{sec:yaw}).
+
+The consensus prefilter reduces our vertical drift on all four public
+flights.  On flight~1 it falls from $14.3\%$ to $0.35\%$ of the path,
+an error the baselines do not show.
+
+\textbf{Their filters on our data.}
+Ported unmodified onto our data, their filters, expecting order-100 clouds, fail on our sparse radar frames. On slow racing the $\chi^2(3)$
+ gate of ekf-rio rejects $99.7\%$ of the radar ego-velocity
+updates and reverts to \ac{imu} dead-reckoning. 
+
+\begin{table}[t]
+\caption{Cross-Validation on the Public ICINS-2021 Flight
+Datasets~\cite{doer2021yrio}, All Systems Under Our Causal Protocol}
+\label{tab:baselines}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}%
+\begin{tabular*}{\columnwidth}{@{\extracolsep{\fill}}lccc}
+\toprule
+\multicolumn{4}{@{}l}{\textit{(a)~velocity [m/s] / orientation [\degree] / drift [\% path]}}\\
+\midrule
+Flight (path) & ekf-rio & ekf-yrio & Ours \\
+\midrule
+1 (142\,m) & 0.20 / 10.1 / 1.0 & \textbf{0.08} / 0.70 / \textbf{0.3} & 0.09 / \textbf{0.55} / 0.4 \\
+2 (45\,m)  & \textbf{0.08} / 1.59 / 0.6 & \textbf{0.08} / \textbf{0.91} / \textbf{0.4} & \textbf{0.08} / 1.00 / 1.0 \\
+3 (147\,m) & \textbf{0.08} / 1.07 / \textbf{0.3} & \textbf{0.08} / 1.09 / \textbf{0.3} & \textbf{0.08} / \textbf{0.53} / 1.3 \\
+4 (78\,m)  & 0.09 / 3.67 / 0.5 & \textbf{0.07} / 1.41 / \textbf{0.3} & 0.08 / \textbf{1.21} / 1.2 \\
+\bottomrule
+\end{tabular*}
+
+\vspace{4pt}
+
+{\scriptsize
+\setlength{\tabcolsep}{1.5pt}%
+\begin{tabular*}{\columnwidth}{@{\extracolsep{\fill}}lcccccccc}
+\toprule
+\multicolumn{9}{@{}l}{\textit{(b)~Decomposition}\quad(systems: ekf-rio / ekf-yrio / Ours)}\\
+\midrule
+ & \multicolumn{3}{c}{Roll/pitch [\degree]} & \multicolumn{2}{c}{Our drift [\%]} & \multicolumn{3}{c}{Whole ATE [m]} \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-6}\cmidrule(lr){7-9}
+Fl.\ & rio & yrio & Ours & hor.\ & ver.\ & rio & yrio & Ours \\
+\midrule
+1 & 0.24 & 0.25 & 0.22 & 0.21 & 0.35 & 0.87 & 0.23 & 0.41 \\
+2 & 0.57 & 0.59 & 0.58 & 0.55 & 0.85 & 0.13 & 0.10 & 0.22 \\
+3 & 0.25 & 0.26 & 0.24 & 0.49 & 1.28 & 0.36 & 0.26 & 0.90 \\
+4 & 0.74 & 0.74 & 0.75 & 0.61 & 1.08 & 0.30 & 0.15 & 0.49 \\
+\bottomrule
+\end{tabular*}}
+
+\vspace{2pt}
+
+\parbox{\columnwidth}{\raggedright\scriptsize Live estimate, start-anchored
+  alignment.  \textbf{(a)}~headline, with heading aiding differing by design (see
+  text).  \textbf{(b)}~decomposition: \emph{roll/pitch} is the
+  heading-independent attitude \ac{rmse} (yaw excluded), so the orientation differences in~(a) mainly reflect yaw.  \emph{Our drift} splits position into
+  horizontal/vertical.  \emph{Whole-traj.\ \ac{ate}} re-evaluates every
+  system under EVO/KITTI Umeyama alignment (no scale) for cross-checking
+  published figures.  Prefilter \emph{disabled}, flight~1: vertical
+  drift $14.3\%$, whole-traj.\ \ac{ate} $11.7$\,m.\par}
+\end{table}
+
+\subsection{Output Covariance Consistency (NEES)}
+\label{sec:nees}
+The reported live-edge covariance of $(\vv_w, \vR)$ is tested with the
+\ac{nees}~\cite{barshalom2001estimation}.  Each window's error against
+ground truth is normalized by that covariance.  For a consistent
+estimator each 3-DoF block has mean 3.  On both racing
+flights the reported covariance is \emph{conservative}: the velocity
+\ac{nees} mean is $0.20$ on slow racing ($N{=}49$) and $0.43$ on fast
+racing ($N{=}20$), the orientation mean $0.39$ and $1.04$, against
+the expected 3 (nominal 95\% $\chi^2$ intervals for the $N$-window mean,
+$[2.4,3.7]$ and $[2.0,4.2]$, which treat the overlapping windows as
+independent).  The reported standard deviations are thus
+$1.7$--$3.8\times$ too large.  On backflips only 6 of 49 windows
+remain after the ground-truth mask.  Their covariance is overconfident
+($1.4\times$ in velocity and $3.2\times$ in orientation, in standard
+deviation), but the sample is too small for a firm conclusion.
+
+\subsection{Ablations}
+\label{sec:ablations}
+Selected front-end, weighting and prior choices are reverted one at a
+time at the deployed operating point (live edge: velocity /
+orientation / drift).
+
+\textbf{The noise floor $\sigma_0$.}  We use the noise floor derived
+from the racing fits on all flights (\autoref{sec:char_rate}).
+\autoref{tab:s0ladder} tests values of $0.5$ and $2.5$ times this
+setting.  On the racing flights, velocity error changes by about 7\%
+($0.165$ to $0.177$\,m/s on slow racing).  On backflips, increasing
+the floor to $0.207$\,m/s reduces drift from $2.9$ to $2.0\%$, with
+little change in orientation error, motivating the in-flight
+noise-floor estimate listed as future work.
+
+\begin{table}[t]
+\centering
+\caption{Sensitivity to the law's noise floor $\sigma_0$ (live edge:
+  velocity / orientation / drift)}
+\label{tab:s0ladder}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}lccc@{}}
+\toprule
+$\sigma_0$ & Slow racing & Fast racing & Backflips \\
+\midrule
+$0.5\times$ (0.041\,m/s) & 0.18 / 1.65 / 0.48 & 0.29 / 2.55 / 1.40 & 1.74 / 12.2 / 5.1 \\
+\textbf{$1\times$ (0.083, deployed)} & \textbf{0.16 / 1.65 / 0.32} & \textbf{0.28 / 2.56 / 1.33} & \textbf{1.66 / 12.1 / 2.9} \\
+$2.5\times$ (0.207\,m/s) & 0.16 / 1.67 / 0.30 & 0.29 / 2.58 / 1.40 & 1.65 / 12.2 / 2.0 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+\textbf{Front end.}  \autoref{tab:frontend} reverts the front-end
+elements one at a time.  The consensus prefilter is needed on the
+racing flights (velocity error $+21\%$ and $+51\%$ without it) and on the
+public dataset (\autoref{sec:baselines}), where the vertical channel
+fails without it.  On backflips, disabling the prefilter reduces
+drift from $2.9\%$ to $2.4\%$.  The filter removes returns from already
+sparse backflip frames.  We accept this drift penalty to retain its
+benefits on racing and the public dataset.
+Robust kernels (radar $\delta = 1$\,m/s,
+accelerometer $\delta_a = 2$\,m/s$^2$) have negligible effect on slow
+racing.  On fast racing, they slightly worsen velocity and orientation
+errors while reducing drift by $0.2$\,pp.  With both enabled,
+backflip orientation error falls to $7.4\degree$ while drift rises
+by $2$\,pp.  Enabling only the accelerometer kernel gives a similar
+orientation error of $7.6\degree$, so it accounts for most of the
+orientation improvement (\autoref{sec:backflips}).  For the
+aliased returns, full weighting increases fast-racing errors and
+deletion costs fast-racing drift, so the measured down-weight is kept.
+
+\textbf{Priors.}  Replacing the measured bias priors with hand-set
+values increases slow-racing velocity error by 5\% and backflip
+orientation error by $1.4\degree$, but reduces fast-racing velocity
+error by 4\%.  We retain the measurement-based priors because their
+widths reflect observed bias variability.  The position-row staleness
+has negligible effect on racing and reduces the backflip orientation error by
+$1.2\degree$.  Re-applying the window-start priors at every stride
+cuts the fast-racing drift from $1.33$ to $0.92\%$ by holding the
+vertical velocity in place, but doubles it on slow racing and on the
+flip flight and double-counts the previous estimate (\autoref{sec:sw}).
+
+\textbf{Regularization.}  Removing the smoothness priors substantially
+improves backflip velocity and position accuracy, with a smaller
+improvement in orientation (velocity error $1.66$ to $0.76$\,m/s,
+orientation $12.1$ to $10.5\degree$, drift $2.9$ to $1.1\%$), but
+increases fast-racing position drift to $5.7\%$, predominantly in the
+vertical channel.  The shared configuration therefore retains them
+(\autoref{sec:fixed_constants}).
+
+\begin{table}[t]
+\centering
+\caption{Front-end and prior ablation (live edge: velocity / orientation / drift)}
+\label{tab:frontend}
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}lccc@{}}
+\toprule
+Configuration & Slow racing & Fast racing & Backflips \\
+\midrule
+\textbf{Deployed} & \textbf{0.16 / 1.65 / 0.32} & \textbf{0.28 / 2.56 / 1.33} & \textbf{1.66 / 12.1 / 2.9} \\
+No prefilter & 0.20 / 1.66 / 0.88 & 0.42 / 2.63 / 1.70 & 1.61 / 12.1 / 2.4 \\
+Robust kernels on ($\delta{=}1$, $\delta_a{=}2$) & 0.16 / 1.65 / 0.32 & 0.29 / 2.69 / 1.13 & 1.96 / 7.38 / 4.9 \\
+Aliased kept ($w{=}1$) & 0.17 / 1.67 / 0.27 & 0.37 / 2.86 / 2.17 & 1.61 / 12.1 / 2.9 \\
+Aliased deleted & 0.16 / 1.65 / 0.35 & 0.29 / 2.55 / 1.65 & 1.66 / 12.0 / 3.1 \\
+\midrule
+Bias priors hand-set ($10^4$) & 0.17 / 1.65 / 0.36 & 0.27 / 2.58 / 1.25 & 1.68 / 13.5 / 2.9 \\
+Position staleness off & 0.16 / 1.64 / 0.32 & 0.28 / 2.50 / 1.35 & 1.74 / 13.3 / 2.8 \\
+Window-start priors every stride & 0.16 / 1.69 / 0.60 & 0.28 / 2.41 / 0.92 & 1.69 / 12.5 / 5.2 \\
+
+Smoothness priors off & 0.16 / 1.67 / 0.34 & 0.23 / 2.52 / 5.72 & 0.76 / 10.5 / 1.1 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}

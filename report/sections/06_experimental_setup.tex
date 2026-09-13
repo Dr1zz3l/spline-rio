@@ -1,0 +1,60 @@
+\section{Experimental Setup}
+\label{sec:setup}
+
+\textbf{Datasets.}  \autoref{tab:datasets} summarizes the three
+flights used for characterization and the main evaluation, recorded
+as rosbags in a Vicon \ac{mocap} lab on the platform described in
+\autoref{sec:overview}.  Additional held-out flights
+(\autoref{sec:heldout}) and four public ICINS-2021 flights with
+VINS pseudo ground truth (\autoref{sec:baselines}) test transfer
+beyond these recordings.
+
+\begin{table}[t]
+\centering
+\caption{Dataset Summary}
+\label{tab:datasets}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Flight & Dur.\ (s) & $v_{\max}$ (m/s) & $|\omega|_{\max}$ (rad/s) & Frames \\
+\midrule
+Slow racing & 25.8 & 3.65 & 2.62 & 258 \\
+Fast racing & 18.0 & 5.66 & 9.14 & 179 \\
+Backflips\textsuperscript{*} & 18.1 & $\sim$4.3 & $\sim$10.9 & 181 \\
+\bottomrule
+\multicolumn{5}{@{}p{\columnwidth}@{}}{\scriptsize \textsuperscript{*}Backflip
+speed and angular rate are 95th percentiles rather than maxima because
+\ac{mocap} tracking artifacts dominate the instantaneous peaks.}
+\end{tabular}
+\end{table}
+
+\textbf{Configuration.}  Unless varied in an ablation, all flights
+on both platforms use the configuration of \autoref{sec:method}:
+a 3\,s window, 0.3\,s stride, and knot spacings
+$\Delta t_p=40$\,ms and $\Delta t_o=16$\,ms, with no per-flight
+retuning.  Radar extrinsics are fixed at each platform's
+calibration, measured on ours and published with the public
+dataset.  Nothing else was re-measured for the second platform: the noise-model
+constants and stream weights are those measured on our own sensor and
+flights (\autoref{sec:char}); the per-sample \ac{imu} weights were
+applied unchanged at its 409\,Hz rate, and \autoref{sec:baselines}
+reports what that costs.  Initialization uses radar and \ac{imu}
+alone; heading aiding uses reference yaw as an idealized
+magnetometer surrogate with $\lambda_\psi=0.6$ (\autoref{sec:yaw}).
+
+\textbf{Evaluation.}  The reference is \ac{mocap} on our flights and the
+public dataset's pseudo ground truth on theirs.
+Estimates are aligned to the reference by the
+rigid transform at the first frame only, without scale correction or
+a whole-trajectory fit.  Such a fit is common in odometry work and is the
+weaker protocol, since it can absorb accumulated drift into the transform.
+The final 3\,s is excluded from evaluation.
+Velocity \ac{rmse} compares the spline's analytical derivative with
+the low-pass filtered reference velocity.  \emph{Position drift}
+denotes position \ac{rmse} divided by the reference path length,
+expressed as a percentage.  The \emph{live} \ac{rmse} uses each
+window's newest stride before subsequent refinement; the
+\emph{settled} \ac{rmse} uses the trajectory after all windows have
+refined it.  For comparison with published results,
+\autoref{tab:baselines}(b) additionally reports the whole-trajectory
+\ac{ate} under Umeyama alignment.

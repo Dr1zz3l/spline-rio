@@ -1,0 +1,28 @@
+[project]
+name = "radar-iwr6843-driver"
+version = "0.1.0"
+description = "Radar-inertial odometry analysis + story notebook"
+requires-python = "==3.12.*"
+
+# Minimal footprint to run/view analysis/notebooks/10_algorithm_story.ipynb.
+# Covers the notebook's imports plus its lib import chain:
+#   config_loader (pyyaml), radar_velocity_utils (scipy), rosbag_loader.loader
+#   (rosbags pure-Python reader + lazy sklearn DBSCAN), nonuniform_bspline (numpy).
+# Deliberately omits the heavy/irrelevant deps in analysis/requirements.txt
+# (open3d, plotly, seaborn, bagpy, symforce, gnupg, rospkg) that this notebook
+# does not touch, so `uv sync` on a fresh laptop is fast and does not need ROS.
+dependencies = [
+    "numpy>=1.26,<2.0",
+    "scipy>=1.15",
+    "matplotlib>=3.10",
+    "scikit-learn>=1.6",
+    "rosbags>=0.10",
+    "pyyaml>=6.0",
+    "ipython>=9.0",
+    "ipykernel>=7.0",
+    "jupyterlab>=4.5",
+]
+
+[tool.uv]
+# The repo is not an installable package; just manage the environment.
+package = false

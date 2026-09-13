@@ -1,0 +1,46 @@
+<?xml version="1.0"?>
+<!-- x_rio (single radar) on OUR converted bags. -->
+<launch>
+    <param name="use_sim_time" value="False" type="bool"/>
+
+    <arg name="dataset_dir" default="/workspace/baselines/datasets/our_bags"/>
+    <arg name="rosbag"/>
+    <arg name="out_bag"/>
+
+    <arg name="config" default="/workspace/baselines/configs/x_rio_our_platform.yaml"/>
+    <arg name="calibration" default="/workspace/baselines/configs/calib_our_platform.yaml"/>
+
+    <arg name="radar_yaw_update" default="false"/>
+    <arg name="estimate_extrinsics" default="false"/>
+    <arg name="bag_start" default="0"/>
+    <arg name="bag_duration" default="-1.0"/>
+    <arg name="sleep_ms" default="10"/>
+    <arg name="filter_node_name" default="rio"/>
+    <arg name="log_level" default="Info"/>
+
+    <node name="$(arg filter_node_name)" pkg="x_rio" type="rosbag_node" output="screen" launch-prefix="bash -c 'sleep 4; $0 $@' " clear_params="false">
+        <rosparam file="$(arg config)" command="load" ns=""/>
+        <rosparam file="$(arg calibration)" command="load" ns="radar_0"/>
+        <param name="rosbag_path" value="$(arg dataset_dir)/$(arg rosbag)" type="string"/>
+        <param name="bag_start" value="$(arg bag_start)" type="double"/>
+        <param name="bag_duration" value="$(arg bag_duration)" type="double"/>
+        <param name="sleep_ms" value="$(arg sleep_ms)" type="double"/>
+        <param name="republish_ground_truth" value="true" type="bool"/>
+        <param name="run_without_radar_trigger" value="true" type="bool"/>
+        <param name="radar_yaw_update" value="$(arg radar_yaw_update)" type="bool"/>
+        <param name="estimate_extrinsics" value="$(arg estimate_extrinsics)" type="bool"/>
+        <param name="n_radar" value="1" type="int"/>
+        <param name="topic_imu" value="/sensor_platform/imu" type="str"/>
+        <param name="topic_baro_altimeter" value="/sensor_platform/baro" type="str"/>
+    </node>
+
+    <node name="recorder" pkg="rosbag" type="record"
+          args="record -O $(arg out_bag) /$(arg filter_node_name)/pose /$(arg filter_node_name)/twist /ground_truth/pose /ground_truth/twist"/>
+
+    <node name="evaluator" pkg="ekf_rio" type="pose_velocity_evaluator.py" output="screen">
+        <param name="topic_pose" value="$(arg filter_node_name)/pose" type="string"/>
+        <param name="topic_twist" value="$(arg filter_node_name)/twist" type="string"/>
+        <param name="filter_name" value="x_rio" type="string"/>
+        <param name="do_plot" value="False" type="bool"/>
+    </node>
+</launch>

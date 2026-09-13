@@ -1,0 +1,235 @@
+{
+  "mode": "iter",
+  "timestamp": "20260603_175706",
+  "bags": [
+    "slow_racing_best_velocity",
+    "fast_racing_best_velocity"
+  ],
+  "iter_vals": [
+    8,
+    12,
+    16,
+    20,
+    28,
+    40
+  ],
+  "window_vals": null,
+  "rows": [
+    {
+      "param": "max_iterations",
+      "value": 8,
+      "bags": {
+        "slow_racing_best_velocity": {
+          "returncode": 0,
+          "metrics": {
+            "ori_rmse_roll_deg": 0.945,
+            "ori_rmse_pitch_deg": 0.775,
+            "ori_rmse_yaw_deg": 4.229,
+            "imu_samples_used": 25632,
+            "radar_frames": 258,
+            "median_dt_s": 0.83,
+            "p90_dt_s": 1.23,
+            "median_iter": 9,
+            "n_windows": 76,
+            "wall_time_s": 119.3
+          }
+        },
+        "fast_racing_best_velocity": {
+          "returncode": 0,
+          "metrics": {
+            "ori_rmse_roll_deg": 11.948,
+            "ori_rmse_pitch_deg": 2.032,
+            "ori_rmse_yaw_deg": 12.176,
+            "imu_samples_used": 17875,
+            "radar_frames": 179,
+            "median_dt_s": 0.68,
+            "p90_dt_s": 0.79,
+            "median_iter": 9,
+            "n_windows": 50,
+            "wall_time_s": 63.2
+          }
+        }
+      }
+    },
+    {
+      "param": "max_iterations",
+      "value": 12,
+      "bags": {
+        "slow_racing_best_velocity": {
+          "returncode": 0,
+          "metrics": {
+            "ori_rmse_roll_deg": 0.868,
+            "ori_rmse_pitch_deg": 0.714,
+            "ori_rmse_yaw_deg": 4.501,
+            "imu_samples_used": 25632,
+            "radar_frames": 258,
+            "median_dt_s": 1.07,
+            "p90_dt_s": 1.64,
+            "median_iter": 13,
+            "n_windows": 76,
+            "wall_time_s": 138.6
+          }
+        },
+        "fast_racing_best_velocity": {
+          "returncode": 0,
+          "metrics": {
+            "ori_rmse_roll_deg": 8.796,
+            "ori_rmse_pitch_deg": 2.193,
+            "ori_rmse_yaw_deg": 9.587,
+            "imu_samples_used": 17875,
+            "radar_frames": 179,
+            "median_dt_s": 0.83,
+            "p90_dt_s": 1.13,
+            "median_iter": 13,
+            "n_windows": 50,
+            "wall_time_s": 72.2
+          }
+        }
+      }
+    },
+    {
+      "param": "max_iterations",
+      "value": 16,
+      "bags": {
+        "slow_racing_best_velocity": {
+          "returncode": 0,
+          "metrics": {
+            "ori_rmse_roll_deg": 0.982,
+            "ori_rmse_pitch_deg": 0.95,
+            "ori_rmse_yaw_deg": 4.663,
+            "imu_samples_used": 25632,
+            "radar_frames": 258,
+            "median_dt_s": 1.28,
+            "p90_dt_s": 2.03,
+            "median_iter": 17,
+            "n_windows": 76,
+            "wall_time_s": 156.4
+          }
+        },
+        "fast_racing_best_velocity": {
+          "returncode": 0,
+          "metrics": {
+            "ori_rmse_roll_deg": 10.07,
+            "ori_rmse_pitch_deg": 2.475,
+            "ori_rmse_yaw_deg": 10.693,
+            "imu_samples_used": 17875,
+            "radar_frames": 179,
+            "median_dt_s": 0.97,
+            "p90_dt_s": 1.11,
+            "median_iter": 17,
+            "n_windows": 50,
+            "wall_time_s": 78.1
+          }
+        }
+      }
+    },
+    {
+      "param": "max_iterations",
+      "value": 20,
+      "bags": {
+        "slow_racing_best_velocity": {
+          "returncode": 0,
+          "metrics": {
+            "ori_rmse_roll_deg": 0.897,
+            "ori_rmse_pitch_deg": 0.825,
+            "ori_rmse_yaw_deg": 4.44,
+            "imu_samples_used": 25632,
+            "radar_frames": 258,
+            "median_dt_s": 1.46,
+            "p90_dt_s": 2.5,
+            "median_iter": 21,
+            "n_windows": 76,
+            "wall_time_s": 178.5
+          }
+        },
+        "fast_racing_best_velocity": {
+          "returncode": 0,
+          "metrics": {
+            "ori_rmse_roll_deg": 5.803,
+            "ori_rmse_pitch_deg": 1.783,
+            "ori_rmse_yaw_deg": 7.312,
+            "imu_samples_used": 17875,
+            "radar_frames": 179,
+            "median_dt_s": 1.08,
+            "p90_dt_s": 1.58,
+            "median_iter": 21,
+            "n_windows": 50,
+            "wall_time_s": 87.1
+          }
+        }
+      }
+    },
+    {
+      "param": "max_iterations",
+      "value": 28,
+      "bags": {
+        "slow_racing_best_velocity": {
+          "returncode": 0,
+          "metrics": {
+            "ori_rmse_roll_deg": 1.037,
+            "ori_rmse_pitch_deg": 0.586,
+            "ori_rmse_yaw_deg": 0.927,
+            "imu_samples_used": 25632,
+            "radar_frames": 258,
+            "median_dt_s": 1.93,
+            "p90_dt_s": 3.18,
+            "median_iter": 28,
+            "n_windows": 76,
+            "wall_time_s": 211.6
+          }
+        },
+        "fast_racing_best_velocity": {
+          "returncode": 0,
+          "metrics": {
+            "ori_rmse_roll_deg": 3.991,
+            "ori_rmse_pitch_deg": 1.44,
+            "ori_rmse_yaw_deg": 3.563,
+            "imu_samples_used": 17875,
+            "radar_frames": 179,
+            "median_dt_s": 1.38,
+            "p90_dt_s": 2.08,
+            "median_iter": 29,
+            "n_windows": 50,
+            "wall_time_s": 105.0
+          }
+        }
+      }
+    },
+    {
+      "param": "max_iterations",
+      "value": 40,
+      "bags": {
+        "slow_racing_best_velocity": {
+          "returncode": 0,
+          "metrics": {
+            "ori_rmse_roll_deg": 1.037,
+            "ori_rmse_pitch_deg": 0.586,
+            "ori_rmse_yaw_deg": 0.927,
+            "imu_samples_used": 25632,
+            "radar_frames": 258,
+            "median_dt_s": 1.9,
+            "p90_dt_s": 3.18,
+            "median_iter": 28,
+            "n_windows": 76,
+            "wall_time_s": 210.7
+          }
+        },
+        "fast_racing_best_velocity": {
+          "returncode": 0,
+          "metrics": {
+            "ori_rmse_roll_deg": 3.98,
+            "ori_rmse_pitch_deg": 1.442,
+            "ori_rmse_yaw_deg": 3.554,
+            "imu_samples_used": 17875,
+            "radar_frames": 179,
+            "median_dt_s": 1.38,
+            "p90_dt_s": 2.03,
+            "median_iter": 30,
+            "n_windows": 50,
+            "wall_time_s": 103.5
+          }
+        }
+      }
+    }
+  ]
+}

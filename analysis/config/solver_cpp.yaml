@@ -1,0 +1,117 @@
+# C++ solver overrides (applied on top of solver.yaml when --cpp is active)
+#
+# Key differences vs Python solver:
+#  - Full-rate IMU (~1000 Hz) allows much tighter bias priors — bias can't absorb dynamics
+#    because the gyro/accel factors have enough density to constrain the trajectory directly.
+#  - lambda_gyro raised from 1.0 → 4.0: improves orientation tracking across all bags.
+#  - lambda_snap_pos lowered from 1e-4 → 2e-5: allows position spline to track faster dynamics
+#    (racing flight) without over-smoothing. Still adequate for gentle flight.
+#
+# Results vs Python baseline on --mocap-yaw (with lever arm correction):
+#   slow_racing:  0.180m / 1.07°  (vs Python 0.374m / 3.32°)
+#   fast_racing:  1.110m / 2.56°  (vs Python 1.40m  / 4.38°)
+#   backflips:    0.527m / 3.77°  (vs Python 1.88m  / 13°)  — 5.6× pos improvement from lever arm
+# Pre-lever-arm batch: slow 0.146m/0.96°, fast 0.925m/2.35°, backflips 2.93m/10.7°
+
+# IMU preintegration (Forster TRO-2017)
+# Replaces 1000 Hz raw IMU with preintegrated factors at preint_hz.
+# dt_ori is coupled: dt_ori = 1/preint_hz (set automatically in Python).
+# lambda_preint starting point: lambda_gyro * sqrt(preint_dt * imu_hz) ≈ 4 * sqrt(0.01*1000) ≈ 40
+use_preintegration: false  # preint at 100 Hz degrades orientation: 1:1 constraint ratio vs raw gyro's 8:1
+preint_hz: 100.0
+lambda_preint: 40.0    # weight for r_R (rotation residuals)
+lambda_preint_v: 0.0   # weight for r_v (velocity residuals); 0 = disabled
+lambda_preint_p: 0.0   # weight for r_p (position residuals); 0 = disabled
+
+# DERIVED static stream weights (2026-07-17, adopted): lambda = 1/(sigma^2 * fs * tau)
+# with sigma = influence-capped in-band residual width and tau = measured residual
+# correlation time (geometric mean over the racing calibration flights; see
+# analysis/derive_stream_weights.py and worklog/FEEDBACK_PLAN.md). Replaces the tuned
+# lambda_gyro=4.0 / lambda_accel=0.01 / radar-as-numeraire-1.0 statics.
+lambda_gyro: 3.13
+lambda_accel: 0.00392
+# radar_weight RE-DERIVED 2026-09-07 (worklog/2026-09-07_founded-removals.md):
+# with the Huber kernel gone the sandwich numerator of derive_stream_weights.py
+# is the PLAIN second moment, taken on the non-aliased kept stream (aliased
+# returns enter at w_al = 0.019 and are absent from the moment that sets the
+# scale): slow 1.98 / fast 3.51, geomean 2.64.  The previous 2.11 was the
+# Huber-capped moment on the kept stream including aliased returns.
+radar_weight: 2.64
+# FOUNDED REMOVALS 2026-09-07 (Timo; worklog/2026-09-07_founded-removals.md):
+#   boundary_first_window_only 1: the P3 position/velocity/orientation pins
+#     (lambda_boundary_* = 1000, hand-set) are added only while no
+#     marginalization prior exists.  They used to be re-added at EVERY window
+#     start anchored to the previous estimate and then marginalized into the
+#     next prior (a pseudo-measurement re-asserting the previous estimate;
+#     backflips orientation NEES x2.68 -> x0.96 without it).  The drift cost
+#     on fast racing / ICINS is a vertical-channel effect the pins were
+#     masking (accepted).
+#   huber_delta / huber_delta_accel 1e6: BOTH robust kernels dropped, the
+#     losses are exactly quadratic (the frame-mode IRLS block is skipped for
+#     delta >= 100).  Radar kernel measured inert on all own flights;
+#     accelerometer kernel costs 4.5 deg of flip orientation but backflips is
+#     the declared degradation case ("as long as slow and fast racing are
+#     fine we just drop it").  huber_model_knee stays 1 (inert at this delta).
+boundary_first_window_only: 1
+huber_delta: 1000000.0
+huber_delta_accel: 1000000.0
+lambda_snap_pos: 0.00002
+# Bias priors DERIVED 2026-09-07 (Timo: "deploy it"; worklog/2026-09-04_
+# deployment-batteries.md, set A): sigma_prior = the MEASURED rms error of the
+# pre-flight bias anchor against the in-flight bias, from the motors-off /
+# motors-on ground windows (MoCap-referenced for the accelerometer, which the
+# stationary init can only see along gravity): accel rms 0.216 m/s^2 -> 21;
+# gyro rms of the motors-on shift 0.0036 rad/s -> 77000.  Replaces the hand-set
+# 10000 / 10000 (sigma 0.01).  NOTE the coupling found on ICINS 4: the
+# loosened accelerometer prior is admissible only WITH the min-snap prior
+# (bias / acceleration separability); do not combine with lambda_snap_pos=0.
+lambda_bias_prior_accel: 21.0
+lambda_bias_prior_gyro: 77000.0
+num_threads: 0   # 0 = auto (all logical cores via hardware_concurrency)
+
+# Sliding window (used when --sliding-window is active)
+# Phase 4b results (--mocap-yaw, Schur marginalization, marg_prior_scale=2e-4):
+#   slow_racing:  0.162m / 1.77°  (vs batch 0.146m / 0.96°)
+#   fast_racing:  0.710m / 4.26°  (vs batch 0.925m / 2.35°  — better in pos!)
+# marg_prior_scale critical: raw Schur complement is O(10^5-10^6) per-entry (3000 IMU/window),
+# orders of magnitude tighter than lambda_boundary=1000.  Scale ~2e-4 matches the boundary
+# prior regime and lets the boundary CPs adapt to new data.
+window_duration: 3.0        # seconds of history per solve
+window_stride: 0.3          # advance interval (seconds) → ~3 Hz update rate
+n_fix_leading_pos: 0        # 0 = rely on prior only; N_POS=6 to freeze
+n_fix_leading_ori: 0        # 0 = rely on prior only; N_ORI=4 to freeze
+marg_prior_scale: 0.0002    # scale applied to sqrt_info before attaching prior
+
+# PER-RETURN RADAR MODEL (ADOPTED 2026-08-12, Timo; unified config, no
+# per-platform values -- worklog/2026-08-12_per-return-adoption.md):
+#   radar_weight_model bearing_b: per-return inverse-variance weights from
+#     the measured law sigma_j (DIRCOS b: s0=0.0827, coef=0.03291); replaces
+#     the per-frame speed law ('speed' = legacy arm; CLI flags override).
+#   radar_frame_hetero 1 + sigma_c 1.27: the EXACT frame covariance for
+#     weighted stacks (shared term along v=sqrt(w)); 1.27 = own-platform
+#     geomean on the bearing channel (--block sigmacw).  MEASURED regime
+#     spread: slow 0.96 / ICINS 0.83-1.02 / fast 1.38 / backflips 1.55 --
+#     the single value over-whitens gentle flights (~0.1-0.2pp ICINS drift;
+#     accepted for the one-config claim; online estimation = open item).
+#   huber_model_knee 1: Huber knee at a fixed number of MODEL sigmas per
+#     return (delta_i = delta/sqrt(w_i)), zero parameters.
+#   marg_stale_phi 0.01: rotation-swept staleness inflation of the marg
+#     prior's ori rows; k measured against GT (live ori error ~0.01 rad per
+#     swept rad).
+# The omega soft gate stays 0 (the per-return law replaces it).
+# Legacy per-frame model: radar_weight_model speed + hetero 0 + sigma_c 0.4
+# + huber_model_knee 0 + marg_stale_phi 0.
+radar_weight_model: bearing_b
+radar_frame_hetero: 1
+radar_frame_sigma_c: 1.27
+huber_model_knee: 1
+marg_stale_phi: 0.01
+# marg_stale_pos: the position-row analogue of marg_stale_phi, sigma_add =
+# k * theta_swept on the marg prior's boundary-POSITION rows (m per swept rad;
+# the position rows' Doppler Jacobians were linearized at the marginalized
+# window's attitude).  k = 0.12 MEASURED against GT with the orientation
+# constant's protocol (live position-error increment per swept radian:
+# 0.124 / 0.115 / 0.168 on slow / fast / backflips).  DEPLOYED 2026-09-07
+# (set A, worklog/2026-09-04_deployment-batteries.md): fast racing vertical
+# drift 0.30 -> 0.09 m, drift better on 7 of 8 flights.
+marg_stale_pos: 0.12

@@ -1,0 +1,14 @@
+Supplementary Video — Summary
+Continuous-Time Radar-Inertial Odometry with B-Spline Sliding Window Optimization
+T. Weiss and L. Pries (Technical University of Munich)
+
+The video shows the proposed continuous-time radar-inertial odometry system running on
+the three flight regimes evaluated in the paper — gentle racing, aggressive racing, and
+attitude-tumbling backflips (up to 10 rad/s). For each flight it overlays the live
+sliding-window estimate (the leading-edge trajectory a deployed system would emit) against
+the Vicon motion-capture ground truth, alongside the radar point cloud. The backflip
+sequence illustrates the regime in which the single-chip radar measurement model degrades
+(intra-frame Doppler smearing) and the dynamics-adaptive measurement weighting takes over,
+which is difficult to convey in static figures. No audio. Approximately <DURATION>.
+
+[Replace <DURATION> and confirm the contents once the final video is rendered.]
