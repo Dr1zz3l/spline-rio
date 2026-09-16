@@ -1,0 +1,126 @@
+bags:
+  original:     rosbags/2025-12-17-16-02-22.bag
+  circle:       rosbags/circle_2025-12-17-17-21-37.bag
+  circle_fast:  rosbags/circle_fast_2025-12-17-17-25-34.bag
+  circle_fwd:   rosbags/circle_forward_2025-12-17-17-37-38.bag
+  loopings:     rosbags/circle_fast_forward_2025-12-17-17-39-49.bag
+  backflips:    rosbags/backflips_2025-12-17-17-41-24.bag
+  backflips_best_velocity:                  rosbags/Wed_11032026_1503/backflip_oldconfig_2026-03-11-16-40-51.bag
+  circle_best_velocity:                     rosbags/Wed_11032026_1503/circle_5mps_oldconfig_2026-03-11-16-38-36.bag
+  fast_racing_best_velocity_no_clustering:  rosbags/Wed_11032026_1503/fast_racing_2026-03-11-15-19-58.bag
+  fast_racing_best_velocity:                rosbags/Wed_11032026_1503/fastracing_oldconfig_2026-03-11-17-20-18.bag
+  slow_racing_best_velocity:                rosbags/Wed_11032026_1503/slowracing_oldconfig_2026-03-11-17-18-43.bag
+  # External-validation bags (Doer ICINS 2021, converted by
+  # baselines/adapters/convert_icins_to_ours.py; see baselines/README.md).
+  # Extrinsics via --set-ext (printed by the converter); offsets are zero
+  # (hardware-stamped) -> extrinsics_overrides below.
+  icins_flight_1: baselines/datasets/our_format/icins_flight_1.bag
+  icins_flight_2: baselines/datasets/our_format/icins_flight_2.bag
+  icins_flight_3: baselines/datasets/our_format/icins_flight_3.bag
+  icins_flight_4: baselines/datasets/our_format/icins_flight_4.bag
+
+# Per-bag solver parameter overrides. Applied after solver_cpp.yaml, before --set.
+# Use for bags that need different spline configs (e.g. backflips need dense ori knots).
+# Per-bag extrinsics overrides (time offsets are per-DAY calibration).
+# Dec-2025 bags: validate_physics cross-correlation gives radar_imu_offset
+# ≈ 0.073 s and imu_mocap_offset ≈ 0.020 s (vs 0.135 / 0.015 calibrated on
+# the Mar-2026 day). At backflip rates (10 rad/s) the 60 ms error injects
+# ~35° of orientation error into every radar factor.
+extrinsics_overrides:
+  backflips:
+    radar_imu_offset_sec: 0.0733
+    imu_mocap_offset_sec: 0.0200
+  icins_flight_1: {radar_imu_offset_sec: 0.0, imu_mocap_offset_sec: 0.0}
+  icins_flight_2: {radar_imu_offset_sec: 0.0, imu_mocap_offset_sec: 0.0}
+  icins_flight_3: {radar_imu_offset_sec: 0.0, imu_mocap_offset_sec: 0.0}
+  icins_flight_4: {radar_imu_offset_sec: 0.0, imu_mocap_offset_sec: 0.0}
+  # backflips_best_velocity: TESTED radar_imu_offset_sec=0.1067 (this bag's
+  # cross-corr best fit, vs global 0.135) — REVERTED: position degraded
+  # 2.06→2.79 m, ori ~par (9.56→9.35 live). Cross-corr offset estimates
+  # scatter ±20-30 ms on aggressive bags (slow_racing fits 0.148, this bag
+  # 0.107, same day). Offset refinement needs in-solver joint estimation
+  # (t_d parameter), not config tweaks. See ROADMAP.md.
+
+solver_overrides:
+  slow_racing_best_velocity:
+    marg_prior_scale: 1.0e-7  # near-zero prior: windows self-sufficient; improves live ori/vel/pos
+                               # cliff at 1e-6 (harmful regime) vs 1e-7 (free adaptation, best live)
+                               # tradeoff: settled vel 0.154→0.904 m/s (eval artifact, not deployment issue)
+  fast_racing_best_velocity_no_clustering:
+    # Raw-detection bag (on-chip clustering off, see timing note below): software
+    # connected-components collapse restores what the chip does everywhere else.
+    # T=0.5 m is pinned by the measured cluster scale (65.4 returns/frame = 16.5
+    # physical clusters; collapse reaches 15.7). D improves 0.291/2.959 ->
+    # 0.269/2.843 live and the per-return-weight gap closes to par.
+    # See worklog/2026-08-12_fast2-cluster-collapse-sweep.md. CLI --cluster-collapse
+    # overrides; --cc-greedy selects the legacy seed-linked pass.
+    cluster_collapse_thresh: 0.5
+  backflips_best_velocity:
+    # --- BATCH config (default when --sliding-window is NOT used) ---
+    dt_ori: 0.0008       # 10x denser: needed for batch convergence at fine scale; SW solver stays near P1-P3 init
+    dt_pos: 0.010        # coarser position: compensates for increased solve time from dense ori knots
+    lock_extrinsics: 1   # extrinsic pitch drifts on backflips (orientation model error acts as surrogate)
+    lock_gyro_bias: 1    # E1: post-solve gyro clamp; rank-deficient windows let bias run away to >1 rad/s
+    lambda_heading: 10.0 # E2: stronger pseudo-magnetometer; absolute yaw anchor through the flip
+    marg_prior_scale: 0.0  # E3: disable marg prior; S is rank-deficient (stride zone: 375 ori knots vs ~300 gyro)
+    # --- SW (Phase 3) config — use --set flags to override from CLI ---
+    # python validate_live_solver.py backflips_best_velocity --mocap-yaw --cpp --sliding-window \
+    #   --set dt_ori=0.008 --set lambda_ori_accel=0.001 --set lock_gyro_bias=0 \
+    #   --set marg_prior_scale=0.0 --set lambda_pos_init_prior=1000.0
+    # Rationale: dt_ori=0.008 (well-conditioned Jacobian, ori converges to ~10°);
+    # lambda_pos_init_prior=1000 anchors each CP to P1-P3 radar-velocity init
+    # to prevent position blowup from sparse radar (~10 Hz per window).
+    # Result: settled 2.56m / 10.87°, live 3.33m / 9.33°
+    # Batch ceiling: 1.82m / 8.31°  (gap: +0.74m pos, +2.56° ori)
+
+radar_config:
+  default:
+    v_max: 4.99
+    doppler_resolution: 0.63
+  best_velocity:
+    # Visualizer cfg comment says 3.84 m/s but that is wrong.
+    # Empirically confirmed: V_MAX = 3.00 m/s
+    #   - Aliased cluster mean collapses to +0.05 m/s (from +0.46 m/s at V_MAX=3.84)
+    #   - Fine sweep flat below 3.00 — noise-limited, not calibration-limited
+    #   - Quantization bin 0.049 m/s (Doppler resolution confirmed; N_bins may be asymmetric)
+    #   - cfarFovCfg ±3.20 m/s: consistent with sensor output within [-3.00, +3.00]
+    v_max: 3.136
+    doppler_resolution: 0.049
+
+flipped:
+  - circle
+  # - circle_fwd
+  # circle_fast: NOT in this set but 2026-06-12 held-out run says it NEEDS the
+  # flip (--flip: settled ori 77°→6.96°). Pending validate_physics verification
+  # (like the Dec-backflips investigation) before adding it here.
+  - loopings
+  # - backflips
+  # - slow_racing_best_velocity
+  # - fast_racing_best_velocity
+
+# (start_offset_sec, duration_sec) for each named flight window
+timing:
+  circle:                                   [25.5, 8.5]
+  circle_fast:                              [14.5, 8.5]
+  circle_fwd:                               [28.0, 8.0]
+  loopings:                                 [9.5,  8.5]
+  backflips:                                [26.5, 15.0]
+  backflips_best_velocity:                  [23.6, 18.1]
+  circle_best_velocity:                     [22.2, 8.4]
+  # 2026-08-09 DEFECT FIX: was [16.9, 10.0], which overran the radar by 1.2 s.
+  # This bag runs the radar WITHOUT on-chip clustering, which saturates the UART:
+  # the radar stops publishing at t = 25.7 s while IMU/MoCap/state continue to
+  # 44.2 s. The old window therefore ended 1.2 s (12 %) after the last radar
+  # frame, so the tail of every held-out run was IMU-only dead reckoning and its
+  # drift figure was inflated. 8.5 s ends 0.3 s before the radar dies.
+  # Arm-vs-arm verdicts from earlier batteries are unaffected (both arms starved
+  # identically); their ABSOLUTE fast2 numbers are not, and carry a note.
+  fast_racing_best_velocity_no_clustering:  [16.9, 8.5]
+  fast_racing_best_velocity:                [18.1, 18.0]
+  slow_racing_best_velocity:                [18.1, 25.8]# 25.8]
+  # ICINS 2021 (bag time = pseudo-GT clock; sensors start 26-62 s in,
+  # windows = sensor/GT overlap minus margins; see baselines/README.md)
+  icins_flight_1:                           [66.0, 186.0]
+  icins_flight_2:                           [30.0, 87.0]
+  icins_flight_3:                           [39.0, 183.0]
+  icins_flight_4:                           [43.0, 121.0]

@@ -1,0 +1,131 @@
+\section{Limitations}
+\label{sec:limits}
+
+\subsection{Evaluation Scope}
+\label{sec:stat_scope}
+Each flight regime is evaluated on a \emph{single} representative
+recording, so the headline numbers carry no between-flight error bars.  The
+held-out flights (\autoref{sec:heldout}) and the cross-platform validation
+(\autoref{sec:baselines}) broaden the evidence, but they do not substitute
+for repeated trials.
+
+The evaluation covers indoor flights on two platforms using the same
+radar chip.  The main laboratory recordings last 18--26\,s.
+Long-duration operation, different radar hardware, and performance
+in smoke or fog remain untested.  The public flights use VINS pseudo
+ground truth, and the backflip recording contains \ac{mocap} tracking
+artifacts (\autoref{sec:setup}).
+
+\subsection{Heading Sensor Requirement}
+\label{sec:yaw}
+Yaw is unobservable from Doppler$+$\ac{imu} (\autoref{sec:models}).
+Here, reference yaw serves as an idealized magnetometer surrogate.
+The evaluation therefore does not establish performance with a real
+heading sensor, including its bias and time-varying magnetic
+disturbances.  The weight is set at what a real sensor would justify:
+a flight magnetometer resolves heading to a few degrees~\cite{kok2016magnetometer} with strongly
+time-correlated errors, which under the correlation-time protocol of
+\autoref{sec:char_budget} gives a weight of order $1$--$10$; we deploy
+$\lambda_\psi = 0.6$, the conservative end of that range.  With
+$\lambda_\psi = 0$ (no heading information after the start gauge) yaw
+drifts within the flight: the orientation error grows to $10$ and
+$9\degree$ on the two racing flights, with $0.5$--$0.6$\,m/s of
+world-frame velocity error.  A ten times stronger weight reduces
+orientation error by $0.03$--$0.2\degree$ on racing and $2.8\degree$
+on the flip flight, but increases drift by up to $0.2$\,pp.
+We retain the weaker weight to limit reliance on reference heading,
+accepting the orientation trade-off.
+
+\subsection{Extreme Dynamics: Backflips}
+\label{sec:backflips}
+The backflip flight circles in the horizontal plane while looping
+continuously in the vertical plane at body rates around
+$10$\,rad/s.  \autoref{sec:char} characterizes the
+radar errors in this regime: 38\% of its returns alias, the noise floor of
+the per-return law is four times the deployed nominal value, the
+frame-shared error and the off-boresight excess the law does not carry
+are at their largest.  One possible contributor is intra-frame
+motion.  During a flip the scene sweeps some $17\degree$ across a
+frame's integration time, and without
+per-return timestamps the returns of one frame cannot be placed on the
+trajectory individually.
+
+The configuration also contributes to the backflip errors.
+Robust accelerometer weighting improves orientation at the cost of
+drift, while removing smoothness priors improves backflip accuracy
+but worsens fast-racing drift (\autoref{sec:ablations}).  We retain
+the shared configuration for its racing performance and report the
+backflip degradation under the same settings.
+
+\subsection{Sustained Flight Beyond the Doppler Ambiguity}
+\label{sec:alias_limit}
+Every aliased return has to be assigned a wrap. This is based on the last radar frame's consensus velocity, integrated forward with the
+\ac{imu} (\autoref{sec:robust}). While only a few returns are aliased
+the consensus rests on the unambiguous majority, but when most of the
+frame is aliased it is built from the estimated unwraps themselves, and
+an error can enter the consensus. This then displaces the next frame's
+prediction by one wrap, $2v_{\max} = 6.3$\,m/s, and enters the cost
+quadratically, so down-weighting does not help and a frame agreeing on
+the same wrong wrap still passes the prefilter. The held-out circular
+flight at 5\,m/s is this regime (\autoref{sec:heldout}).
+
+\subsection{Vertical Channel}
+\label{sec:vertical}
+On fast racing the vertical channel carries most of the drift
+(vertical \ac{rmse} $0.51$\,m against $0.27$\,m horizontally,
+\autoref{fig:traj}).  On slow racing the corresponding errors are
+$0.09$ and $0.11$\,m.  Sweeping the locked radar pitch from $25.5$ to
+$29.5\degree$ moves the vertical drift monotonically in opposite
+directions on the two racing flights.  This sweep does not identify
+a common correction, so we keep the measured pitch.  The prefiltered
+racing returns also show no constant elevation bias
+(\autoref{sec:char_outliers}).
+
+The fast-racing vertical error remains $0.51$\,m with or without
+position-prior inflation.
+The source of the remaining vertical drift is unresolved.
+
+\subsection{Fixed Parameters and Motion Priors}
+\label{sec:fixed_constants}
+Two constants of the radar noise model are flight properties held
+fixed at nominal-regime values: the noise floor $\sigma_0$ of the
+per-return law (measured $0.049$--$0.327$\,m/s across regimes, deployed
+at the racing geometric mean) and the frame-shared term $\sigma_c$
+(measured $0.83$--$1.55$, deployed at $1.27$).  Both, like every
+constant of the model, are properties of this radar and this
+\ac{imu}: a different sensor requires the same measurements, and
+\autoref{sec:char} is that procedure.  Online estimation
+of these terms is a possible extension, not implemented here:
+$\sigma_0$ is a within-frame statistic and can be measured in flight
+without a reference, whereas $\sigma_c$ is a frame-mean statistic whose
+in-flight estimate would have to separate the shared measurement error
+from trajectory error.
+
+The fixed motion priors, spline grids and window length
+impose a trade-off between
+racing and backflip performance (\autoref{sec:ablations}) and also
+constrain the accelerometer bias estimates.  A motion prior derived
+from measured motion statistics is one possible alternative to the
+fixed smoothness penalties, but remains untested.
+
+\subsection{Marginalization and Covariance}
+\label{sec:marg_limits}
+The marginalization prior is re-centered at each warm start with
+its gradient set to zero, retaining only its curvature.  This does
+not preserve the full Gaussian marginal.  Among factors touching
+leaving states, those extending beyond the retained boundary are
+dropped.  Angular-travel inflation approximates the effect of stale
+linearizations (\autoref{sec:sw}).
+The \ac{nees} results show conservative covariances on racing, but
+do not establish consistency across regimes (\autoref{sec:nees}).
+
+\subsection{Knot Density}
+\label{sec:negative}
+Finer orientation knots do not improve the tested backflip estimates.
+At the deployed 16\,ms the orientation spline represents the \ac{mocap}
+attitude through the flips to $1.3\degree$, the same at 8 and 4\,ms.
+In the coarser-grid sweep, backflip orientation error is
+$11.9$--$12.8\degree$ from 8 to 64\,ms and increases to $14.3\degree$
+at 128\,ms, with $\lambda_\alpha$ held fixed across the sweep.
+These results suggest that the orientation grid could be coarsened
+where compute is tight.

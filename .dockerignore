@@ -1,0 +1,35 @@
+# Git files
+.git/
+.gitignore
+.gitmodules
+
+# Docker files (don't copy these into the image)
+docker/
+.dockerignore
+
+# Documentation
+README.md
+*.md
+
+# Submodule (we'll mount this as a volume)
+mmwave_ti_ros/
+
+# Build artifacts (mounted as volumes)
+build/
+devel/
+.catkin_workspace
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+*.log

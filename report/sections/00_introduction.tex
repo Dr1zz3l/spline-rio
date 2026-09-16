@@ -1,0 +1,52 @@
+\section{Introduction}
+\label{sec:intro}
+
+Visual odometry and \ac{lidar}-based \ac{slam} are well-established, but both
+degrade in dusty, foggy, featureless, or textureless environments.
+Millimeter-wave (mmWave) \ac{fmcw} radar is robust to these
+conditions: it penetrates smoke and dust, operates in the dark, and
+measures Doppler velocity directly without feature matching.  These
+properties make it attractive for aggressive flight in unstructured
+environments.
+
+Combining a mmWave radar with an \ac{imu} (\ac{rio}) for ego-motion estimation
+has been explored with discrete-time \ac{ekf} and graph-optimization
+formulations~\cite{doer2020ekf,kramer2020rve}.  However,
+asynchronous radar-\ac{imu} measurements (radar at $\sim$10\,Hz, \ac{imu} at
+$\sim$1\,kHz) motivate a continuous-time trajectory, a smooth function
+evaluated at any sensor timestamp without interpolation or preintegration.
+
+\textbf{Research question.}
+This work asks: \emph{can a single-chip mmWave radar,
+fused with an \ac{imu} and a magnetometer, provide usable 6-DoF 
+state estimation, and if so, what does it take?}  The starting point
+is what the sensors can and cannot do: per-return Doppler yields
+direct ego-velocity, but at around a dozen returns per frame there
+aren't enough features for position fixing.
+The system is therefore a \emph{velocity and orientation} source whose
+position estimate drifts with distance.
+\autoref{sec:char} characterizes the radar measurements.
+The rest of the report develops an estimator informed by this
+characterization and evaluates it from gentle to aerobatic flight.
+
+We contribute:
+\begin{itemize}
+  \item a per-return characterization of a single-chip radar from
+        hover to $10$\,rad/s, with every residual measured against
+        motion capture ground truth: an uncertainty law with a
+        per-return and a per-frame component, so one configuration is
+        used for every evaluated flight and platform.
+  \item a continuous-time \ac{rio} pipeline based on that characterization:
+        every radar return is an individually weighted Doppler factor in a B-spline estimator, with a consensus front
+        end, sensor-only initialization, and a fixed-lag smoother with
+        a marginalization prior, running in real time on a laptop CPU.
+  \item an evaluation from gentle racing to aerobatic backflips, on
+        held-out flights and on a public cross-platform dataset
+        against published \ac{ekf} baselines, including a consistency
+        check of the reported covariance.
+\end{itemize}
+
+\textbf{Data and code.}
+The complete system is released for independent reproduction.  The datasets
+and our Ceres solver with Python bindings are available at
+\url{https://github.com/Dr1zz3l/spline-rio}.

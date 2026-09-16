@@ -1,0 +1,300 @@
+\section{Methodology}
+\label{sec:method}
+
+\subsection{State Representation}
+\label{sec:state}
+
+\textbf{Position.}
+The world-frame position $\vp_w(t) \in \mathbb{R}^3$ is a quintic
+(order-6) uniform B-spline with knot spacing $\Delta t_p = 40$\,ms.
+Velocity $\dot{\vp}_w$ and acceleration $\ddot{\vp}_w$ are
+obtained as analytical derivatives of the spline.
+
+\textbf{Orientation.}
+The body-to-world rotation $\vR(t)=\vR_{wb}(t)$ is a cubic
+cumulative $\SO$ B-spline~\cite{sommer2020efficient,usenko2020basalt}:
+\begin{equation}
+  \vR(t) = \vR_{k-3}
+           \prod_{j=k-2}^{k} \Exp\!\bigl(\tilde{B}_j(t)\,
+           \Log(\vR_{j-1}^{-1}\vR_{j})\bigr),
+  \label{eq:ori_spline}
+\end{equation}
+where $\vR_{k-3},\ldots,\vR_k$ are the four active orientation control points
+and $\tilde{B}_j(t)$ are the cumulative basis functions defined in
+\autoref{sec:prelim_so3}.  The absolute orientation control points are optimized.
+The knot spacing is $\Delta t_o = 16$\,ms, and the body-frame angular
+velocity $\vom_b(t)$ follows by analytic differentiation.
+Both spline spacings are fixed across flights and platforms
+(\autoref{sec:negative}).
+
+\textbf{Biases and extrinsics.}
+The constant six-component \ac{imu} bias $[\vb_a,\vb_g]$ is estimated
+jointly with the trajectory.  A Gaussian prior anchors it to the
+stationary initialization (\autoref{sec:init}), with standard
+deviations $0.216$\,m/s$^2$ and $0.0036$\,rad/s for the accelerometer
+and gyroscope, respectively.  These widths are measured offline from stationary ground segments,
+the accelerometer's against the specific force $-\vR_{bw}\vg_w$
+predicted from the \ac{mocap} attitude, the gyroscope's from the
+bias shift between motors off and motors running.  The prior weights are inverse variances, and the prior touches no leaving state, so it is re-applied in every window and never absorbed into the marginalization prior (\autoref{sec:sw}).
+All radar extrinsics are fixed at the platform's measured values.
+On our platform, freeing the pitch left the estimate close to its
+initial value, so we use the measured $27.5\degree$ mount angle
+(\autoref{sec:overview}).
+
+\subsection{Measurement Models}
+\label{sec:models}
+
+\textbf{Radar Doppler with lever arm.}
+For a static target at sensor-frame bearing $\vu_s$, the predicted
+Doppler is
+\begin{equation}
+  v_D = -\vu_b^{\top}\!\left(
+    \vR_{bw}\,\vv_w(t) + \vom_b(t) \times \mathbf{t}_{bs}
+  \right),
+  \label{eq:doppler}
+\end{equation}
+where $\vv_w=\dot{\vp}_w$, $\vu_b=\vR_{bs}\vu_s$,
+$\vR_{bs}$ rotates sensor coordinates into the body frame, and
+$\vR_{bw}=\vR_{wb}^{\top}$.  The lever arm $\mathbf{t}_{bs}$ runs
+from the body \ac{com} to the radar antenna, expressed in body coordinates.
+The sign follows the sensor convention: positive Doppler denotes a
+receding target.  Each return contributes a residual
+$r_{f,j}=v_{D,\mathrm{meas}}-v_{D,\mathrm{pred}}$ to its frame's
+jointly weighted residual block (\autoref{sec:robust}).
+
+\textbf{Accelerometer.}
+\begin{equation}
+  \mathbf{r}_a = \vz_a - \vR_{bw}\!\left(\ddot{\vp}_w - \vg_w\right) - \vb_a,
+  \label{eq:accel}
+\end{equation}
+where $\vz_a$ is the measured specific force and $\vg_w$ is gravity
+in world coordinates.
+
+\textbf{Gyroscope.}
+\begin{equation}
+  \mathbf{r}_g = \vz_g - \vom_b(t) - \vb_g,
+  \label{eq:gyro}
+\end{equation}
+Here $\vz_g$ is the measured body-frame angular rate.  The weights
+for both \ac{imu} residuals are specified in \autoref{sec:robust}.
+
+\textbf{Heading prior.}
+Absolute yaw is unobservable from Doppler and \ac{imu} measurements:
+a common rotation of position, velocity and attitude about gravity
+leaves these measurements unchanged.  We supply heading using
+\ac{mocap} yaw at approximately 100\,Hz as an idealized magnetometer
+surrogate.  With $\mathbf{h} = \vR\,\mathbf{e}_x$ the body forward axis in world
+coordinates, the residual is
+\begin{equation}
+  r_\psi = h_x \sin\psi_{\mathrm{ref}} - h_y \cos\psi_{\mathrm{ref}},
+  \label{eq:heading}
+\end{equation}
+i.e.\ $\sin(\psi-\psi_{\mathrm{ref}})$ scaled by the horizontal
+projection of the forward axis, with weight $\lambda_\psi=0.6$.  It
+needs no angle wrapping, vanishes when the nose points vertically (the
+heading is momentarily undefined through a flip), and has a spurious
+zero at the opposite heading, which the initialization avoids.
+\autoref{sec:yaw} discusses this weight and the limitations of the surrogate.
+
+\subsection{Radar Front End and Measurement Weighting}
+\label{sec:robust}
+
+The radar front end unwraps Doppler, rejects consensus outliers and
+assigns weights before optimization.  The measurement characterization
+in \autoref{sec:char} motivates these steps.
+
+\textbf{Alias unwrapping and the alias weight.}
+At frame load, each return's Doppler alias is selected using the
+radial velocity predicted from \ac{imu} integration
+(\autoref{sec:init}).  Correct selection requires the predicted radial
+velocity to be within $v_{\max}$ of the true value.  All subsequent
+stages use this unwrapped Doppler.
+Unwrapping does not correct the bearing errors of aliased returns.
+These returns retain their reported bearings but receive the reduced
+weight $w_{\mathrm{al}}=0.019$, the measured ratio of clean to aliased
+noise-floor variances (\autoref{sec:char_alias}).
+
+\textbf{Consensus prefilter.}
+Following \mbox{reve}~\cite{doer2020ekf}, three-point \ac{ransac}
+estimates ego-velocity for each frame.  Only returns within
+$0.15$\,m/s of the consensus prediction reach the solver
+(\autoref{sec:char_outliers}).  Frames with fewer than five returns
+bypass this filter.  Filtering runs once at frame load.
+
+\textbf{Per-return weights in the frame covariance.}
+For each retained, non-aliased return, the relative inverse-variance
+weight from \eqref{eq:law_fit} is, in the simplified angular model,
+\begin{equation}
+  w_{f,j} = \frac{1}{1 + (c\,q_{f,j}/\sigma_0)^2}, \qquad
+  q_{f,j} = \frac{\lVert\vv_f\rVert\sin\theta_j}{\cos\phi_j},
+  \label{eq:weight}
+\end{equation}
+where $\theta_j$ is the angle between velocity and ray, and $\phi_j$
+is the angle off boresight.  The constants are
+$c=\delta\phi_0/\sqrt2$, $\delta\phi_0=2.7\degree$ (converted to
+radians), and $\sigma_0=0.083$\,m/s (\autoref{sec:char_rate}).
+The solver uses the direction-cosine form of the same law: with
+$\mathbf{s}$ the unit bearing and $\vv_s$ the frame velocity, both in
+sensor coordinates, and $c_\phi = \max(s_x, 0.15)$,
+\begin{equation}
+\begin{aligned}
+  X_j &= \sqrt{(v_{s,y} - s_y v_{s,x}/c_\phi)^2 + (v_{s,z} - s_z v_{s,x}/c_\phi)^2},\\
+  \sigma_j^2 &= \sigma_0^2 + (c\,X_j)^2,
+\end{aligned}
+\label{eq:dircos}
+\end{equation}
+which needs no clamp towards $\phi = 90\degree$ beyond the floor on
+$c_\phi$; $w_{f,j} = \sigma_0^2/\sigma_j^2$.
+The velocity $\vv_f$ comes from the frame's \ac{wls} consensus fit.
+Weights are fixed when the problem is built, independently of later
+trajectory updates.  They still depend on the \ac{imu} prediction
+through the earlier alias decisions.
+
+The residuals of frame $f$ are stacked in $\mathbf{r}_f$.  Their
+covariance model is
+\begin{equation}
+  \Sigma_f = \sigma_0^2\!\left[
+    \mathrm{diag}(w_{f,j}^{-1})
+    + \sigma_c^2\mathbf{1}\mathbf{1}^{\top}\right],
+  \label{eq:frame_cov}
+\end{equation}
+using $w_{f,j}=w_{\mathrm{al}}$ for aliased returns and
+$\sigma_c=1.27$ for the shared component (\autoref{sec:char_corr}).
+The rank-one term accounts for a common additive error within a frame,
+reducing the information attributed to repeated observations of that
+component.  The frame is weighted jointly, as specified below.
+
+\textbf{Accelerometer gate.}
+The accelerometer weight decreases with body-rate magnitude to limit
+the influence of vibration and other unmodeled high-dynamic errors.
+The gate in \eqref{eq:comp_a} uses an empirical scale
+$\omega_a=8$\,rad/s, chosen from the velocity--orientation trade-off.
+Translational acceleration itself is already included in
+\eqref{eq:accel}.  The gyroscope weight remains constant.
+
+\textbf{Static stream weights.}
+The per-sample stream weights follow the correlation-adjusted error
+budgets of \eqref{eq:lambda_star}.  Taking their geometric means over
+the two racing flights gives $\lambda_g=3.13$, $\lambda_a=0.0039$
+and $\lambda_r=2.64$.  These weights are fixed across flights and
+platforms.
+
+\textbf{The complete weighting.}
+The effective information weights are
+\begin{align}
+  \Lambda^{\mathrm{gyro}}  &= \lambda_g, \label{eq:comp_g}\\
+  \Lambda^{\mathrm{accel}} &= \frac{\lambda_a}{1 + (\lVert\vom_b\rVert/\omega_a)^2}, \label{eq:comp_a}\\
+  \Lambda^{\mathrm{radar}}_f &= \lambda_r\,\sigma_0^2\Sigma_f^{-1}. \label{eq:comp_r}
+\end{align}
+Thus the radar contribution is
+$\sum_f\mathbf{r}_f^{\top}\Lambda^{\mathrm{radar}}_f\mathbf{r}_f$.
+The factor $\sigma_0^2$ normalizes the covariance because $\lambda_r$
+already includes the stream's inverse-variance scale.  Without
+within-frame correlation, this reduces to
+$\lambda_r\sum_{f,j}w_{f,j}r_{f,j}^2$.
+All retained measurement residuals enter quadratically, without a
+robust kernel.  The constants in these weights are measured except
+for the empirical accelerometer gate.
+
+\subsection{Regularization}
+\label{sec:reg}
+
+\textbf{Position: minimum snap.}
+$E_{\text{snap}} = \lambda_s \sum_i \|\vp^{(4)}(t_i + \Delta t_p/2)\|^2$,
+one term per knot interval (the midpoint sum of the snap integral,
+without the $\Delta t_p$ factor), with $\lambda_s = 2{\times}10^{-5}$.
+
+\textbf{Orientation: angular-increment smoothness.}
+We penalize changes between consecutive rotation increments:
+\begin{equation}
+  \mathbf{r}_\alpha = \Log(\vR_{i-1}^{-1}\vR_i)
+                    - \Log(\vR_i^{-1}\vR_{i+1}),
+  \label{eq:min_alpha}
+\end{equation}
+The cost is $\lambda_\alpha\sum_i\lVert\mathbf{r}_{\alpha,i}\rVert^2$
+with $\lambda_\alpha=0.1$.  This discrete smoothness penalty is zero
+for equal consecutive increments.  It approximates angular-acceleration
+regularization at the fixed knot spacing but is not a time-normalized
+angular-acceleration residual.  Both regularization weights are design
+choices (\autoref{sec:fixed_constants}).
+
+\subsection{Sensor-Only Initialization (P1--P3)}
+\label{sec:init}
+
+\textbf{P1: Orientation.}
+An automatically detected stationary segment provides the mean
+gyroscope bias and a gravity-aligned scalar accelerometer correction.
+This does not identify the full accelerometer bias independently of
+tilt.  Initial roll and pitch follow from the corrected gravity
+direction, and yaw is set to zero until heading aiding is applied.
+Orientation is initialized by integrating debiased gyroscope readings:
+$\vR(t+\Delta t) = \vR(t)\,\Exp\!\bigl((\vz_g - \vb_g)\Delta t\bigr)$.
+
+\textbf{P2: Position.}
+The front end of \autoref{sec:robust} produces a per-frame \ac{wls}
+ego-velocity estimate from the unwrapped, prefiltered returns.
+Rotated into the world frame with the initialized attitude (the lever
+arm is neglected at this stage), it is integrated with forward Euler
+into the initial position trajectory.  The alias predictor of
+\autoref{sec:robust} is the \ac{imu}-integrated velocity from the same
+attitude, and a frame whose consensus fails keeps all its returns.
+
+\textbf{P3: Boundary priors.}
+Position, velocity and orientation priors anchor the first window at
+$t=0$ to the initialized state, with hand-set weight
+$\lambda_{\text{bnd}}=1000$.  They are not re-applied in later windows,
+which carry previous information through the marginalization prior
+(\autoref{sec:sw}).
+
+\subsection{Sliding Window with Marginalization}
+\label{sec:sw}
+
+The fixed-lag smoother advances a 3\,s window in 0.3\,s strides.
+After each solve, position and orientation control points leaving the
+window are eliminated from the linearized problem by a Schur
+complement.  The retained variables coupled to these states, including
+the shared bias, form the boundary of the next window.  The resulting
+information matrix is stored as a Gaussian prior, with the
+approximations described below.
+
+\textbf{Which factors enter the marginal.}
+Factors touching a leaving variable, including the previous prior
+when applicable, enter the Schur complement and are then removed from
+the active problem.  Factors involving only retained variables remain
+active and must not also be absorbed into the prior.  In particular,
+sharing the retained \ac{imu} bias does not justify including every
+\ac{imu} factor.  The boundary is the last five position control points and three
+orientation control points before the window start, plus the bias (30
+coordinates).  A factor touching a leaving variable whose support
+would reach past this boundary, a sliver at the mismatch of the two
+grids, is dropped rather than absorbed, so the prior stays a marginal
+over exactly that boundary.
+
+\textbf{Re-centered prior.}
+Before each solve, the prior is centered at the current warm start
+$\mathbf{x}_0$, retaining its information matrix and setting its
+gradient there to zero.  This is a curvature-only approximation to
+the marginalized problem.  It generally changes the prior's mean,
+so it does not preserve the full Gaussian marginal.  The prior still
+penalizes subsequent departures from the warm start during the solve.
+
+\textbf{Staleness of the prior.}
+To reduce reliance on older linearizations during rotation, the
+prior's position and orientation uncertainties are increased with
+accumulated angular travel.  The update adds the variance $(k\theta)^2$ to every boundary position
+and orientation coordinate of the marginal's covariance (a Woodbury
+update, so the cross-covariances follow), with $\theta$ the rotation
+accumulated over the marginalized stride and the rates $k = 0.12$\,m
+and $0.01$\,rad per radian measured as the live-edge position and
+orientation error increments per swept radian against ground truth
+(the position rate is $0.12$, $0.12$ and $0.17$\,m/rad on the three
+flights).  Angular travel is a proxy for linearization error, not a
+direct measure of it.
+Apart from this inflation, no global scale factor is applied to the
+prior.  \autoref{sec:ablations} evaluates the effect of position
+inflation, and \autoref{sec:nees} tests the output covariance.
+
+\textbf{Live-edge warm start.}
+The incoming trajectory segment is aligned to the previous solution
+at its last data-supported position and orientation control points.  This
+reduces mismatch at the transition before optimization.

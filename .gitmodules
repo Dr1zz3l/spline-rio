@@ -1,0 +1,3 @@
+[submodule "lie-spline-experiments"]
+	path = lie-spline-experiments
+	url = https://gitlab.com/tum-vision/lie-spline-experiments.git

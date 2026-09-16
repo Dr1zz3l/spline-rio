@@ -1,0 +1,74 @@
+# B-spline parameterization
+pos_bspline_degree: 5      # Position spline degree (quintic for continuous snap); orientation is always cubic (CumulativeSO3BSpline)
+dt_pos: 0.005            # Knot spacing for position spline (seconds)
+dt_ori: 0.008              # Knot spacing for orientation spline (seconds)
+
+# Radar
+huber_delta: 1           # Huber threshold (m/s); must be >= 0.63 m/s Doppler bin size
+min_range: 0.2             # Minimum range filter (m)
+radar_ransac_threshold: 0.15  # reve-style 3D-LSQ RANSAC front-end inlier thresh (m/s); >0 = ON (default).
+                              # Hard-rejects elevation-biased single-chip returns before the solve.
+                              # Disable with --no-radar-ransac (or --set radar_ransac_threshold=0).
+
+# IMU weights
+lambda_accel: 0.01
+lambda_gyro: 1.0
+huber_delta_accel: 2.0     # Huber threshold for accelerometer (m/s²); clips spikes linearly
+
+# Regularization
+lambda_snap_pos: 0.0001    # Position minimum-snap weight
+lambda_ori_reg: 0.0        # Angular velocity regularization (penalizes ||log(q_i^{-1}*q_{i+1})||^2); disabled — fights legitimate rotation
+lambda_ori_accel: 0.1      # Angular acceleration regularization (penalizes ||Δω||^2 per knot triplet);
+                            # zero for constant angular rate — correct prior for racing/backflips
+                            # Swept 0–1: 0.1 best compromise (fast_racing 0.875→0.740m, backflips ori 9.59→8.31°)
+                            # 1.0 blows up backflips (44°!); slow_racing slightly prefers 0.0 but 0.1 acceptable
+
+# Gravity-direction factor (absolute roll/pitch from accelerometer, Mahony-style).
+# DISABLED (0.0): inert on the racing/backflips headline flights (near-hover gate never
+# trips; verified bit-identical), and on the ICINS indoor cross-validation the full-stride
+# gravity=0 re-run reproduces the published baselines to within run-to-run noise
+# (<=0.002 m ATE, <=0.01% drift). Omitted from the paper and off by default.
+lambda_gravity: 0.0            # Weight for gravity-direction residual; 0 = disabled
+gravity_accel_threshold: 3.0   # Dynamic trust sigma (m/s²): down-weight when ||a_debiased|| deviates from g
+
+# Heading factor (yaw constraint from MoCap pseudo-magnetometer)
+lambda_heading: 0.6          # Weight for MoCap heading residual; 0 = disabled
+                             # (scaled down 5× from 3.0 to compensate for 20 Hz → 100 Hz density increase)
+
+# Bias priors
+lambda_bias_prior: 1.0     # Fallback (overridden by per-sensor values below)
+lambda_bias_prior_accel: 1.0   # relaxed from 1000: biases are free to optimize (solver no longer exploits them as a trash can)
+lambda_bias_prior_gyro: 1.0   # relaxed from 10000: same reasoning
+use_stationary_bias: true  # Use variance-based stationary detection for bias initialization
+lock_biases: false         # Lock biases to initial values (stationary-detected or zero)
+
+# Boundary priors (pin spline state at trajectory START to MoCap ground truth)
+boundary_window: 1         # Seconds near start to apply boundary priors
+lambda_boundary_vel: 1000.0
+lambda_boundary_pos: 1000.0
+lambda_boundary_ori: 1000.0
+lambda_boundary_ori_yaw: 0.0   # Yaw component weight (null = same as lambda_boundary_ori, 0.0 = free yaw gauge)
+lambda_boundary_accel: 0.001
+lambda_boundary_gyro: 1000.0
+
+# GNC (Graduated Non-Convexity) — pass --gnc flag to enable
+# Uses Geman-McClure loss; anneals μ from (30*huber_delta)^2 to huber_delta^2 over accepted steps.
+gnc_div_factor: 2.0   # μ division factor per GNC phase; 2.0 → ~10 phases (900→1), 1.4 → ~17 phases
+gnc_mu_final: 1.0    # Final μ for GNC. δ²=1.0 (aggressive, ~TLS at δ); 9*δ²=9 (Huber-like for inliers, more aggressive for big outliers)
+
+# Optimizer
+max_iterations: 400
+early_stop_patience: 20  # Stop after this many consecutive rejected LM steps; -1 = disabled
+converge_window: 50       # Sliding window size (accepted steps) for plateau detection
+rtol_converge: 0.01      # Relative cost decrease threshold over the window; stop if below this
+relinearize_threshold_deg: 1.0   # Legacy (unused with cumulative SO3 spline; kept for config compat)
+use_phase2_init: false             # Initialize position from Phase 2 linear solver
+ori_base_jacobian_window: 20      # Max base knots to include per measurement for orientation Jacobian.
+                                  # 0 = full left-triangular (exact baseline, use for comparison).
+                                  # Window=20 (~1s at 0.05s/knot) approximates sliding-window LM,
+                                  # recovering ~90% sparsity with minimal accuracy loss.
+
+# Extrinsics (radar-to-body)
+lock_extrinsics: false      # Lock radar extrinsics to config/extrinsics.yaml values
+optimize_pitch_only: true   # Only optimize pitch extrinsic; roll/yaw unobservable from Doppler (prevents trash-can drift)
+lambda_extrinsic_prior: 10.0

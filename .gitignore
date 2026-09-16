@@ -1,0 +1,96 @@
+# ROS build artifacts
+mmwave_ti_ros/ros1_driver/build/
+mmwave_ti_ros/ros1_driver/devel/
+mmwave_ti_ros/ros1_driver/.catkin_workspace
+mmwave_ti_ros/ros2_driver/build/
+mmwave_ti_ros/ros2_driver/install/
+mmwave_ti_ros/ros2_driver/log/
+
+# Radar odometry workspace build artifacts
+radar_odometry/build/
+radar_odometry/devel/
+radar_odometry/.catkin_workspace
+
+# Analysis artifacts
+analysis/data/
+analysis/.ipynb_checkpoints/
+
+# IDE files
+.vscode/
+.idea/
+.venv/
+*.swp
+
+# Logs
+*.log
+log_*.txt
+rosbags/
+
+*.pyc
+*.png
+
+# C++ build artifacts
+rio_solver_cpp/build_release/
+rio_solver_cpp/build_debug/
+build/
+
+# Compiled Python extensions (pybind11)
+*.so
+
+# Temporary config files
+*.tmp.*
+
+# Generated plot outputs
+plots/
+
+# Generated figure PDFs (outputs, not source)
+
+# LaTeX build artifacts
+report/*.aux
+report/*.log
+report/*.out
+report/*.bbl
+report/*.blg
+report/*.fls
+report/*.fdb_latexmk
+report/*.synctex.gz
+rio_solver_cpp/ceres_vendored_install/
+rio_solver_cpp/build_release/
+lie-spline-experiments/thirdparty/ceres-solver/build_rio/
+
+# Third-party clone (basalt headers source for rio_solver_cpp build)
+lie-spline-experiments/
+# Local session artifacts
+.claude/
+analysis/*.so.bak
+# external baseline workspace (cloned/pinned by baselines/setup.sh; built in docker)
+baselines/rio/
+baselines/catkin_simple/
+baselines/catkin_ws/
+baselines/datasets/
+baselines/results/
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.bbl
+paper/*.blg
+paper/*.fls
+paper/*.fdb_latexmk
+paper/IEEEtran_HOWTO.pdf
+rio_solver_cpp/gtsam_vendored_install/
+rio_solver_cpp/steam_vendored_install/
+
+# Cross-agent / cross-session working correspondence at repo root. Kept
+# UNTRACKED deliberately: committing them on a feature branch would delete
+# them from the shared worktree on checkout of main (they belong to the
+# main-branch paper workflow). Their technical content is absorbed into
+# documentation/ (D7, GP_MIGRATION, ISAM2_MIGRATION).
+question_to_rio_gtsam_agent.md
+answer_from_rio_gtsam_agent.md
+claude_opus_review.md
+
+# Analysis table cache (characterize_shape_contradiction.py, $SHAPE_CACHE)
+.cache/
+
+# authorship-markup review build (report/mark_ai_authorship.py)
+report/_aimarkup/

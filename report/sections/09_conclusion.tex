@@ -1,0 +1,47 @@
+\section{Conclusion}
+\label{sec:conclusion}
+
+\emph{Can a single-chip mmWave radar plus \ac{imu} provide usable 6-DoF
+state estimation?}  Yes, as a \emph{velocity and orientation}
+source with heading aiding: at the live leading edge,
+$0.16$\,m/s\,/\,$1.7\degree$ on gentle racing
+and $0.28$\,m/s\,/\,$2.6\degree$ on aggressive
+racing, with position drifting at $0.3$--$1.3\%$ of distance.
+The same configuration is used for all evaluated flights and platforms.
+The solver runs faster than its 0.3\,s stride on a laptop CPU,
+transfers unchanged to a held-out
+flight and to a public dataset, and reports a covariance that is
+conservative on racing (\autoref{sec:nees}).  Absolute
+position is not observable from Doppler+\ac{imu} and drifts with
+distance, and yaw requires a heading sensor.  Through sustained flips
+the estimate degrades, reflecting both radar measurement limitations
+and the racing-oriented configuration.
+
+Within those structural limits, the answer rested on three things.
+First, \emph{characterizing the sensor before designing the
+estimator}: the radar's errors have a Gaussian core whose width is a
+per-return quantity.  Doppler error from bearing uncertainty grows
+linearly with speed, couples through the transverse velocity and
+increases off boresight, with a fitted constant of about one
+angle-FFT bin.  The errors also
+include a component shared by all returns of a frame, an outlier
+remainder, and aliased returns with elevated bearing-related residuals
+even after Doppler unwrapping.
+Second, \emph{deriving
+the radar noise weights and the radar and \ac{imu} stream weights
+from those measurements}, and
+the bias priors and the staleness of the marginalization prior from
+measurements of their own, so that the reported covariance is a prediction tested against ground truth (\autoref{sec:nees}).  Third, \emph{a fixed-lag smoother} that
+carries past information through an approximate marginalization prior, built from exactly the factors that leave the window,
+applied
+without a global scale on every regime.  The largest gains
+came from measuring and re-weighting the existing measurements.
+
+\emph{Future directions} follow from the limitations.  More precise
+per-return radar timing could help model intra-frame motion during
+backflips.  The noise floor $\sigma_0$ and the frame-shared term $\sigma_c$
+could be adapted in flight, but estimating the shared component
+requires separating measurement error from trajectory error.  Repeated recordings per
+regime would quantify between-flight variability.  An absolute-height anchor
+such as a floor-plane factor~\cite{yang2025gorio} could be gated on the
+frames that observe the intermittently visible floor.
