@@ -12,6 +12,9 @@
 #include <rio/factors/bias_prior.h>
 #include <rio/factors/regularization.h>
 #include <rio/factors/imu_preintegration.h>
+#include <rio/factors/accel_increment.h>
+#include <cstdlib>
+#include <cstdio>
 
 #include <sophus/ceres_manifold.hpp>
 #include <Eigen/Dense>
@@ -271,12 +274,18 @@ SolverResult SlidingWindowSolver::solve_window(
     if (cfg_.warm_start_align) {
         if (prev_pi1_ >= 0 && pi1 > prev_pi1_) {
             const int seam_p = std::max(pi0, prev_pi1_ - (N_POS - 1));
-            std::array<double, 3> off;
+            std::array<double, 3> off, dv{0.0, 0.0, 0.0};
             for (int c = 0; c < 3; ++c)
                 off[c] = traj_.pos_cps[seam_p][c] - init_pos_cps_[seam_p][c];
+            if (cfg_.warm_start_vel && seam_p - 1 >= 0) {
+                // per-index slope mismatch of the derivative CPs at the seam
+                for (int c = 0; c < 3; ++c)
+                    dv[c] = (traj_.pos_cps[seam_p][c] - traj_.pos_cps[seam_p - 1][c])
+                          - (init_pos_cps_[seam_p][c] - init_pos_cps_[seam_p - 1][c]);
+            }
             for (int i = seam_p + 1; i <= pi1; ++i)
                 for (int c = 0; c < 3; ++c)
-                    traj_.pos_cps[i][c] = init_pos_cps_[i][c] + off[c];
+                    traj_.pos_cps[i][c] = init_pos_cps_[i][c] + off[c] + (i - seam_p) * dv[c];
         }
         if (prev_oi1_ >= 0 && oi1 > prev_oi1_) {
             const int seam_o = std::max(oi0, prev_oi1_ - (N_ORI - 1));
@@ -527,14 +536,15 @@ SolverResult SlidingWindowSolver::solve_window(
                 }
             }
             ceres::CostFunction* fcost;
+            const double sc_frame = frame.sigma_c > 0.0 ? frame.sigma_c : cfg_.radar_frame_sigma_c;
             if (optimize_ext)
                 fcost = new analytic::RadarFrameWhitenedWithPitchFactor(
-                    std::move(pfs_p), std::move(sws), cfg_.radar_frame_sigma_c,
+                    std::move(pfs_p), std::move(sws), sc_frame,
                     cfg_.radar_frame_hetero != 0, uzs,
                     cfg_.radar_frame_sigma_z);
             else
                 fcost = new analytic::RadarFrameWhitenedFactor(
-                    std::move(pfs), std::move(sws), cfg_.radar_frame_sigma_c,
+                    std::move(pfs), std::move(sws), sc_frame,
                     cfg_.radar_frame_hetero != 0, uzs,
                     cfg_.radar_frame_sigma_z, zb_on);
             ceres::LossFunction* floss = nullptr;   // robustness via IRLS weights
@@ -737,6 +747,10 @@ SolverResult SlidingWindowSolver::solve_window(
                     const double q = z_gyro.norm() / cfg_.lambda_gyro_omega_sigma;
                     w_g = 1.0 + std::pow(q, cfg_.lambda_gyro_omega_pow);
                 }
+                if (cfg_.gyro_soft_sigma > 0.0) {
+                    const double q = z_gyro.norm() / cfg_.gyro_soft_sigma;
+                    w_g /= (1.0 + q * q);
+                }
                 auto* cost = make_gyro_cost(z_gyro, u_ori, inv_dt_ori);
                 std::vector<double*> params;
                 for (int k = 0; k < N_ORI; ++k) params.push_back(traj_.ori_knot_data(ori0 + k));
@@ -745,8 +759,8 @@ SolverResult SlidingWindowSolver::solve_window(
                     new ceres::ScaledLoss(nullptr, cfg_.lambda_gyro * w_g, ceres::TAKE_OWNERSHIP), params);
             }
 
-            // Accel
-            if (has_pos) {
+            // Accel (skipped at lambda_accel = 0: the increment experiment)
+            if (has_pos && cfg_.lambda_accel > 0.0) {
                 // ω-dependent accel down-weighting (mirrors the radar soft gate).
                 double w_acc = 1.0;
                 if (cfg_.accel_soft_sigma > 0.0) {
@@ -786,6 +800,57 @@ SolverResult SlidingWindowSolver::solve_window(
                         new ceres::ScaledLoss(nullptr, cfg_.lambda_gravity, ceres::TAKE_OWNERSHIP), params);
                 }
             }
+        }
+
+        // ---- Accelerometer velocity-increment factors (EXPERIMENT 2026-09-12; DEPLOYED 2026-09-30 at 10 Hz)
+        // preint_factors carries the 1/accel_increment_hz increments (Python
+        // side); r_v only, per-sample gyro rows above stay. Weight = the GP
+        // backend's increment law: sigma_eff = sigma (1 + (max|w|/w0)^2)^1/2.
+        if (cfg_.accel_increment_hz > 0.0) {
+            int n_added = 0;
+            for (const auto& pf : preint_factors) {
+                double u_ori_i; int oi0_i;
+                if (!traj_.ori_index(pf.t_i, u_ori_i, oi0_i)) continue;
+                if (oi0_i < oi0 || oi0_i + N_ORI - 1 > oi1) continue;
+                double u_pos_i; int pi0_i;
+                if (!traj_.pos_index(pf.t_i, u_pos_i, pi0_i)) continue;
+                double u_pos_j; int pi0_j;
+                if (!traj_.pos_index(pf.t_j, u_pos_j, pi0_j)) continue;
+                const int k_pos_stride = pi0_j - pi0_i;
+                if (k_pos_stride < 0) continue;
+                if (pi0_i < pi0 || pi0_i + N_POS + k_pos_stride - 1 > pi1) continue;
+                double wmax = 0.0;
+                for (const auto& imu : imu_samples) {
+                    if (imu.timestamp < pf.t_i || imu.timestamp > pf.t_j) continue;
+                    wmax = std::max(wmax, Eigen::Vector3d(imu.gx, imu.gy, imu.gz).norm());
+                }
+                double sig = cfg_.accel_inc_sigma;
+                if (cfg_.accel_inc_ref_dt > 0.0 && pf.dt > 0.0)
+                    sig *= std::sqrt(pf.dt / cfg_.accel_inc_ref_dt);
+                if (cfg_.accel_inc_omega_sigma > 0.0) {
+                    const double q = wmax / cfg_.accel_inc_omega_sigma;
+                    sig *= std::sqrt(1.0 + q * q);
+                }
+                auto* f = new AccelIncrementFunctor(
+                    pf, u_ori_i, inv_dt_ori, u_pos_i, u_pos_j, inv_dt_pos,
+                    k_pos_stride, 1.0 / sig);
+                std::vector<int> sizes;
+                for (int k = 0; k < N_ORI; ++k) sizes.push_back(4);
+                for (int k = 0; k < N_POS + k_pos_stride; ++k) sizes.push_back(3);
+                sizes.push_back(6);
+                auto* cost = make_auto_cost_sw(f, 3, sizes);
+                std::vector<double*> params;
+                for (int k = 0; k < N_ORI; ++k)
+                    params.push_back(traj_.ori_knot_data(oi0_i + k));
+                for (int k = 0; k < N_POS + k_pos_stride; ++k)
+                    params.push_back(traj_.pos_cp_data(pi0_i + k));
+                params.push_back(traj_.bias_data());
+                problem.AddResidualBlock(cost, nullptr, params);
+                ++n_added;
+            }
+            if (std::getenv("RIO_ACCEL_INC_TRACE"))
+                std::printf("[accel-inc] window %.3f-%.3f: %zu increments, %d added\n",
+                            t_start, t_end, preint_factors.size(), n_added);
         }
     }
 
@@ -989,11 +1054,17 @@ SolverResult SlidingWindowSolver::solve_window(
 
     // ---- Solve -------------------------------------------------------------
     ceres::Solver::Options options;
+#ifdef RIO_HAVE_BANDED_SCHUR
     if (cfg_.use_banded_schur) {
         options.linear_solver_type = ceres::BANDED_SCHUR;
         // Globals = bias (6) + pitch_delta (1 if free ext) + z-bias state (1 if on)
         options.banded_n_global_cols = 6 + (optimize_ext ? 1 : 0) + (zb_on ? 1 : 0);
-    } else {
+    } else
+#else
+    if (cfg_.use_banded_schur)
+        throw std::runtime_error("use_banded_schur needs the BANDED_SCHUR-patched Ceres");
+#endif
+    {
         options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
         options.sparse_linear_algebra_library_type = ceres::SUITE_SPARSE;
     }
@@ -1001,6 +1072,8 @@ SolverResult SlidingWindowSolver::solve_window(
     options.trust_region_strategy_type      = ceres::LEVENBERG_MARQUARDT;
     options.max_num_iterations              = cfg_.max_iterations;
     options.function_tolerance              = cfg_.function_tolerance;
+    if (cfg_.max_solver_time_s > 0.0)
+        options.max_solver_time_in_seconds  = cfg_.max_solver_time_s;
     {
         int n = cfg_.num_threads;
         if (n <= 0) n = static_cast<int>(std::thread::hardware_concurrency());
@@ -1015,6 +1088,13 @@ SolverResult SlidingWindowSolver::solve_window(
 
     ceres::Solver::Summary summary;
     ceres::Solve(options, &problem, &summary);
+
+    if (std::getenv("RIO_SW_COST_TRACE") != nullptr) {
+        // per-LM-iteration cost trace for the convergence figure
+        for (const auto& itsum : summary.iterations)
+            std::printf("[sw-cost] it=%d cost=%.6e\n",
+                        itsum.iteration, itsum.cost);
+    }
 
     if (cfg_.dump_system)
         dump_linear_system(problem, dump_blocks, dump_bmap, result.dump_post);
@@ -1331,6 +1411,7 @@ void SlidingWindowSolver::compute_prior(
         std::unordered_set<double*> allowed(eval_blocks.begin(), eval_blocks.end());
         if (!cfg_.lock_extrinsics)
             allowed.insert(traj_.pitch_delta_data());
+        const size_t n_before_closure = res_set.size();
         for (auto it = res_set.begin(); it != res_set.end(); ) {
             std::vector<double*> pbs;
             problem.GetParameterBlocksForResidualBlock(*it, &pbs);
@@ -1343,6 +1424,9 @@ void SlidingWindowSolver::compute_prior(
             }
             it = ok ? std::next(it) : res_set.erase(it);
         }
+        if (std::getenv("RIO_MARG_TRACE"))   // DIAGNOSTIC 2026-09-27
+            std::printf("[marg-trace] res touching marg: %zu, kept after support closure: %zu (dropped %zu)\n",
+                        n_before_closure, res_set.size(), n_before_closure - res_set.size());
     } else {
         // Legacy: residuals touching marginalized OR boundary params.
         // Conditions on interior states and double-counts boundary factors;
@@ -1579,42 +1663,60 @@ void SlidingWindowSolver::compute_prior(
     }
     if (cfg_.bias_rw_sigma_accel > 0.0 || cfg_.bias_rw_sigma_gyro > 0.0
         || qz > 0.0 || q_stale > 0.0 || q_stale_pos > 0.0) {
-        std::vector<int> idx;
+        // General Woodbury downdate S <- S - S P (Q^-1 + P^T S P)^-1 P^T S with
+        // arbitrary columns P (unit vectors for the per-coordinate terms).
+        // marg_stale_mode 1 (2026-09-27, worklog/2026-09-27_spline-vertical-
+        // drift.md sec. 8): the staleness terms act on the PHYSICAL state --
+        // a common translation of all boundary position CPs and a common
+        // rotation of all boundary orientation knots -- instead of independent
+        // noise per CP / knot, which inflated the boundary velocity (a steep
+        // CP difference) to ~1 m/s and erased the prior's velocity memory.
+        std::vector<Eigen::VectorXd> cols;
         std::vector<double> qv;
+        auto unit = [&](int j) { Eigen::VectorXd e = Eigen::VectorXd::Zero(d_b); e[j] = 1.0; return e; };
         const double qa = cfg_.bias_rw_sigma_accel;
         const double qg = cfg_.bias_rw_sigma_gyro;
         // Bias coordinates sit at the end of the boundary layout, followed by
         // the z-bias state when present (d_b already includes it).
         const int off_bias = d_b - 6 - (zb_on ? 1 : 0);
         for (int i = 0; i < 3; ++i)
-            if (qa > 0.0) { idx.push_back(off_bias + i); qv.push_back(qa * qa); }
+            if (qa > 0.0) { cols.push_back(unit(off_bias + i)); qv.push_back(qa * qa); }
         for (int i = 0; i < 3; ++i)
-            if (qg > 0.0) { idx.push_back(off_bias + 3 + i); qv.push_back(qg * qg); }
-        if (qz > 0.0) { idx.push_back(d_b - 1); qv.push_back(qz * qz); }
+            if (qg > 0.0) { cols.push_back(unit(off_bias + 3 + i)); qv.push_back(qg * qg); }
+        if (qz > 0.0) { cols.push_back(unit(d_b - 1)); qv.push_back(qz * qz); }
+        const bool phys = cfg_.marg_stale_mode == 1;
         if (q_stale > 0.0) {
             // Boundary-orientation tangent coordinates follow the pos block.
             const int off_ori = 3 * n_bound_pos;
-            for (int i = 0; i < 3 * n_bound_ori; ++i) {
-                idx.push_back(off_ori + i);
-                qv.push_back(q_stale);
+            if (phys) {
+                for (int c = 0; c < 3; ++c) {
+                    Eigen::VectorXd e = Eigen::VectorXd::Zero(d_b);
+                    for (int k = 0; k < n_bound_ori; ++k) e[off_ori + 3 * k + c] = 1.0;
+                    cols.push_back(e); qv.push_back(q_stale);
+                }
+            } else {
+                for (int i = 0; i < 3 * n_bound_ori; ++i) { cols.push_back(unit(off_ori + i)); qv.push_back(q_stale); }
             }
         }
         if (q_stale_pos > 0.0) {
             // Boundary-position coordinates lead the layout.
-            for (int i = 0; i < 3 * n_bound_pos; ++i) {
-                idx.push_back(i);
-                qv.push_back(q_stale_pos);
+            if (phys) {
+                for (int c = 0; c < 3; ++c) {
+                    Eigen::VectorXd e = Eigen::VectorXd::Zero(d_b);
+                    for (int k = 0; k < n_bound_pos; ++k) e[3 * k + c] = 1.0;
+                    cols.push_back(e); qv.push_back(q_stale_pos);
+                }
+            } else {
+                for (int i = 0; i < 3 * n_bound_pos; ++i) { cols.push_back(unit(i)); qv.push_back(q_stale_pos); }
             }
         }
-        const int k = static_cast<int>(idx.size());
+        const int k = static_cast<int>(cols.size());
         if (k > 0) {
-            Eigen::MatrixXd SP(d_b, k);
-            for (int j = 0; j < k; ++j) SP.col(j) = S.col(idx[j]);
-            Eigen::MatrixXd M = Eigen::MatrixXd::Zero(k, k);
-            for (int j = 0; j < k; ++j) {
-                M(j, j) = 1.0 / qv[j];
-                for (int l = 0; l < k; ++l) M(j, l) += S(idx[j], idx[l]);
-            }
+            Eigen::MatrixXd P(d_b, k);
+            for (int j = 0; j < k; ++j) P.col(j) = cols[j];
+            const Eigen::MatrixXd SP = S * P;
+            Eigen::MatrixXd M = P.transpose() * SP;
+            for (int j = 0; j < k; ++j) M(j, j) += 1.0 / qv[j];
             Eigen::LDLT<Eigen::MatrixXd> ldltM(M);
             if (ldltM.info() == Eigen::Success) {
                 S.noalias() -= SP * ldltM.solve(SP.transpose());
@@ -1696,6 +1798,133 @@ void SlidingWindowSolver::compute_prior(
     prior_.has_zbias   = zb_on;
     prior_.pos_start   = bound_pos_start;
     prior_.ori_start   = bound_ori_start;
+
+    // DIAGNOSTIC 2026-09-27 (worklog/2026-09-27_spline-vertical-drift.md):
+    // the prior's sigma of the VELOCITY at the knot defined by the 5 boundary
+    // CPs (quintic B-spline at u=0: v = sum w_k P_{b+k}, w = [-1,-10,0,10,1]
+    // / (24 dt)), per axis, and of the accelerometer bias z; plus the prior's
+    // information along that vertical-velocity direction (w^T S w style check
+    // via the eigen-projected covariance, i.e. what the next window inherits).
+    if (std::getenv("RIO_MARG_TRACE") && prior_.covariance.size() > 0) {
+        const double wk[5] = {-1.0, -10.0, 0.0, 10.0, 1.0};
+        const double sc = 1.0 / (24.0 * cfg_.dt_pos);
+        const double ps = cfg_.marg_prior_scale > 0.0 ? cfg_.marg_prior_scale : 1.0;
+        double sig[3];
+        for (int c = 0; c < 3; ++c) {
+            Eigen::VectorXd w = Eigen::VectorXd::Zero(d_b);
+            for (int k = 0; k < 5; ++k) w[3 * k + c] = wk[k] * sc;
+            sig[c] = std::sqrt(std::max(0.0, (double)(w.transpose() * prior_.covariance * w)) / ps);
+        }
+        const int iba = 3 * n_bound_pos + 3 * n_bound_ori;   // bias block: [b_a(3), b_g(3)]
+        const double sbaz = std::sqrt(std::max(0.0, prior_.covariance(iba + 2, iba + 2)) / ps);
+        const double t_knot = traj_.t_ref + (bound_pos_start + N_POS - 1) * cfg_.dt_pos;
+        // the same with the bias prior the NEXT window re-adds (lambda_bias_prior_*)
+        Eigen::MatrixXd S_aug = prior_.sqrt_info * prior_.sqrt_info.transpose() * ps;
+        for (int c = 0; c < 3; ++c) {
+            S_aug(iba + c, iba + c)     += cfg_.lambda_bias_prior_accel;
+            S_aug(iba + 3 + c, iba + 3 + c) += cfg_.lambda_bias_prior_gyro;
+        }
+        Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> ea(S_aug);
+        Eigen::VectorXd la = ea.eigenvalues(); const double fl = std::max(1e-12 * la.maxCoeff(), 1e-300);
+        Eigen::VectorXd il = Eigen::VectorXd::Zero(d_b);
+        for (int i = 0; i < d_b; ++i) if (la[i] > fl) il[i] = 1.0 / la[i];
+        const Eigen::MatrixXd C_aug = ea.eigenvectors() * il.asDiagonal() * ea.eigenvectors().transpose();
+        double sga[3];
+        for (int c = 0; c < 3; ++c) {
+            Eigen::VectorXd w = Eigen::VectorXd::Zero(d_b);
+            for (int k = 0; k < 5; ++k) w[3 * k + c] = wk[k] * sc;
+            sga[c] = std::sqrt(std::max(0.0, (double)(w.transpose() * C_aug * w)));
+        }
+        std::printf("[marg-vel] t_knot %.4f sigma_v (x,y,z) %.4f %.4f %.4f  sigma_baz %.4f  WITH_BIAS_PRIOR sigma_v %.4f %.4f %.4f\n",
+                    t_knot, sig[0], sig[1], sig[2], sbaz, sga[0], sga[1], sga[2]);
+    }
+}
+
+// ============================================================================
+// Live (causal) operation helpers (2026-10-13, ROS spline node)
+// ============================================================================
+void SlidingWindowSolver::set_init_tail(
+    int first_pos, const std::vector<std::array<double, 3>>& pos_cps,
+    int first_ori, const std::vector<std::array<double, 4>>& ori_knots)
+{
+    if (first_pos < 0 || first_pos > traj_.n_pos_cps() ||
+        first_ori < 0 || first_ori > traj_.n_ori_knots())
+        throw std::runtime_error("set_init_tail: first index beyond the end (gap)");
+    auto put = [](auto& vec, int first, const auto& vals) {
+        for (size_t k = 0; k < vals.size(); ++k) {
+            const size_t i = static_cast<size_t>(first) + k;
+            if (i < vec.size()) vec[i] = vals[k];
+            else vec.push_back(vals[k]);
+        }
+    };
+    put(traj_.pos_cps, first_pos, pos_cps);
+    put(init_pos_cps_, first_pos, pos_cps);
+    put(traj_.ori_knots, first_ori, ori_knots);
+    put(init_ori_knots_, first_ori, ori_knots);
+}
+
+double SlidingWindowSolver::trim_before(double t_keep)
+{
+    // common period: smallest (m, n) with m dt_pos == n dt_ori
+    int mp = 0, no = 0;
+    for (int m = 1; m <= 1000 && mp == 0; ++m) {
+        const double n_real = m * traj_.dt_pos / traj_.dt_ori;
+        const int n = static_cast<int>(std::lround(n_real));
+        if (n >= 1 && std::abs(n_real - n) < 1e-9) { mp = m; no = n; }
+    }
+    if (mp == 0) return traj_.t_ref;   // incommensurate grids: never trim
+    const double period = mp * traj_.dt_pos;
+    // keep the spline VALID from t_keep on: valid start = t_ref + (N-1) dt
+    const double support = std::max((N_POS - 1) * traj_.dt_pos, (N_ORI - 1) * traj_.dt_ori);
+    int periods = static_cast<int>(std::floor((t_keep - traj_.t_ref - support) / period + 1e-9));
+    // never drop the current prior's boundary blocks or the last window's support
+    int max_p = traj_.n_pos_cps() - 1, max_o = traj_.n_ori_knots() - 1;
+    if (prior_.valid) { max_p = std::min(max_p, prior_.pos_start); max_o = std::min(max_o, prior_.ori_start); }
+    periods = std::min(periods, max_p / mp);
+    periods = std::min(periods, max_o / no);
+    if (periods <= 0) return traj_.t_ref;
+    const int dp = periods * mp, d_o = periods * no;
+    traj_.pos_cps.erase(traj_.pos_cps.begin(), traj_.pos_cps.begin() + dp);
+    init_pos_cps_.erase(init_pos_cps_.begin(), init_pos_cps_.begin() + std::min<int>(dp, init_pos_cps_.size()));
+    traj_.ori_knots.erase(traj_.ori_knots.begin(), traj_.ori_knots.begin() + d_o);
+    init_ori_knots_.erase(init_ori_knots_.begin(), init_ori_knots_.begin() + std::min<int>(d_o, init_ori_knots_.size()));
+    traj_.t_ref += dp * traj_.dt_pos;
+    if (prior_.valid) { prior_.pos_start -= dp; prior_.ori_start -= d_o; }
+    if (prev_pi1_ >= 0) prev_pi1_ -= dp;
+    if (prev_oi1_ >= 0) prev_oi1_ -= d_o;
+    return traj_.t_ref;
+}
+
+void SlidingWindowSolver::sample(
+    const std::vector<double>& times,
+    std::vector<std::array<double, 4>>& quats,
+    std::vector<std::array<double, 3>>& pos,
+    std::vector<std::array<double, 3>>& vel,
+    std::vector<std::array<double, 3>>& omega) const
+{
+    const double inv_dp = 1.0 / traj_.dt_pos, inv_do = 1.0 / traj_.dt_ori;
+    quats.resize(times.size()); pos.resize(times.size());
+    vel.resize(times.size()); omega.resize(times.size());
+    for (size_t k = 0; k < times.size(); ++k) {
+        double up, uo; int ip, io;
+        traj_.pos_index(times[k], up, ip);
+        traj_.ori_index(times[k], uo, io);
+        const double* pp[N_POS];
+        for (int j = 0; j < N_POS; ++j) pp[j] = traj_.pos_cp_data(ip + j);
+        Eigen::Vector3d p, v;
+        CeresSplineHelper<N_POS>::template evaluate<double, 3, 0>(pp, up, inv_dp, &p);
+        CeresSplineHelper<N_POS>::template evaluate<double, 3, 1>(pp, up, inv_dp, &v);
+        const double* op[N_ORI];
+        for (int j = 0; j < N_ORI; ++j) op[j] = traj_.ori_knot_data(io + j);
+        Sophus::SO3d R; Eigen::Vector3d w;
+        CeresSplineHelper<N_ORI>::template evaluate_lie<double, Sophus::SO3>(
+            op, uo, inv_do, &R, &w, nullptr);
+        const Eigen::Quaterniond q = R.unit_quaternion();
+        quats[k] = {q.x(), q.y(), q.z(), q.w()};
+        pos[k] = {p.x(), p.y(), p.z()};
+        vel[k] = {v.x(), v.y(), v.z()};
+        omega[k] = {w.x(), w.y(), w.z()};
+    }
 }
 
 }  // namespace rio

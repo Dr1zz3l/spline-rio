@@ -1,11 +1,21 @@
 # Radar-to-body extrinsics
 # Body frame: x=forward, y=left, z=up
 # rotation_euler_deg: [roll, pitch, yaw] in degrees
-rotation_euler_deg: [180.0, 25.5, 0.0]   # 180 roll, no yaw. pitch 25.5 = stale batch self-cal SEED only (do NOT change: reseeding shifts the free-pitch batch). As-built pitch MEASURED 27-28deg (inclinometer); deployed runs LOCK 27.5 via --set-ext.
+rotation_euler_deg: [180.0, 25.5, 1.0]   # 180 roll; yaw +1.0 DEPLOYED 2026-09-17 (the shared part of the measured azimuth bias, worklog/2026-09-17_overnight.md sec. 13-14). pitch 25.5 = stale batch self-cal SEED only (do NOT change: reseeding shifts the free-pitch batch). As-built pitch MEASURED 27-28deg (inclinometer); deployed runs LOCK 27.5 via --set-ext.
 translation_body_m: [0.08, 0.02, -0.01]   # 2 cm left (+y), 1 cm down (-z) (confirmed correct, except maybe 180deg yaw flip around drone coordinates)
 
 
-# Time offsets below are empirically tuned — current values (0.02, 0.14) give best solver results.
+# Time offsets: imu_mocap_offset_sec MEASURED 2026-09-10 (analysis/characterize_time_offsets.py,
+# gyro vs raw MoCap body rate: +4.7/+4.7/+5.1 ms on the three Mar-2026 headline bags; the
+# previous 0.015 was an empirical retune of a Dec-2025 cross-correlation and left a 10 ms
+# clock error in every own-platform orientation number, worklog/2026-09-10_time-offset-
+# recalibration.md). radar_imu_offset_sec 0.127 (radar total -122 ms) MEASURED 2026-09-11
+# on the HIGH-ACCELERATION frames (|a| > 4 m/s^2) of the three racing-configuration bags
+# with the plain-rms Doppler fit and the sensor-clock frame stamps: slow -122, fast -122,
+# backflips -123 ms, one pooled per-day value (the earlier 0.135 came from the robust
+# width over all frames, which is flat to +-10 ms; worklog/2026-09-11_radar-clock.md).
+# The constant is chirp-configuration dependent (no-clustering / old-config bags measure
+# -128..-136) and is NOT set per bag.
 # Time offsets — sign conventions:
 #
 #   imu_mocap_offset_sec:
@@ -21,7 +31,36 @@ translation_body_m: [0.08, 0.02, -0.01]   # 2 cm left (+y), 1 cm down (-z) (conf
 #     i.e. radar_total_offset is added to raw radar timestamps to align them on the MoCap axis.
 #     With current values: 0.020 - 0.140 = -0.120 s  (radar data arrives ~120 ms late)
 #
-imu_mocap_offset_sec: 0.0150
-radar_imu_offset_sec: 0.1350
+imu_mocap_offset_sec: 0.0050
+radar_imu_offset_sec: 0.1270
 # imu_mocap_offset_sec: -0.0100
 # radar_imu_offset_sec: 0.1118
+
+# Gyro per-axis scale correction omega = (1 + s) z_raw (EXPERIMENT 2026-09-16,
+# BACKFLIPS_PLAN item 4, bench-free): s MEASURED estimator-free from the swept
+# angle of the gyro against the MoCap end-point attitude over 1-2 s windows
+# (analysis/characterize_gyro_scale_integral.py, pooled over slow/fast/backflips:
+# [-0.47, +1.43, -0.53] +- [0.05, 0.05, 0.45] %; z is unresolved, no sustained
+# yaw in the data). Default OFF until the gate battery decides
+# (worklog/2026-09-16_gyro-scale.md). DEPLOYED 2026-09-17 (Timo): y only, the axis all bags
+# corroborate; x and z await the bench. NOT for other platforms: ICINS runs pass
+# --set-ext gyro_scale=[0,0,0].
+gyro_scale: [0.0, 0.0144, 0.0]
+
+# IMU-to-body misalignment (DEPLOYED 2026-09-27, Timo: "deploy the whole-IMU
+# rotation"): z_body = Exp(c) z_imu applied to gyro AND accel at load, before
+# gyro_scale. c = the IMU-to-MoCap-body rotation MEASURED estimator-free by the
+# swept-angle gyro fit (worklog/2026-09-16_gyro-scale.md, pooled slow/fast/
+# backflips, the same in every bag to 0.2 deg). It is physical, not an
+# evaluation-frame constant: unapplied, a sustained turn drags the attitude
+# into the gyro's axes while the radar extrinsic / heading / init live in the
+# MoCap-body axes (the circle's whole vertical drift,
+# worklog/2026-09-27_circle-vertical-imu-misalignment.md). NOT for other
+# platforms: ICINS gets [0, 0, 0] via bags.yaml extrinsics_overrides.
+imu_misalign_deg: [-0.55, 2.17, -2.0]
+# Accelerometer-only lag (DEPLOYED 2026-09-30, spline only; worklog/2026-09-29_accel-lag.md):
+# imu_mocap_offset_sec was fitted on the gyro; the accelerometer measures ~20 ms later
+# (thrust axis 17-24 ms on four flights, two estimator-free protocols, gyro control -2 ms).
+# acc(t) <- acc(t + L). The GP ignores it (its package was a trade) unless --set gp_accel_lag=1.
+# ICINS: 0 (bags.yaml; not identifiable on their gentle flights, and a different IMU).
+accel_lag_sec: 0.020

@@ -56,6 +56,8 @@ report/*.fdb_latexmk
 report/*.synctex.gz
 rio_solver_cpp/ceres_vendored_install/
 rio_solver_cpp/build_release/
+rio_solver_cpp/build_pixi/
+.pixi/
 lie-spline-experiments/thirdparty/ceres-solver/build_rio/
 
 # Third-party clone (basalt headers source for rio_solver_cpp build)
@@ -94,3 +96,24 @@ claude_opus_review.md
 
 # authorship-markup review build (report/mark_ai_authorship.py)
 report/_aimarkup/
+
+# quick-look comparison figure generated on demand (scratchpad script), not a paper asset
+traj_gp_vs_sw.png
+traj_gp_vs_sw_floorvis.png
+fast_z_error_floorvis.png
+report_gp/*.aux
+report_gp/*.log
+report_gp/*.out
+report_gp/*.bbl
+report_gp/*.blg
+report_gp/*.fls
+report_gp/*.fdb_latexmk
+report_gp/*.synctex.gz
+report_gp/.texfmt/
+
+# Battery run logs (raw per-run output stays out of git; summary.txt is tracked)
+worklog/artifacts/*/stdout*.txt
+worklog/artifacts/*/logs*/
+worklog/artifacts/*/arrays/
+worklog/artifacts/*/traj_arrays_backup*/
+worklog/artifacts/*/traj/*.npz

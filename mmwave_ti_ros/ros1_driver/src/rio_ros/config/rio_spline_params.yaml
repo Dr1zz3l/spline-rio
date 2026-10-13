@@ -1,0 +1,39 @@
+# rio_spline_node parameters -- the DEPLOYMENT side of the spline node.
+# The solver / front-end profile is GENERATED from the harness into
+# rio_spline_profile.yaml (analysis/export_spline_node_config.py); this file
+# holds only what the offline harness does not have.  Loaded AFTER the
+# profile by rio_spline.launch, so a key here would override it: keep the two
+# disjoint.
+
+# --- topics (angrybird2 rig) ---
+topic_radar: /mmWaveDataHdl/RScanVelocity
+topic_imu: /angrybird2/imu
+topic_pose: /mocap/angrybird2/pose   # yaw relay (idealized magnetometer); swap for a magnetometer later
+
+# --- real-time machinery (2026-10-13) ---
+threaded: true               # solver in a worker thread; callbacks never wait for a solve
+max_solver_time_s: 0.2       # LM wall-clock cap < the 0.3 s stride (replay: median 0.11 s, max 0.23 s)
+max_backlog_sec: 1.5         # solver behind the IMU stream by more -> drop stale strides, re-arm
+imu_watermark_margin_sec: 0.02
+causal_unwrap: true          # live-window re-unwrap against the spline's own propagated state
+causal_omega: 10.0           # ... gated below this body rate (rad/s), as the GP
+rearm_boundary_scale: 1.0e-3 # in-air re-arm: first-window velocity/orientation pins x this
+
+# --- bootstrap ---
+min_stationary_sec: 1.0
+stationary_gyro_max: 0.03    # rad/s deviation-std
+stationary_accel_std_max: 0.12
+
+# --- watchdog ---
+watchdog_ms_budget: 250.0        # per-stride solve wall budget -> flag SLOW_SOLVE
+watchdog_radar_starve_strides: 10
+rearm_anchor_pose_sigma: 0.05    # (marks a re-arm; the spline relaxes its pins instead)
+
+# --- output ---
+fast_odom_rate_hz: 100.0
+frame_id: odom
+child_frame_id: base_link
+publish_covariance: false        # no per-stride covariance for the spline (offline NEES tool only)
+
+# --- rio_solver import path (the .so built for the node's python) ---
+rio_solver_path: ''

@@ -64,6 +64,41 @@ public:
     const std::array<double, 6>&              biases()    const { return traj_.biases; }
     double radar_zbias() const { return traj_.radar_zbias; }
 
+    // ---- Live (causal) operation, 2026-10-13: the ROS spline node grows the
+    // trajectory stride by stride instead of initializing it over a whole
+    // recorded flight.  None of these change solve_window()'s math.
+    //
+    // Overwrite (or append past the end) the init AND current values of the
+    // pos CPs / ori knots from index first_pos / first_ori on.  The init
+    // arrays are what warm_start_align rigidly aligns to the solved seam, so
+    // the caller supplies the newest shape (e.g. IMU dead-reckoned from the
+    // last solve) here.  Indices must be <= the current size (no gaps).
+    void set_init_tail(int first_pos,
+                       const std::vector<std::array<double, 3>>& pos_cps,
+                       int first_ori,
+                       const std::vector<std::array<double, 4>>& ori_knots);
+
+    // Drop knots that ended before t_keep (absolute), in whole multiples of the
+    // common period of dt_pos and dt_ori so t_ref stays a knot of both grids;
+    // shifts t_ref and every stored global index (marg prior, warm-start
+    // bookkeeping).  Never drops the current prior's boundary blocks.  Returns
+    // the new t_ref.  Bounded memory for long flights.
+    double trim_before(double t_keep);
+
+    // Evaluate the current trajectory at absolute times: orientation quaternion
+    // (x,y,z,w; body->world), world position, world velocity, body angular
+    // velocity.  Times outside the valid range are clamped.
+    void sample(const std::vector<double>& times,
+                std::vector<std::array<double, 4>>& quats,
+                std::vector<std::array<double, 3>>& pos,
+                std::vector<std::array<double, 3>>& vel,
+                std::vector<std::array<double, 3>>& omega) const;
+
+    double t_ref() const { return traj_.t_ref; }
+    int n_pos_cps() const { return traj_.n_pos_cps(); }
+    int n_ori_knots() const { return traj_.n_ori_knots(); }
+    bool has_prior() const { return prior_.valid; }
+
 private:
     SolverConfig    cfg_;
     ExtrinsicConfig ext_;

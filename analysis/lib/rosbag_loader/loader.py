@@ -92,6 +92,13 @@ class BagReaderWrapper:
     def read_messages(self, topics):
         if self.use_rosbags:
             connections = [x for x in self.reader.connections if x.topic in topics]
+            if not connections:
+                # rosbags treats an empty connections list as "ALL topics";
+                # a requested topic that is absent from the bag must yield
+                # nothing, not every message in the bag (which then hits the
+                # wrong parser, e.g. the 'twist'-less parse spam on the
+                # converted ICINS bags that lack /mocap/angrybird2/accel).
+                return
             for connection, timestamp, rawdata in self.reader.messages(
                 connections=connections
             ):
@@ -901,6 +908,181 @@ def _extract_point_cloud_velocities(msg):
     )
 
 
+# ---------------------------------------------------------------------------
+# Reference kinematics from the POSE (2026-09-11).
+#
+# The agiros state's position and orientation are the MoCap pose (they agree
+# with /mocap/angrybird2/pose to within 1-2 ms on every flight), but its
+# velocity, angular-velocity and acceleration fields are the pilot's filter
+# outputs: the velocity trails the pose derivative by ~5 ms and differs from
+# it by 0.05-0.1 m/s rms in flight, the angular velocity is IMU-fused with a
+# ~20 ms latency.  Every metric and every derived noise constant that used
+# those fields inherited the lag (worklog/2026-09-10_time-offset-
+# recalibration.md).  So the reference velocity, body rate and acceleration
+# are now DERIVED from the pose: uniform grid at the state rate, zero-phase
+# 4th-order Butterworth at REFERENCE_FC (noise floor of the derived velocity
+# on the ground segments ~1 cm/s, acceleration at REFERENCE_FC_ACC), glitch
+# steps bridged, interpolated back to the state stamps.
+# Applied by load_bag_topics to any agiros stream faster than 100 Hz (the
+# ICINS pseudo-truth is 5 Hz and keeps its own fields).  Legacy fields:
+# RIO_REFERENCE_FIELDS=1.
+# ---------------------------------------------------------------------------
+REFERENCE_FC = 15.0        # velocity and body rate
+REFERENCE_FC_ACC = 5.0     # acceleration (differentiated twice; the flown
+                           # accelerations live below 2 Hz)
+
+
+def derive_pose_reference(states, fc: float = REFERENCE_FC, min_rate: float = 100.0):
+    """Return a copy of `states` whose velocity / angular_velocity /
+    acceleration come from the pose (see the block comment above)."""
+    import os
+    from scipy.signal import butter, filtfilt
+    from scipy.interpolate import interp1d
+    from scipy.spatial.transform import Rotation, Slerp
+    if os.environ.get('RIO_REFERENCE_FIELDS') == '1' or len(states) < 50:
+        return states
+    t = np.array([s.timestamp for s in states])
+    keep = np.ones(len(t), bool)
+    keep[1:] = np.diff(t) > 1e-3
+    tk = t[keep]
+    if len(tk) < 50:
+        return states
+    dt = np.median(np.diff(tk))
+    if dt <= 0 or 1.0 / dt < min_rate:
+        return states
+    P = np.array([s.position for s in states])[keep]
+    Q = np.array([s.orientation for s in states])[keep]
+    # tracking glitches (a pose step implying > MAX_RATE rad/s or > MAX_SPEED
+    # m/s, far above any flown motion: 13 rad/s, 7 m/s) are dropped and
+    # bridged by interpolation, two passes; held poses are dropped for the slerp
+    MAX_RATE, MAX_SPEED = 25.0, 12.0
+    good = np.ones(len(tk), bool)
+    for _ in range(2):
+        idx = np.where(good)[0]
+        if len(idx) < 50:
+            break
+        R = Rotation.from_quat(Q[idx])
+        step_t = np.diff(tk[idx])
+        rate = (R[:-1].inv() * R[1:]).magnitude() / step_t
+        speed = np.linalg.norm(np.diff(P[idx], axis=0), axis=1) / step_t
+        bad = (rate > MAX_RATE) | (speed > MAX_SPEED)
+        good[idx[1:][bad]] = False
+    ok = good.copy()
+    ok[1:] &= np.abs(np.diff(Q, axis=0)).max(axis=1) > 1e-12
+    tg = np.arange(tk[0], tk[-1], dt)
+    Pg = interp1d(tk[good], P[good], axis=0, bounds_error=False,
+                  fill_value='extrapolate')(tg)
+    sl = Slerp(tk[ok], Rotation.from_quat(Q[ok]))
+    h = dt
+    tgc = np.clip(tg, tk[ok][0] + h, tk[ok][-1] - h)
+    om = (sl(tgc - h).inv() * sl(tgc + h)).as_rotvec() / (2 * h)   # body rate
+    b, a = butter(4, fc / (0.5 / dt), btype='low')
+    ba, aa = butter(4, REFERENCE_FC_ACC / (0.5 / dt), btype='low')
+    from scipy.signal import medfilt
+
+    def clean(X, bound):
+        # second guard on the raw derivative: samples beyond the physical
+        # bound are bridged by interpolation, then a 5-sample median
+        X = X.copy()
+        bad = np.linalg.norm(X, axis=1) > bound
+        if bad.any() and (~bad).sum() > 10:
+            for i in range(3):
+                X[bad, i] = np.interp(tg[bad], tg[~bad], X[~bad, i])
+        return np.stack([medfilt(X[:, i], 5) for i in range(3)], axis=1)
+    V = filtfilt(b, a, clean(np.gradient(Pg, tg, axis=0), MAX_SPEED * 0.75), axis=0)
+    A = filtfilt(ba, aa, np.gradient(V, tg, axis=0), axis=0)
+    W = filtfilt(b, a, clean(om, MAX_RATE * 0.75), axis=0)
+    vi = interp1d(tg, V, axis=0, bounds_error=False, fill_value='extrapolate')
+    ai = interp1d(tg, A, axis=0, bounds_error=False, fill_value='extrapolate')
+    wi = interp1d(tg, W, axis=0, bounds_error=False, fill_value='extrapolate')
+    out = []
+    for s in states:
+        out.append(dataclasses.replace(
+            s, velocity=vi(s.timestamp), angular_velocity=wi(s.timestamp),
+            acceleration=ai(s.timestamp)))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Radar frame timestamps from the SENSOR clock (2026-09-11, TICSync-style).
+#
+# The host receive time of a radar frame is the true frame time plus a fixed
+# pipeline latency plus a variable, never-negative delay (USB, driver, host
+# load); its jitter is 0.7-6.6 ms per frame and the mean delay differs by
+# 10-20 ms between flights, which the estimators integrate into position
+# error during high-acceleration phases (the fast-racing z-drift).  Every
+# frame also carries the radar DSP's 200 MHz cycle counter (32-bit, wraps
+# every 21.5 s).  Fit the LOWER ENVELOPE of (counter, receive time): the
+# tightest line a + b*c below all points (an LP; Harrison & Newman 2011,
+# TICSync; Olson 2010).  Points above it are the variable delay, which the
+# fit ignores by construction; the slope b carries the relative clock drift.
+# Frames are then stamped with a + b*c, i.e. the sensor clock mapped to host
+# time at the MINIMUM latency; the remaining fixed latency is one constant
+# (radar_imu_offset_sec), measured estimator-free like the IMU offset.
+# DEFAULT since 2026-09-11 (RIO_RADAR_CLOCK=host restores the receive
+# stamps).  A counter step that is not a 32-bit wrap
+# (a sensor restart) splits the fit into independent segments.
+# ---------------------------------------------------------------------------
+RADAR_CYCLE_WRAP = 2.0 ** 32
+
+
+def sensor_clock_timestamps(frames, verbose=False):
+    """Return (new_frames, info): copies of `frames` whose .timestamp is the
+    lower-envelope sensor-clock time.  Frames without a counter keep their
+    receive time."""
+    import os
+    from scipy.optimize import linprog
+    idx = [i for i, f in enumerate(frames)
+           if f.time_cpu_cycles is not None and len(f.time_cpu_cycles) > 0
+           and f.time_cpu_cycles[0] > 0]
+    if len(idx) < 30:
+        return frames, {'enabled': False, 'reason': 'too few frames with a counter'}
+    t = np.array([frames[i].timestamp for i in idx], float)
+    c = np.array([float(frames[i].time_cpu_cycles[0]) for i in idx])
+    # unwrap the 32-bit counter; a drop that is not a wrap starts a new segment
+    seg = np.zeros(len(c), int)
+    cu = c.copy()
+    add, s_id = 0.0, 0
+    for k in range(1, len(c)):
+        d = c[k] - c[k - 1]
+        if d < 0:
+            if abs(d + RADAR_CYCLE_WRAP) < 0.1 * RADAR_CYCLE_WRAP:
+                add += RADAR_CYCLE_WRAP
+            else:
+                s_id += 1; add = 0.0
+        cu[k] = c[k] + add
+        seg[k] = s_id
+    new = list(frames)
+    info = {'enabled': True, 'segments': []}
+    for sid in range(s_id + 1):
+        m = seg == sid
+        if m.sum() < 30:
+            continue
+        cs, ts = cu[m], t[m]
+        c0, t0 = cs[0], ts[0]
+        x, y = (cs - c0) / 2.0e8, ts - t0          # seconds-scale for conditioning
+        # LP: minimise sum(y - a - b x) s.t. a + b x <= y  (tightest line below)
+        n = len(x)
+        res = linprog(c=[-n, -x.sum()], A_ub=np.column_stack([np.ones(n), x]),
+                      b_ub=y, bounds=[(None, None), (None, None)], method='highs')
+        if not res.success:
+            info['segments'].append({'n': int(n), 'fit': 'failed'}); continue
+        a, b = res.x
+        delay = y - (a + b * x)                    # >= 0: the variable part
+        tnew = t0 + a + b * x
+        for j, k in zip(np.where(m)[0], range(n)):
+            f = copy(frames[idx[j]]); f.timestamp = float(tnew[k]); new[idx[j]] = f
+        info['segments'].append({'n': int(n), 'rate_hz': 2.0e8 / b if b else None,
+                                 'delay_mean_ms': float(1e3 * delay.mean()),
+                                 'delay_p50_ms': float(1e3 * np.median(delay)),
+                                 'delay_p95_ms': float(1e3 * np.percentile(delay, 95)),
+                                 'delay_max_ms': float(1e3 * delay.max())})
+    if verbose or os.environ.get('RIO_RADAR_CLOCK_VERBOSE'):
+        for sg in info['segments']:
+            print(f"  [radar clock] {sg}")
+    return new, info
+
+
 def load_bag_topics(bag_path: str, verbose: bool = True) -> BagData:
     """Load relevant topics from a rosbag file.
 
@@ -1151,6 +1333,13 @@ def load_bag_topics(bag_path: str, verbose: bool = True) -> BagData:
 
     finally:
         bag.close()
+
+    # reference kinematics from the pose (see derive_pose_reference)
+    agiros_state_list = derive_pose_reference(agiros_state_list)
+    # radar frame stamps from the sensor clock (see sensor_clock_timestamps)
+    import os as _os
+    if _os.environ.get('RIO_RADAR_CLOCK', 'sensor') == 'sensor':
+        radar_velocity_list, _ = sensor_clock_timestamps(radar_velocity_list)
 
     # Create BagData object
     bag_data = BagData(

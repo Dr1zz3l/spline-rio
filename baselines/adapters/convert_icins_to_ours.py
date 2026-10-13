@@ -147,6 +147,8 @@ def main():
 
     # --- write ---------------------------------------------------------------
     msgs = []
+    last_radar_ns = -1
+    n_radar_dropped = 0
     with Reader(bag_in) as r:
         conns = [c for c in r.connections
                  if c.topic in ('/sensor_platform/imu', '/sensor_platform/radar/scan')]
@@ -158,6 +160,14 @@ def main():
                 msgs.append((t_out, '/angrybird2/imu', 'sensor_msgs/msg/Imu',
                              c.msgdef, c.digest, raw))
             else:
+                # flight_1/3 contain radar msgs whose header stamp FROZE
+                # (repeats the previous scan's stamp while the payload is a
+                # new scan). Duplicate frame times become zero-dt knot pairs
+                # in the GP backend (NaN); drop non-increasing stamps here.
+                if t_out <= last_radar_ns:
+                    n_radar_dropped += 1
+                    continue
+                last_radar_ns = t_out
                 _, pts = read_their_radar(raw, typestore)
                 if args.elev_gate_deg is not None and len(pts):
                     rho = np.sqrt(pts[:, 0] ** 2 + pts[:, 1] ** 2)
@@ -166,6 +176,9 @@ def main():
                 raw2 = build_our_radar_cloud(t_out, pts, typestore)
                 msgs.append((t_out, '/mmWaveDataHdl/RScanVelocity',
                              'sensor_msgs/msg/PointCloud2', c.msgdef, c.digest, raw2))
+    if n_radar_dropped:
+        print(f'  dropped {n_radar_dropped} radar msg(s) with non-increasing '
+              f'header stamps (stamp-frozen duplicates)')
 
     QuadState = donor['/angrybird2/agiros_pilot/state']
     Pose = donor['/mocap/angrybird2/pose']

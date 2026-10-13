@@ -215,6 +215,57 @@ roslaunch ti_mmwave_rospkg 6843AOP_velocity_3d.launch          # with RViz
 rosbag record /mmWaveDataHdl/RScanVelocity /tf /tf_static
 ```
 
+### Live odometry (real-time ROS1 node)
+
+`rio_ros/scripts/rio_spline_node.py` runs the spline sliding-window solver live:
+causal sensor-only front end (Doppler de-aliasing, aliased-bearing repair,
+per-return weights, RANSAC), a solver worker thread so sensor callbacks never
+wait for a solve, watchdog + in-air re-arm, a 100 Hz IMU-propagated output
+between solves. Its solver profile is generated from the offline pipeline
+(`analysis/export_spline_node_config.py` -> `config/rio_spline_profile.yaml`),
+so live and offline run the same configuration.
+
+```bash
+# environment + modules (pixi: ROS1 Noetic via RoboStack + Ceres/Eigen from conda-forge)
+pixi install && pixi run build-rio            # -> rio_solver_cpp/build_pixi/lib
+# set rio_solver_path in config/rio_spline_params.yaml to that directory, then
+roslaunch rio_ros rio_spline.launch                          # odometry only
+roslaunch rio_ros radar_acro.launch                          # radar driver + odometry
+roslaunch rio_ros radar_acro.launch radar:=false             # odometry only (bag replay)
+
+# offline regression / real-time check against a recorded bag (no ROS needed)
+C=mmwave_ti_ros/ros1_driver/src/rio_ros/config
+RIO_NODE_PROFILE=$C/rio_spline_profile.yaml:$C/rio_spline_params.yaml \
+  python mmwave_ti_ros/ros1_driver/src/rio_ros/scripts/test_node_replay.py fast_racing_best_velocity
+# add RIO_REPLAY_REALTIME=1 for a wall-clock-paced, threaded run with latency stats
+```
+
+Topics: `rio_spline/odom` (live edge, once per 0.3 s stride), `rio_spline/odom_fast`
+(100 Hz), `rio_spline/status` (JSON health and timing). `doppler_v_max`
+auto-selects from the chirp in `radar_acro.launch` (best_velocity 3.136 m/s).
+Build on the target machine (CPU-native flags; aarch64 / Jetson supported).
+Details: [rio_ros README](mmwave_ti_ros/ros1_driver/src/rio_ros/README.md).
+
+### Changes since the report
+
+The report (`report/`) documents the code as submitted (2026-09). The code has
+moved on; the defaults now include, all measured estimator-free and gated on
+the same flights:
+- radar extrinsic yaw +1.0 deg, gyro y-axis scale +1.44 %, recovery of the
+  aliased bearing (three AOP lobes) instead of down-weighting aliased returns;
+- the IMU-to-body misalignment (-0.55, 2.17, -2.0) deg on gyro and
+  accelerometer, and a 20 ms accelerometer-vs-gyro lag;
+- the spline's weights re-derived against its own frame noise model (radar
+  weight 306, per-return law (0.0572, 0.02328), speed-dependent frame-shared
+  term, Huber 3 sigma, gyro 17.4) and the accelerometer as 10 Hz velocity
+  increments (C++ builder);
+- the real-time live node above, with a bounded-memory solver API.
+
+Spline live edge with these defaults (position m / velocity m/s / orientation
+deg): slow racing 0.124 / 0.126 / 1.26, fast racing 0.131 / 0.174 / 1.47,
+backflips 0.434 / 0.523 / 6.01, circle 0.169 / 0.307 / 2.57; ICINS
+whole-trajectory ATE 0.404 / 0.144 / 0.654 / 0.341 m.
+
 USB/GUI setup is handled by the Docker dev container (`docker/`, `scripts/`,
 `.devcontainer/`). With other catkin packages present, `CATKIN_IGNORE` files keep
 only `ros1_driver/` building. Detailed driver docs:

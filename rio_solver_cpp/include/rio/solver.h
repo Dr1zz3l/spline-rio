@@ -21,6 +21,10 @@ struct RadarPoint {
 struct RadarFrame {
     double timestamp;               // absolute time (s)
     std::vector<RadarPoint> points;
+    // per-frame frame-shared sigma (radar_frame_sigma_c units); < 0 = use
+    // cfg.radar_frame_sigma_c.  2026-09-28: the measured speed-dependent
+    // shared term (worklog/2026-09-28_weight-rederivation.md).
+    double sigma_c{-1.0};
 };
 
 struct ImuSample {
@@ -170,6 +174,12 @@ struct SolverConfig {
     // p=4 stays ≈flat below ~0.7·ω₀ and ramps hard above — kicks in only for
     // genuinely aggressive rotation.
     double lambda_gyro_omega_pow{2.0};
+    // Measured gyro noise rate law (2026-09-28, worklog/2026-09-28_weight-
+    // rederivation.md): sigma(omega) = sigma0 sqrt(1 + (|omega|/omega0)^2),
+    // i.e. per-sample weight w = 1 / (1 + (|z_gyro|/gyro_soft_sigma)^2).
+    // The opposite sign of the retracted lambda_gyro_omega_sigma boost.
+    // 0.0 (default): disabled.
+    double gyro_soft_sigma{0.0};
 
     // Per-point radar weighting from signal intensity/SNR (ROADMAP Part 4,
     // "per-point noise"; the Python WLS already weights by intensity).
@@ -203,6 +213,19 @@ struct SolverConfig {
     double lambda_preint_v{0.0};      // weight for r_v (3 residuals); 0 = disabled (safe default)
     double lambda_preint_p{0.0};      // weight for r_p (3 residuals); 0 = disabled (safe default)
     double preint_hz{100.0};          // informational; Python uses to set dt_ori = 1/preint_hz
+
+    // Accelerometer velocity-increment factor (EXPERIMENT 2026-09-12, SW only,
+    // not deployed): when accel_increment_hz > 0 the preint_factors vector
+    // carries increments on a 1/accel_increment_hz grid (Python builds them)
+    // and the SW adds AccelIncrementFunctor rows weighted 1/sigma_eff^2,
+    // sigma_eff = accel_inc_sigma * sqrt(1 + (max|omega| / accel_inc_omega_sigma)^2)
+    // (the GP backend's sigma_dv / dv_omega_sigma law). Pair with
+    // lambda_accel = 0 to drop the per-sample accelerometer rows.
+    double accel_increment_hz{0.0};
+    double accel_inc_sigma{0.05};       // m/s per increment (GP sigma_dv)
+    double accel_inc_omega_sigma{2.25}; // rad/s (GP dv_omega_sigma)
+    double accel_inc_ref_dt{0.0};       // > 0: sigma scales sqrt(dt / ref_dt) (white-increment
+                                        // model; the GP constant was measured on 0.1 s gaps)
 
     // Sliding window: fix leading knots constant (previously solved, trusted)
     int n_fix_leading_pos{0};   // number of leading pos CPs to freeze
@@ -294,6 +317,17 @@ struct SolverConfig {
     // locally-accurate P1-P3 shape while removing accumulated drift.
     // false: legacy behaviour (stale absolute init values).
     bool warm_start_align{true};
+    // EXPERIMENT 2026-09-27 (worklog/2026-09-27_spline-vertical-drift.md):
+    // also match the VELOCITY at the seam -- the entering CPs get the init
+    // shape plus a position offset AND a linear-in-index offset that makes
+    // the derivative control points at the seam equal to the solved ones
+    // (the init's velocity error there otherwise becomes the warm start of a
+    // nearly flat vertical-velocity direction).
+    bool warm_start_vel{false};
+    // 0 = staleness inflation per CP / knot (deployed), 1 = on the physical
+    // state (common translation of the boundary position CPs, common rotation
+    // of the boundary orientation knots). EXPERIMENT 2026-09-27.
+    int marg_stale_mode{0};
 
     // ---- Yaw gauge pre-alignment (ROADMAP next-steps) -------------------------
     // Before each window solve, compute the circular-mean yaw residual of the
@@ -321,6 +355,9 @@ struct SolverConfig {
     // adaptively — unlike a hard max_iterations cap, hard windows still get
     // their iterations while easy windows exit early.
     double function_tolerance{1e-6};
+    // Wall-clock cap on one LM solve (s); 0 = unlimited (offline default).
+    // The live ROS spline node sets it below the stride (2026-10-13).
+    double max_solver_time_s{0.0};
 
     // ---- Stochastic noise model (branch stochastic-noise-model) --------------
     // Bias random walk ACROSS strides: before storing the marginalization

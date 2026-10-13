@@ -698,11 +698,17 @@ SolverResult solve(
 
     // ---- Solve --------------------------------------------------------------
     ceres::Solver::Options options;
+#ifdef RIO_HAVE_BANDED_SCHUR
     if (cfg.use_banded_schur) {
         options.linear_solver_type = ceres::BANDED_SCHUR;
         // Globals = bias (6 DoF) + pitch_delta (1 DoF if extrinsics unlocked)
         options.banded_n_global_cols = 6 + (optimize_ext ? 1 : 0);
-    } else {
+    } else
+#else
+    if (cfg.use_banded_schur)
+        throw std::runtime_error("use_banded_schur needs the BANDED_SCHUR-patched Ceres");
+#endif
+    {
         options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
         options.sparse_linear_algebra_library_type = ceres::SUITE_SPARSE;
     }

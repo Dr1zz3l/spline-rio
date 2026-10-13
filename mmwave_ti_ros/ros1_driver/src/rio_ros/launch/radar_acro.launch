@@ -1,0 +1,58 @@
+<!--
+  Unified bring-up: TI radar driver (+ chirp config) and the ACRO GP-RIO node.
+
+  Examples:
+    roslaunch rio_ros radar_acro.launch                          # both, best_velocity chirp
+    roslaunch rio_ros radar_acro.launch radar_cfg:=6843AOP_best_velocity_emv
+    roslaunch rio_ros radar_acro.launch acro:=false              # radar only (recording run)
+    roslaunch rio_ros radar_acro.launch radar:=false             # ACRO only (radar already up / bag replay)
+    roslaunch rio_ros radar_acro.launch rviz:=true               # add the driver's velocity RViz view
+    roslaunch rio_ros radar_acro.launch backend:=gp              # the GP node (development tree only; default: spline)
+
+  doppler_v_max MUST match the chirp: best_velocity = 3.136 m/s,
+  best_velocity_emv ~ 9.4 m/s (extendedMaxVelocity; VERIFY on device after the
+  first EMV flight and pin the exact value). It auto-selects from radar_cfg
+  below; override explicitly for a custom chirp.
+-->
+<launch>
+  <arg name="radar" default="true" doc="launch the TI mmWave driver + chirp config"/>
+  <arg name="acro"  default="true" doc="launch the ACRO GP-RIO node"/>
+  <arg name="rviz"  default="false" doc="launch the driver's velocity RViz view"/>
+
+  <arg name="radar_cfg" default="6843AOP_best_velocity"
+       doc="chirp cfg basename in ti_mmwave_rospkg/cfg (no .cfg)"/>
+  <arg name="doppler_v_max"
+       default="$(eval 9.4 if 'emv' in arg('radar_cfg') else 3.136)"
+       doc="Doppler ambiguity of the chirp (m/s); must match radar_cfg"/>
+
+  <arg name="backend" default="spline" doc="spline | gp: which RIO node to run (gp: development tree only)"/>
+  <arg name="acro_params" default="$(find rio_ros)/config/rio_gp_params.yaml"/>
+
+  <!-- radar driver (headless variant; rviz optional on top) -->
+  <group if="$(arg radar)">
+    <include file="$(find ti_mmwave_rospkg)/launch/6843AOP_velocity_3d_headless.launch">
+      <arg name="cfg_file"
+           value="$(find ti_mmwave_rospkg)/cfg/$(arg radar_cfg).cfg"/>
+    </include>
+    <node if="$(arg rviz)" pkg="rviz" type="rviz" name="rviz"
+          args="-d $(find ti_mmwave_rospkg)/launch/rviz/ti_mmwave_velocity.rviz"/>
+  </group>
+
+  <!-- ACRO node -->
+  <group if="$(eval arg('acro') and arg('backend') == 'gp')">
+    <node pkg="rio_ros" type="rio_gp_node.py" name="rio_gp_node"
+          output="screen">
+      <rosparam command="load" file="$(arg acro_params)"/>
+      <!-- chirp-coupled override wins over the yaml value -->
+      <param name="doppler_v_max" value="$(arg doppler_v_max)"/>
+    </node>
+  </group>
+  <group if="$(eval arg('acro') and arg('backend') == 'spline')">
+    <node pkg="rio_ros" type="rio_spline_node.py" name="rio_spline_node"
+          output="screen">
+      <rosparam command="load" file="$(find rio_ros)/config/rio_spline_profile.yaml"/>
+      <rosparam command="load" file="$(find rio_ros)/config/rio_spline_params.yaml"/>
+      <param name="doppler_v_max" value="$(arg doppler_v_max)"/>
+    </node>
+  </group>
+</launch>

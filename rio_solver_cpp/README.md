@@ -16,6 +16,12 @@ Phase 1 of the Python→C++ migration for the radar-inertial odometry solver.
   - Live-edge (settled) results: slow 0.393 m/2.21° (0.218 m/1.57°), fast 0.877 m/4.16° (0.804 m/3.10°)
 - [ ] **Phase 5**: ROS node (real-time subscriber + odometry publisher)
 
+There is also a **second, parallel backend**: a GTSAM `IncrementalFixedLagSmoother`
+(iSAM2) on branch `isam2-backend`, exposed as `--isam` instead of `--sliding-window`.
+It beats this Ceres SW on racing (accuracy + speed) and matches it on backflips
+position/velocity. See **[iSAM2 / GTSAM backend](#isam2--gtsam-backend---isam)** below
+and `documentation/ISAM2_MIGRATION.md` for the full record.
+
 ## Build
 
 ```bash
@@ -40,6 +46,52 @@ cd build_release
 ./test_spline        # 11 tests: spline eval + trajectory indexing
 ctest --output-on-failure
 ```
+
+## iSAM2 / GTSAM backend (`--isam`)
+
+The `rio_isam` pybind module (`src/isam_sliding_window_solver.cpp`,
+`include/rio/gtsam/`) is the incremental GTSAM backend. It is built by the **same**
+`cmake --build .` above, but **only if the vendored GTSAM is present**: the CMake
+auto-detects `gtsam_vendored_install/libgtsam_unstable.so` and skips the `rio_isam`
+target otherwise (the Ceres build is unaffected).
+
+**Why vendored:** apt `libgtsam-dev` ships no `gtsam_unstable` (no
+`IncrementalFixedLagSmoother`) and is baseline-x86-64, which collides with our
+`-march=native` Eigen alignment (heap corruption). Build GTSAM 4.2.1 from source
+with matching flags (the install dir is gitignored, so a fresh checkout must
+rebuild it):
+
+```bash
+git clone --branch 4.2.1 --depth 1 https://github.com/borglab/gtsam.git
+cd gtsam && mkdir build && cd build
+cmake .. \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DGTSAM_BUILD_UNSTABLE=ON \
+  -DGTSAM_USE_SYSTEM_EIGEN=ON \
+  -DGTSAM_WITH_TBB=ON \
+  -DGTSAM_BUILD_WITH_MARCH_NATIVE=ON \
+  -DGTSAM_BUILD_TESTS=OFF \
+  -DCMAKE_INSTALL_PREFIX=<repo>/rio_solver_cpp/gtsam_vendored_install
+make -j$(nproc) install
+# then rebuild rio_solver_cpp: cmake .. && cmake --build . --target rio_isam -j$(nproc)
+```
+
+CMake links `libgtsam.so` directly (not `find_package`, because Ubuntu's
+`GTSAMConfig.cmake` is broken) and sets RPATH to the vendored lib dir for the bundled
+`libmetis-gtsam.so`.
+Run it from `analysis/` (parallel to `--sliding-window`):
+
+```bash
+../.venv/bin/python3 validate_live_solver.py slow_racing_best_velocity \
+  --mocap-yaw --cpp --isam --set lambda_heading=10 \
+  --set window_duration=1.5 --set extra_iters=3
+```
+
+Opt-in accuracy/diagnostic flags (all default off, one config across bags): floor
+anchor `--set lambda_floor=15 --set floor_free=1 --set floor_cluster=1`, online
+z-bias `--set radar_zbias_estimate=1`, adaptive lag `--set lag_flip=8`, NEES/
+consistency `--set nees=1`. See `documentation/ISAM2_MIGRATION.md` (FINAL SUMMARY +
+per-bag config) and `documentation/ALGO_IMPROVEMENTS.md` (D5/D6).
 
 ## Python usage (after build --install)
 

@@ -28,15 +28,15 @@ lambda_preint_p: 0.0   # weight for r_p (position residuals); 0 = disabled
 # correlation time (geometric mean over the racing calibration flights; see
 # analysis/derive_stream_weights.py and worklog/FEEDBACK_PLAN.md). Replaces the tuned
 # lambda_gyro=4.0 / lambda_accel=0.01 / radar-as-numeraire-1.0 statics.
-lambda_gyro: 3.13
-lambda_accel: 0.00392
+lambda_gyro: 17.4       # DEPLOYED 2026-09-30 (Timo): DERIVED from integrated rotation vs the pose reference, geomean slow/fast (worklog/2026-09-28_weight-rederivation.md sec. 3). Previously 2.57: DERIVED 2026-09-11 against the pose reference at the measured clocks (was 3.13 against the agiros angular-velocity field); worklog/2026-09-11_pose-reference-rederivation.md
+lambda_accel: 0.0       # DEPLOYED 2026-09-30: pointwise accelerometer rows OFF, the accelerometer enters as 10 Hz velocity increments (accel_increment_hz below). Previously 0.00392: KEPT 2026-09-11: the pose-referenced derivation gives 0.169 and the battery REJECTS it (drift doubles on backflips and ICINS); a residual budget the battery sets, not the formula
 # radar_weight RE-DERIVED 2026-09-07 (worklog/2026-09-07_founded-removals.md):
 # with the Huber kernel gone the sandwich numerator of derive_stream_weights.py
 # is the PLAIN second moment, taken on the non-aliased kept stream (aliased
 # returns enter at w_al = 0.019 and are absent from the moment that sets the
 # scale): slow 1.98 / fast 3.51, geomean 2.64.  The previous 2.11 was the
 # Huber-capped moment on the kept stream including aliased returns.
-radar_weight: 2.64
+radar_weight: 306.0     # DEPLOYED 2026-09-30: = 1/s0^2 of the ML fit of the spline's OWN frame model (was ~60x under-weighted; worklog/2026-09-28_weight-rederivation.md sec. 1-2). Previously 2.48: DERIVED 2026-09-11 (plain RMS of the non-aliased prefiltered stream against the pose reference; was 2.64)
 # FOUNDED REMOVALS 2026-09-07 (Timo; worklog/2026-09-07_founded-removals.md):
 #   boundary_first_window_only 1: the P3 position/velocity/orientation pins
 #     (lambda_boundary_* = 1000, hand-set) are added only while no
@@ -53,7 +53,7 @@ radar_weight: 2.64
 #     the declared degradation case ("as long as slow and fast racing are
 #     fine we just drop it").  huber_model_knee stays 1 (inert at this delta).
 boundary_first_window_only: 1
-huber_delta: 1000000.0
+huber_delta: 0.172     # DEPLOYED 2026-09-30: 3 sigma of the re-derived model (knee per return via huber_model_knee); was 1e6 (off)
 huber_delta_accel: 1000000.0
 lambda_snap_pos: 0.00002
 # Bias priors DERIVED 2026-09-07 (Timo: "deploy it"; worklog/2026-09-04_
@@ -105,6 +105,20 @@ radar_weight_model: bearing_b
 radar_frame_hetero: 1
 radar_frame_sigma_c: 1.27
 huber_model_knee: 1
+# DEPLOYED 2026-09-30 (Timo; worklog/2026-09-29_accel-lag.md sec. 4): the
+# frame-shared radar term is SPEED-DEPENDENT, sigma_c(v) = sqrt(a^2 + (b v)^2)
+# (ratio to s0; ML fit, radar_rate_fit.txt); overrides radar_frame_sigma_c per frame.
+radar_frame_sc_a: 0.575
+radar_frame_sc_b: 0.392
+# The accelerometer as integrated velocity increments on a 10 Hz grid (Forster
+# r_v, gyro-rotated, bias to first order), sigma from the MEASURED integrated
+# noise N = 0.0714 m/s/sqrt(s) (0.0226 per 0.1 s, sqrt(dt) scaling), inflated
+# by sqrt(1 + (max|omega|/2.57)^2) over the increment. Replaces the pointwise rows
+# (lambda_accel 0). ICINS: 10 Hz beats the deployed config on all four flights.
+accel_increment_hz: 10.0
+accel_inc_sigma: 0.0226
+accel_inc_ref_dt: 0.1
+accel_inc_omega_sigma: 2.57
 marg_stale_phi: 0.01
 # marg_stale_pos: the position-row analogue of marg_stale_phi, sigma_add =
 # k * theta_swept on the marg prior's boundary-POSITION rows (m per swept rad;

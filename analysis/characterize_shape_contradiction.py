@@ -138,6 +138,8 @@ def table_inputs(key):
         bag=str(BAGS[key]),
         timing=[float(x) for x in TIMING[key]],
         radar_off=float(bag_offsets(key)),
+        imu_off=float(EXT_OVER.get(key, {}).get('imu_mocap_offset_sec', EXT['imu_mocap_offset_sec'])),
+        reference=('fields' if os.environ.get('RIO_REFERENCE_FIELDS') == '1' else 'pose15'),
         v_max=float(RC.get('best_velocity' if 'best_velocity' in key
                            else 'default', {}).get('v_max', 4.99)),
         R_BS=np.asarray(R_BS, float), T_BS=np.asarray(T_BS, float))

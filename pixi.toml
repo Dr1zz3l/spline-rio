@@ -1,0 +1,44 @@
+# ROS1 Noetic (RoboStack) + build toolchain for the rio_solver_cpp pybind
+# modules (rio_gp, rio_solver), for the live ROS1 nodes.  Independent of the
+# uv/.venv analysis environment (pyproject.toml) and of the host build in
+# rio_solver_cpp/build_release.
+#
+#   pixi install          # resolve + create .pixi/envs/default
+#   pixi run build-rio    # -> rio_solver_cpp/build_pixi/lib/*.so + smoke test
+#   pixi run check        # import/construct test only
+[workspace]
+name = "radar-iwr6843-rio"
+channels = ["robostack-noetic", "conda-forge"]
+platforms = ["linux-64", "linux-aarch64"]
+
+[dependencies]
+# python: whatever RoboStack noetic is built for (left to the solver)
+python = "*"
+# ROS1 Noetic
+ros-noetic-rospy = "*"
+ros-noetic-roslaunch = "*"
+ros-noetic-rosbag = "*"
+ros-noetic-catkin = "*"
+ros-noetic-std-msgs = "*"
+ros-noetic-sensor-msgs = "*"
+ros-noetic-nav-msgs = "*"
+ros-noetic-geometry-msgs = "*"
+numpy = "*"
+pyyaml = "*"
+# build toolchain for rio_solver_cpp
+cmake = ">=3.23"          # CMAKE_IGNORE_PREFIX_PATH
+ninja = "*"
+make = "*"
+pkg-config = "*"
+cxx-compiler = "*"
+eigen = ">=3.4,<3.5"      # code needs 3.4 (find_package(Eigen3 3.4))
+ceres-solver = ">=2.2,<2.3"
+suitesparse = "*"
+glog = "*"
+gflags = "*"
+pybind11 = ">=2.10"
+fmt = "*"
+
+[tasks]
+build-rio = "bash rio_solver_cpp/scripts/build_pixi.sh"
+check = "python rio_solver_cpp/scripts/pixi_check.py"

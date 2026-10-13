@@ -30,10 +30,27 @@ extrinsics_overrides:
   backflips:
     radar_imu_offset_sec: 0.0733
     imu_mocap_offset_sec: 0.0200
-  icins_flight_1: {radar_imu_offset_sec: 0.0, imu_mocap_offset_sec: 0.0}
-  icins_flight_2: {radar_imu_offset_sec: 0.0, imu_mocap_offset_sec: 0.0}
-  icins_flight_3: {radar_imu_offset_sec: 0.0, imu_mocap_offset_sec: 0.0}
-  icins_flight_4: {radar_imu_offset_sec: 0.0, imu_mocap_offset_sec: 0.0}
+  # ICINS: zero time offsets (hardware-stamped) + DATASET extrinsics
+  # (flight_datasets/calib.yaml via convert_icins_to_ours.py: R_b_r_ours =
+  # R(q_b_r_theirs)*Rz(+90); our ZYX euler [roll,pitch,yaw]).  GP-27: baked in
+  # here so a plain run needs NO --set-ext; forgetting it used to give 12-23%
+  # drift (our extrinsics on their rig) and looked like an estimator failure.
+  icins_flight_1: {radar_imu_offset_sec: 0.0, imu_mocap_offset_sec: 0.0,
+                   rotation_euler_deg: [-178.5, -0.1, 47.0],
+                   translation_body_m: [0.01, 0.1, 0.06],
+                   imu_misalign_deg: [0.0, 0.0, 0.0], accel_lag_sec: 0.0}
+  icins_flight_2: {radar_imu_offset_sec: 0.0, imu_mocap_offset_sec: 0.0,
+                   rotation_euler_deg: [-178.5, -0.1, 47.0],
+                   translation_body_m: [0.01, 0.1, 0.06],
+                   imu_misalign_deg: [0.0, 0.0, 0.0], accel_lag_sec: 0.0}
+  icins_flight_3: {radar_imu_offset_sec: 0.0, imu_mocap_offset_sec: 0.0,
+                   rotation_euler_deg: [-178.5, -0.1, 47.0],
+                   translation_body_m: [0.01, 0.1, 0.06],
+                   imu_misalign_deg: [0.0, 0.0, 0.0], accel_lag_sec: 0.0}
+  icins_flight_4: {radar_imu_offset_sec: 0.0, imu_mocap_offset_sec: 0.0,
+                   rotation_euler_deg: [-178.5, -0.1, 47.0],
+                   translation_body_m: [0.01, 0.1, 0.06],
+                   imu_misalign_deg: [0.0, 0.0, 0.0], accel_lag_sec: 0.0}
   # backflips_best_velocity: TESTED radar_imu_offset_sec=0.1067 (this bag's
   # cross-corr best fit, vs global 0.135) — REVERTED: position degraded
   # 2.06→2.79 m, ori ~par (9.56→9.35 live). Cross-corr offset estimates
@@ -61,7 +78,10 @@ solver_overrides:
     dt_pos: 0.010        # coarser position: compensates for increased solve time from dense ori knots
     lock_extrinsics: 1   # extrinsic pitch drifts on backflips (orientation model error acts as surrogate)
     lock_gyro_bias: 1    # E1: post-solve gyro clamp; rank-deficient windows let bias run away to >1 rad/s
-    lambda_heading: 10.0 # E2: stronger pseudo-magnetometer; absolute yaw anchor through the flip
+    # lambda_heading: 10.0  # REMOVED (GP-27, 2026-07-17): batch-era E2 override
+    #   silently reached the GP backend too (published GP backflips 4.06 deg ori
+    #   depended on it while racing ran at solver.yaml 0.6). Pinned 0.6 for ALL
+    #   bags/backends; legacy batch repro needs --set lambda_heading=10.
     marg_prior_scale: 0.0  # E3: disable marg prior; S is rank-deficient (stride zone: 375 ori knots vs ~300 gyro)
     # --- SW (Phase 3) config — use --set flags to override from CLI ---
     # python validate_live_solver.py backflips_best_velocity --mocap-yaw --cpp --sliding-window \

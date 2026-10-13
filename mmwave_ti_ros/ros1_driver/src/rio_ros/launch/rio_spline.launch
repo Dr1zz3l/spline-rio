@@ -1,0 +1,11 @@
+<launch>
+  <!-- Live spline sliding-window radar-inertial odometry (standalone).
+       profile = GENERATED from the harness (do not edit), params = deployment side. -->
+  <node pkg="rio_ros" type="rio_spline_node.py" name="rio_spline_node"
+        output="screen">
+    <rosparam command="load"
+              file="$(find rio_ros)/config/rio_spline_profile.yaml"/>
+    <rosparam command="load"
+              file="$(find rio_ros)/config/rio_spline_params.yaml"/>
+  </node>
+</launch>

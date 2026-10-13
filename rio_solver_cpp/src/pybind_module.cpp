@@ -1,4 +1,5 @@
 #include <pybind11/pybind11.h>
+#include <rio/preintegrate_grid.h>
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 #include <pybind11/eigen.h>
@@ -192,14 +193,22 @@ PYBIND11_MODULE(rio_solver, m) {
         .def_readwrite("lambda_preint_v", &SolverConfig::lambda_preint_v)
         .def_readwrite("lambda_preint_p", &SolverConfig::lambda_preint_p)
         .def_readwrite("preint_hz",       &SolverConfig::preint_hz)
+        .def_readwrite("accel_increment_hz",    &SolverConfig::accel_increment_hz)
+        .def_readwrite("accel_inc_sigma",       &SolverConfig::accel_inc_sigma)
+        .def_readwrite("accel_inc_omega_sigma", &SolverConfig::accel_inc_omega_sigma)
+        .def_readwrite("accel_inc_ref_dt",      &SolverConfig::accel_inc_ref_dt)
         .def_readwrite("dump_system",     &SolverConfig::dump_system)
         .def_readwrite("nees_covariance", &SolverConfig::nees_covariance)
         .def_readwrite("use_banded_schur", &SolverConfig::use_banded_schur)
         .def_readwrite("marg_markov_blanket", &SolverConfig::marg_markov_blanket)
         .def_readwrite("warm_start_align",    &SolverConfig::warm_start_align)
+        .def_readwrite("warm_start_vel",      &SolverConfig::warm_start_vel)
+        .def_readwrite("marg_stale_mode",     &SolverConfig::marg_stale_mode)
+        .def_readwrite("gyro_soft_sigma",     &SolverConfig::gyro_soft_sigma)
         .def_readwrite("yaw_prealign",        &SolverConfig::yaw_prealign)
         .def_readwrite("yaw_prealign_gain",   &SolverConfig::yaw_prealign_gain)
         .def_readwrite("function_tolerance",  &SolverConfig::function_tolerance)
+        .def_readwrite("max_solver_time_s",      &SolverConfig::max_solver_time_s)
         .def_readwrite("marg_fast_prior",     &SolverConfig::marg_fast_prior);
 
     // ---- ExtrinsicConfig ----------------------------------------------------
@@ -356,9 +365,11 @@ PYBIND11_MODULE(rio_solver, m) {
     // ---- Convenience: convert Python radar data (list of dicts) to RadarFrame
     m.def("make_radar_frame",
         [](double timestamp,
-           py::array_t<double, py::array::c_style | py::array::forcecast> pts) {
+           py::array_t<double, py::array::c_style | py::array::forcecast> pts,
+           double sigma_c) {
             RadarFrame frame;
             frame.timestamp = timestamp;
+            frame.sigma_c = sigma_c;
             auto r = pts.unchecked<2>();
             int n = static_cast<int>(r.shape(0));
             const bool has_intensity = r.shape(1) >= 5;
@@ -374,7 +385,7 @@ PYBIND11_MODULE(rio_solver, m) {
             }
             return frame;
         },
-        py::arg("timestamp"), py::arg("points_nx4"),
+        py::arg("timestamp"), py::arg("points_nx4"), py::arg("sigma_c") = -1.0,
         "Create a RadarFrame from a Nx4 [x,y,z,v] or Nx5 [x,y,z,v,intensity] numpy array.");
 
     // ---- SlidingWindowSolver ------------------------------------------------
@@ -425,7 +436,53 @@ PYBIND11_MODULE(rio_solver, m) {
                 return out;
             })
         .def_property_readonly("radar_zbias",
-            [](const SlidingWindowSolver& s) { return s.radar_zbias(); });
+            [](const SlidingWindowSolver& s) { return s.radar_zbias(); })
+        // ---- live (causal) operation, 2026-10-13 (ROS spline node) ----
+        .def("set_init_tail",
+            [](SlidingWindowSolver& self, int first_pos,
+               py::array_t<double, py::array::c_style | py::array::forcecast> pos_np,
+               int first_ori,
+               py::array_t<double, py::array::c_style | py::array::forcecast> ori_np) {
+                self.set_init_tail(first_pos, np_to_pos_cps(pos_np),
+                                   first_ori, np_to_ori_knots(ori_np));
+            },
+            py::arg("first_pos"), py::arg("pos_cps"), py::arg("first_ori"), py::arg("ori_knots"),
+            "Overwrite/append init+current knots from the given indices (warm-start shape).")
+        .def("trim_before", &SlidingWindowSolver::trim_before, py::arg("t_keep"),
+             "Drop knots before t_keep (whole common periods); returns the new t_ref.")
+        .def("sample",
+            [](const SlidingWindowSolver& s, const std::vector<double>& times) {
+                std::vector<std::array<double, 4>> q;
+                std::vector<std::array<double, 3>> p, v, w;
+                s.sample(times, q, p, v, w);
+                return py::make_tuple(ori_knots_to_np(q), pos_cps_to_np(p),
+                                      pos_cps_to_np(v), pos_cps_to_np(w));
+            },
+            py::arg("times"),
+            "(quat xyzw Nx4, pos Nx3, vel_world Nx3, omega_body Nx3) at absolute times.")
+        .def_property_readonly("t_ref", &SlidingWindowSolver::t_ref)
+        .def_property_readonly("n_pos_cps", &SlidingWindowSolver::n_pos_cps)
+        .def_property_readonly("n_ori_knots", &SlidingWindowSolver::n_ori_knots)
+        .def_property_readonly("has_prior", &SlidingWindowSolver::has_prior);
+
+    m.def("preintegrate_grid",
+        [](py::array_t<double, py::array::c_style | py::array::forcecast> imu_np,
+           py::array_t<double> ba0, py::array_t<double> bg0,
+           double t_start, double t_end, double dt, double t_ref, bool snap) {
+            auto r = imu_np.unchecked<2>();
+            if (r.ndim() != 2 || r.shape(1) != 7)
+                throw std::runtime_error("preintegrate_grid: imu must be N x 7");
+            Eigen::Matrix<double, Eigen::Dynamic, 7, Eigen::RowMajor> M(r.shape(0), 7);
+            for (ssize_t i = 0; i < r.shape(0); ++i)
+                for (int j = 0; j < 7; ++j) M(i, j) = r(i, j);
+            auto a = ba0.unchecked<1>(); auto g = bg0.unchecked<1>();
+            return preintegrate_grid(M, Eigen::Vector3d(a(0), a(1), a(2)),
+                                     Eigen::Vector3d(g(0), g(1), g(2)),
+                                     t_start, t_end, dt, t_ref, snap);
+        },
+        py::arg("imu"), py::arg("b_a0"), py::arg("b_g0"), py::arg("t_start"),
+        py::arg("t_end"), py::arg("dt"), py::arg("t_ref"), py::arg("snap_to_samples") = false,
+        "C++ port of the Python increment builder (_build_preint_factors_cpp + preintegrate).");
 
     m.def("make_imu_samples",
         [](py::array_t<double, py::array::c_style | py::array::forcecast> imu_np) {

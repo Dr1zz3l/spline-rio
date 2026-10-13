@@ -65,7 +65,8 @@ from validate_nonlinear_solver import (
 
 # ==================== C++ Ceres solver bridge ====================
 
-def _build_preint_factors_cpp(rio_solver, imu_data, b_a0, b_g0, t_start, t_end, dt_ori, t_ref):
+def _build_preint_factors_cpp(rio_solver, imu_data, b_a0, b_g0, t_start, t_end, dt_ori, t_ref,
+                              snap_to_samples=False):
     """
     Build preintegrated IMU factors on a uniform grid aligned to knot boundaries.
     Returns a list of rio_solver.PreintFactor objects.
@@ -96,6 +97,16 @@ def _build_preint_factors_cpp(rio_solver, imu_data, b_a0, b_g0, t_start, t_end, 
         f.t_i = pf_py.t_i
         f.t_j = pf_py.t_j
         f.dt  = pf_py.dt
+        if snap_to_samples:
+            # the increment integrates the samples inside the cell only: make
+            # the factor span exactly the first..last sample so the gravity
+            # term g*dt matches the integrated span (a 1 ms edge mismatch is
+            # 0.01 m/s, coherent across cells, at the increment sigma 0.05)
+            ts_in = imu_arr[mask, 0]
+            if len(ts_in) < 2:
+                continue
+            f.t_i, f.t_j = float(ts_in[0]), float(ts_in[-1])
+            f.dt = f.t_j - f.t_i
         f.delta_R  = pf_py.delta_R
         f.delta_v  = pf_py.delta_v
         f.delta_p  = pf_py.delta_p
@@ -320,52 +331,27 @@ def _solve_cpp(initial_state, solver_radar_frames, imu_data,
 
 # ==================== C++ sliding window bridge ====================
 
-def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
-                               extrinsics_cfg, solver_cfg,
-                               heading_priors=None):
-    """
-    Fixed-lag smoother with Schur complement marginalization.
-    Uses the stateful C++ SlidingWindowSolver which carries a dense Gaussian
-    prior across window advances (Phase 4b).
+def _frame_sigma_c(ts, solver_cfg):
+    """Per-frame frame-shared sigma (radar_frame_sigma_c units) from the
+    measured speed-dependent shared term (2026-09-28, worklog/2026-09-28_
+    weight-rederivation.md): sigma_c = sqrt(a^2 + (b |v|)^2) with |v| the
+    frame's own radar consensus speed (sensor-only, as the per-return law).
+    -1 (= the constant cfg value) unless radar_frame_sc_a/b are set."""
+    a = float(solver_cfg.get('radar_frame_sc_a', 0.0)); b = float(solver_cfg.get('radar_frame_sc_b', 0.0))
+    if a <= 0.0 and b <= 0.0:
+        return -1.0
+    v = _SPEED_FRAME_V.get(ts)
+    if v is None:
+        return -1.0
+    return float(np.sqrt(a * a + (b * v) ** 2))
 
-    Config keys read from solver_cfg:
-      window_duration  (float, default 3.0 s)
-      window_stride    (float, default 0.3 s)
-    """
-    import sys as _sys, os as _os
-    _build_dirs = [
-        _os.path.join(_os.path.dirname(__file__), '..', 'rio_solver_cpp', 'build_release'),
-        _os.path.join(_os.path.dirname(__file__), '..', 'rio_solver_cpp', 'build_debug'),
-        _os.path.dirname(__file__),
-    ]
-    for d in _build_dirs:
-        d = _os.path.abspath(d)
-        if d not in _sys.path:
-            _sys.path.insert(0, d)
-    import rio_solver
 
-    window_duration = solver_cfg.get('window_duration', 3.0)
-    window_stride   = solver_cfg.get('window_stride', 0.3)
-    dt_pos          = solver_cfg.get('dt_pos', 0.005)
-    dt_ori          = solver_cfg.get('dt_ori', 0.008)
-
-    ori_spline  = initial_state.ori_spline
-    pos_bspline = initial_state.pos_bspline
-    t_ref = pos_bspline.t_ref
-
-    all_pos_cps   = pos_bspline.control_points.copy()         # (N_total_pos, 3)
-    all_ori_quats = Rotation.from_matrix(                      # (N_total_ori, 4) xyzw
-        ori_spline._base_rotations).as_quat()
-    biases = np.concatenate([initial_state.acc_bias, initial_state.gyr_bias])
-
-    # Extrinsics
-    euler_deg = extrinsics_cfg.get('rotation_euler_deg', [180.0, 25.5, 0.0])
-    ext = rio_solver.ExtrinsicConfig()
-    ext.roll_deg, ext.pitch_deg, ext.yaw_deg = euler_deg
-    t_body = extrinsics_cfg.get('translation_body_m', [0.08, 0.02, -0.01])
-    ext.tx, ext.ty, ext.tz = t_body
-
-    # Build SolverConfig once
+def _sw_solver_config(rio_solver, solver_cfg):
+    """The sliding-window SolverConfig exactly as _solve_cpp_sliding_window builds
+    it (factored out 2026-10-13 so the live ROS spline node's profile is EXPORTED
+    from here, analysis/export_spline_node_config.py, not hand-copied)."""
+    dt_pos = solver_cfg.get('dt_pos', 0.005)
+    dt_ori = solver_cfg.get('dt_ori', 0.008)
     cfg = rio_solver.SolverConfig()
     cfg.dt_pos                  = dt_pos
     cfg.dt_ori                  = dt_ori
@@ -433,11 +419,21 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
     cfg.lambda_preint_v         = solver_cfg.get('lambda_preint_v', 0.0)
     cfg.lambda_preint_p         = solver_cfg.get('lambda_preint_p', 0.0)
     cfg.preint_hz               = solver_cfg.get('preint_hz', 100.0)
+    cfg.accel_increment_hz      = float(solver_cfg.get('accel_increment_hz', 0.0))   # DEPLOYED 2026-09-30 (10 Hz, solver_cpp.yaml): accel velocity-increment factor (SW)
+    cfg.accel_inc_sigma         = float(solver_cfg.get('accel_inc_sigma', 0.05))
+    cfg.accel_inc_omega_sigma   = float(solver_cfg.get('accel_inc_omega_sigma', 2.25))
+    cfg.accel_inc_ref_dt        = float(solver_cfg.get('accel_inc_ref_dt', 0.0))
     cfg.dump_system             = bool(solver_cfg.get('dump_system', False))
     cfg.use_banded_schur        = bool(solver_cfg.get('use_banded_schur', False))
     # ROADMAP §1.1 / §1.2 consistency fixes (default ON; --set ...=0 for legacy A/B)
     cfg.marg_markov_blanket     = bool(int(solver_cfg.get('marg_markov_blanket', 1)))
     cfg.warm_start_align        = bool(int(solver_cfg.get('warm_start_align', 1)))
+    if hasattr(cfg, 'warm_start_vel'):
+        cfg.warm_start_vel      = bool(int(solver_cfg.get('warm_start_vel', 0)))   # EXPERIMENT 2026-09-27
+    if hasattr(cfg, 'marg_stale_mode'):
+        cfg.marg_stale_mode     = int(solver_cfg.get('marg_stale_mode', 0))   # EXPERIMENT 2026-09-27
+    if hasattr(cfg, 'gyro_soft_sigma'):
+        cfg.gyro_soft_sigma     = float(solver_cfg.get('gyro_soft_sigma', 0.0))   # measured rate law 2026-09-28
     # Yaw gauge pre-alignment (closed-form heading collapse; default off)
     cfg.yaw_prealign            = bool(int(solver_cfg.get('yaw_prealign', 0)))
     cfg.yaw_prealign_gain       = float(solver_cfg.get('yaw_prealign_gain', 1.0))
@@ -445,23 +441,119 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
     cfg.marg_fast_prior         = bool(int(solver_cfg.get('marg_fast_prior', 1)))
     cfg.function_tolerance      = float(solver_cfg.get('function_tolerance', 1e-6))
 
+    return cfg
+
+
+def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
+                               extrinsics_cfg, solver_cfg,
+                               heading_priors=None,
+                               causal_unwrap=None, raw_vel_by_ts=None):
+    """
+    Fixed-lag smoother with Schur complement marginalization.
+    causal_unwrap: optional dict {v_max, thr} = the GP's live-window
+    sensor-only re-unwrap (GP-22) ported to the SW (EXPERIMENT 2026-09-13):
+    frames are re-unwrapped ONCE, when they first enter the window, against
+    the previous window's live-edge velocity (spline sample at its t_end),
+    then RANSAC-filtered per stride; the offline RANSAC is skipped by the
+    caller in this mode. Causal, no future data, no motion capture.
+    Uses the stateful C++ SlidingWindowSolver which carries a dense Gaussian
+    prior across window advances (Phase 4b).
+
+    Config keys read from solver_cfg:
+      window_duration  (float, default 3.0 s)
+      window_stride    (float, default 0.3 s)
+    """
+    import sys as _sys, os as _os
+    _build_dirs = [
+        _os.path.join(_os.path.dirname(__file__), '..', 'rio_solver_cpp', 'build_release'),
+        _os.path.join(_os.path.dirname(__file__), '..', 'rio_solver_cpp', 'build_debug'),
+        _os.path.dirname(__file__),
+    ]
+    for d in _build_dirs:
+        d = _os.path.abspath(d)
+        if d not in _sys.path:
+            _sys.path.insert(0, d)
+    import rio_solver
+
+    window_duration = solver_cfg.get('window_duration', 3.0)
+    window_stride   = solver_cfg.get('window_stride', 0.3)
+    dt_pos          = solver_cfg.get('dt_pos', 0.005)
+    dt_ori          = solver_cfg.get('dt_ori', 0.008)
+
+    ori_spline  = initial_state.ori_spline
+    pos_bspline = initial_state.pos_bspline
+    t_ref = pos_bspline.t_ref
+
+    all_pos_cps   = pos_bspline.control_points.copy()         # (N_total_pos, 3)
+    all_ori_quats = Rotation.from_matrix(                      # (N_total_ori, 4) xyzw
+        ori_spline._base_rotations).as_quat()
+    biases = np.concatenate([initial_state.acc_bias, initial_state.gyr_bias])
+
+    # Extrinsics
+    euler_deg = extrinsics_cfg.get('rotation_euler_deg', [180.0, 25.5, 0.0])
+    ext = rio_solver.ExtrinsicConfig()
+    ext.roll_deg, ext.pitch_deg, ext.yaw_deg = euler_deg
+    t_body = extrinsics_cfg.get('translation_body_m', [0.08, 0.02, -0.01])
+    ext.tx, ext.ty, ext.tz = t_body
+
+    # Build SolverConfig once
+    cfg = _sw_solver_config(rio_solver, solver_cfg)
+
     # Create stateful solver and initialize with full P1-P3 trajectory
     solver = rio_solver.SlidingWindowSolver(cfg, ext)
     solver.initialize(all_pos_cps, all_ori_quats, biases, t_ref)
 
     # Convert radar frames once; keep (timestamp, RadarFrame) for slicing
     cpp_radar_all = []
+    _sw_pts9 = {}   # causal mode: timestamp -> 9-column point array
     for frame in solver_radar_frames:
         n = frame.num_points()
         if n == 0:
             continue
-        pts = np.zeros((n, 6))
+        pts = np.zeros((n, 9 if causal_unwrap is not None else 6))
         pts[:, :3] = frame.positions[:n]
         pts[:, 3]  = frame.velocities[:n] if frame.velocities is not None else 0.0
         pts[:, 4]  = frame.intensities[:n] if frame.intensities is not None else 0.0
         pts[:, 5]  = _radar_point_weights(frame, n)
-        cpp_radar_all.append((frame.timestamp, rio_solver.make_radar_frame(frame.timestamp, pts)))
+        if causal_unwrap is not None:
+            # GP parity: 6 = clean-return law weight, 7 = the frame's alias
+            # down-weight, 8 = raw Doppler (NaN when not aligned), so the
+            # re-unwrap can move a return between the two weight classes
+            pts[:, 6] = (_bearing_point_weights(frame, n) if _BEARING_WEIGHT is not None
+                         else np.ones(n))
+            _wal = (_ALIAS_FRAME_W.get(frame.timestamp, 1.0) if _ALIAS_WEIGHT == 'auto'
+                    else (_ALIAS_WEIGHT if _ALIAS_WEIGHT is not None else 1.0))
+            pts[:, 7] = float(_wal)
+            _raw = (raw_vel_by_ts or {}).get(frame.timestamp)
+            pts[:, 8] = _raw if (_raw is not None and len(_raw) == n) else np.nan
+            _sw_pts9[frame.timestamp] = pts
+        cpp_radar_all.append((frame.timestamp, rio_solver.make_radar_frame(frame.timestamp, pts[:, :6],
+                                                                           _frame_sigma_c(frame.timestamp, solver_cfg))))
+        if os.environ.get('RIO_SW_RADAR_DUMP'):   # DIAGNOSTIC 2026-09-27: the SW's rows (static front end; causal mode moves them later)
+            _p9 = np.full((n, 9), np.nan); _p9[:, :6] = pts[:, :6]
+            _SW_RADAR_DUMP.append((float(frame.timestamp), _p9))
+    if os.environ.get('RIO_SW_RADAR_DUMP') and _SW_RADAR_DUMP:
+        _orig = [(_ORIG_POS.get(t), _ORIG_VEL.get(t)) for (t, _) in _SW_RADAR_DUMP]
+        np.savez(os.environ['RIO_SW_RADAR_DUMP'],
+                 t=np.concatenate([np.full(len(p), t) for (t, p) in _SW_RADAR_DUMP]),
+                 pts=np.concatenate([p for (_, p) in _SW_RADAR_DUMP]),
+                 R_bs=_euler_deg_to_R_bs(euler_deg), t_bs=np.array([ext.tx, ext.ty, ext.tz], float),
+                 orig_t=np.concatenate([np.full(len(o[0]), t) for (t, _), o in zip(_SW_RADAR_DUMP, _orig) if o[0] is not None] or [np.zeros(0)]),
+                 orig_pos=np.concatenate([o[0] for o in _orig if o[0] is not None] or [np.zeros((0, 3))]),
+                 orig_vel=np.concatenate([o[1] for o in _orig if o[0] is not None] or [np.zeros(0)]))
+        print(f"  [RIO_SW_RADAR_DUMP] {len(_SW_RADAR_DUMP)} frames -> {os.environ['RIO_SW_RADAR_DUMP']}")
     _bearing_weight_report('sliding window')
+    _cu = causal_unwrap
+    if _cu is not None:
+        _cu_Rbs = _euler_deg_to_R_bs(euler_deg)
+        _cu_tbs = np.array([ext.tx, ext.ty, ext.tz], float)
+        _cu_rng = np.random.default_rng(0)
+        _cu_flip_omega = float(solver_cfg.get('sw_causal_omega', 10.0))
+        _cu_nre, _cu_nre_strides, _cu_seen_upto = 0, 0, -np.inf
+        _cu_prev = None   # (pos spline, ori spline, t_end) of the previous window
+        print(f"  [sw-causal-unwrap] live-window sensor-only RE-unwrap ON "
+              f"(v_max={_cu['v_max']:g}, |omega|-gate<{_cu_flip_omega:g} rad/s, "
+              f"RANSAC thr={_cu['thr']:g})")
 
     # Convert IMU once
     imu_np = np.zeros((len(imu_data), 7))
@@ -499,7 +591,43 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
         t_w_start = t_solve - window_duration
         t_w_end   = t_solve
 
+        if _cu is not None:
+            # frames entering the window for the first time (causal: each
+            # frame is processed once, at ingestion, like the GP's stride)
+            _new_idx = [i for i, (ts, _) in enumerate(cpp_radar_all)
+                        if _cu_seen_upto < ts <= t_w_end and ts >= t_w_start]
+            if _new_idx:
+                _lo = max(_cu_seen_upto, t_w_start - 1e-9)
+                _mw = (imu_times > _lo) & (imu_times <= t_w_end)
+                _wmax = float(np.linalg.norm(imu_np[_mw, 4:7], axis=1).max()) if _mw.any() else 0.0
+                _pred, _reuw = None, (_cu_prev is not None and _wmax < _cu_flip_omega)
+                if _reuw:
+                    _psp, _osp, _tpe = _cu_prev
+                    try:
+                        _vw = np.asarray(_psp(_tpe - t_ref, derivative=1), float)
+                        _Rwb = np.asarray(_osp.evaluate(_tpe - t_ref), float)
+                        _gi = int(np.argmin(np.abs(imu_times - _tpe)))
+                        _om = imu_np[_gi, 4:7] - np.asarray(solver.biases[3:], float)
+                        _mi = (imu_times > _tpe) & (imu_times <= t_w_end)
+                        _pred = (_vw, _om, _Rwb, float(_tpe), imu_np[_mi],
+                                 np.asarray(solver.biases[:3], float), np.asarray(solver.biases[3:], float))
+                        if not all(np.all(np.isfinite(x)) for x in _pred[:3]):
+                            _pred, _reuw = None, False
+                    except Exception:
+                        _pred, _reuw = None, False
+                _lst = [(cpp_radar_all[i][0], _sw_pts9[cpp_radar_all[i][0]]) for i in _new_idx]
+                _lst2, _nre = _gp_causal_unwrap_stride(
+                    _lst, _pred, _cu_Rbs, _cu_tbs, _cu['v_max'], _cu['thr'],
+                    _cu_rng, reunwrap=_reuw)
+                for i, (ts, p2) in zip(_new_idx, _lst2):
+                    _sw_pts9[ts] = p2
+                    cpp_radar_all[i] = (ts, rio_solver.make_radar_frame(ts, p2[:, :6], _frame_sigma_c(ts, solver_cfg)))
+                _cu_nre += _nre
+                _cu_nre_strides += int(_reuw)
+                _cu_seen_upto = t_w_end
+
         # Slice sensor data for this window
+        _t_prep0 = time.time()
         window_radar   = [rf for ts, rf in cpp_radar_all if t_w_start <= ts <= t_w_end]
         imu_mask       = (imu_times >= t_w_start) & (imu_times <= t_w_end)
         window_imu     = rio_solver.make_imu_samples(imu_np[imu_mask])
@@ -511,8 +639,11 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
             continue
 
         # Preintegrated factors for this window
-        window_imu_data = [s for s in imu_data
-                           if t_w_start <= s.timestamp <= t_w_end]
+        # (the per-object list is only needed by the Python builders; a
+        # whole-flight scan per window is itself ~10 ms)
+        _py_pre = cfg.use_preintegration or os.environ.get('RIO_PY_PREINT') or not hasattr(rio_solver, 'preintegrate_grid')
+        window_imu_data = ([s for s in imu_data if t_w_start <= s.timestamp <= t_w_end]
+                           if _py_pre else imu_mask.any())
         window_preint = []
         if cfg.use_preintegration and window_imu_data:
             b_a0 = np.array(solver.biases[:3])
@@ -520,8 +651,26 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
             window_preint = _build_preint_factors_cpp(
                 rio_solver, window_imu_data, b_a0, b_g0,
                 t_w_start, t_w_end, cfg.dt_ori, t_ref)
+        elif getattr(cfg, 'accel_increment_hz', 0.0) > 0.0 and window_imu_data:
+            # accelerometer velocity-increment factors (EXPERIMENT 2026-09-12; DEPLOYED 2026-09-30 at 10 Hz):
+            # increments on a 1/accel_increment_hz grid, linearized at the
+            # current bias estimate, carried in the preint channel
+            b_a0 = np.array(solver.biases[:3])
+            b_g0 = np.array(solver.biases[3:])
+            if hasattr(rio_solver, 'preintegrate_grid') and not os.environ.get('RIO_PY_PREINT'):
+                # C++ port (2026-10-13): identical to 1e-15, ~600x faster (the
+                # Python loop cost ~0.2 s per 3 s window)
+                window_preint = rio_solver.preintegrate_grid(
+                    imu_np[imu_mask], b_a0, b_g0, t_w_start, t_w_end,
+                    1.0 / cfg.accel_increment_hz, t_ref, True)
+            else:
+                window_preint = _build_preint_factors_cpp(
+                    rio_solver, window_imu_data, b_a0, b_g0,
+                    t_w_start, t_w_end, 1.0 / cfg.accel_increment_hz, t_ref,
+                    snap_to_samples=True)
 
         t0 = time.time()
+        _dt_prep = t0 - _t_prep0
         result = solver.solve_window(
             window_radar, window_imu, window_preint, window_heading,
             t_w_start, t_w_end, window_stride)
@@ -563,7 +712,7 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
             zb_str += f"  th={th:.3f}  dphi={dp:.4f}"
         print(f"  [sw {n_windows+1:3d}] t={t_w_start:.2f}–{t_w_end:.2f}s"
               f"  {len(window_radar):3d}fr  {int(imu_mask.sum()):4d}imu"
-              f"  cost0={cost0_str}  cost={cost_str}  iter={result.num_iterations}  dt={dt_w:.2f}s"
+              f"  cost0={cost0_str}  cost={cost_str}  iter={result.num_iterations}  dt={dt_w:.2f}s  prep={_dt_prep:.3f}s"
               + timing_str + prior_str + bcov_str + zb_str)
 
         # Snapshot leading-edge estimate in stride zone [t_w_end - stride, t_w_end]
@@ -579,6 +728,8 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
         snap_ori_sp = CumulativeSO3BSpline.from_rotation_samples(
             Rotation.from_quat(snap_ori_quats).as_matrix(), dt=dt_ori, t_ref=t_ref)
 
+        if _cu is not None:
+            _cu_prev = (snap_pos_sp, snap_ori_sp, float(t_w_end) - 1e-4)
         abs_pos_start = t_ref + snap_pos_sp.t_start
         abs_pos_end   = t_ref + snap_pos_sp.t_end
         abs_ori_start = t_ref + snap_ori_sp.t_start
@@ -663,6 +814,9 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
     nominal_pitch_sw = extrinsics_cfg.get('rotation_euler_deg', [180.0, 25.5, 0.0])[1]
     opt_pitch_sw = result.extrinsic_euler_deg[1] if n_windows > 0 else nominal_pitch_sw
     print(f"  [--sliding-window] Done: {n_windows} windows solved")
+    if _cu is not None:
+        print(f"  [sw-causal-unwrap] re-unwrapped {_cu_nre} returns over "
+              f"{_cu_nre_strides} strides below the |omega| gate")
     if not solver_cfg.get('lock_extrinsics', False):
         print(f"  [--sliding-window] Extrinsic pitch: {opt_pitch_sw:.3f}°"
               f" (nominal {nominal_pitch_sw:.1f}°, delta {opt_pitch_sw - nominal_pitch_sw:+.3f}°)")
@@ -688,7 +842,635 @@ def _solve_cpp_sliding_window(initial_state, solver_radar_frames, imu_data,
     ), live_snapshots
 
 
-# ==================== Config ====================
+class _GpTrajState:
+    """Duck-typed TrajectoryState over the rio_gp solver's live-edge record.
+
+    Implements the eval interface (get_position/get_rotation/
+    get_angular_velocity + biases) by sampling the C++ GP interpolation.
+    """
+
+    def __init__(self, solver, acc_bias, gyr_bias):
+        self._s = solver
+        self.acc_bias = np.asarray(acc_bias)
+        self.gyr_bias = np.asarray(gyr_bias)
+
+    def _sample(self, t):
+        q, p, v, o = self._s.sample([float(t)])
+        return q[0], p[0], v[0], o[0]
+
+    def get_position(self, t, derivative=0):
+        if derivative == 0:
+            return self._sample(t)[1]
+        if derivative == 1:
+            return self._sample(t)[2]
+        h = 5e-3   # accel via finite diff of the GP velocity
+        return (np.asarray(self._sample(t + h)[2])
+                - np.asarray(self._sample(t - h)[2])) / (2 * h)
+
+    def get_rotation(self, t):
+        return Rotation.from_quat(self._sample(t)[0]).as_matrix()
+
+    def get_angular_velocity(self, t):
+        return self._sample(t)[3]
+
+
+def _euler_deg_to_R_bs(euler_deg):
+    """R_bs = Rz(yaw) Ry(pitch) Rx(roll), matching the GP solver's extrinsic
+    and factors.r_bs_from_euler_deg."""
+    r, p, y = np.radians(euler_deg)
+    cz, sz, cy, sy, cx, sx = (np.cos(y), np.sin(y), np.cos(p), np.sin(p),
+                              np.cos(r), np.sin(r))
+    Rz = np.array([[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]])
+    Ry = np.array([[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]])
+    Rx = np.array([[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]])
+    return Rz @ Ry @ Rx
+
+
+def _gp_point_weight_columns(pts_v, w_static, w_clean, w_al, v_raw):
+    """Compose the GP radar array's per-return weight channel (column 5).
+    pts_v = the velocities as they will be ingested; a return is ALIASED when
+    that value differs from the raw Doppler (v_raw, NaN when unavailable ->
+    fall back to the static composition from the pre-unwrap stage).  Aliased
+    returns get the frame's measured alias down-weight w_al, clean returns
+    the per-return law weight w_clean (main's _radar_point_weights split in
+    two, so the live-window re-unwrap can move a return between the two)."""
+    have_raw = np.isfinite(v_raw)
+    aliased = np.where(have_raw, np.abs(pts_v - v_raw) > 1e-6, False)
+    w = np.where(aliased, w_al, w_clean)
+    return np.where(have_raw, w, w_static)
+
+
+def _gp_causal_unwrap_stride(radar_list, pred, R_bs, t_bs, v_max, thr, rng,
+                             reunwrap=True, min_range=0.2):
+    """Process ONE stride just before ingestion, causally and sensor-only.
+    When `reunwrap` (the stride's peak body rate is below the flip threshold,
+    where the fused GP velocity beats per-frame dead-reckoning and R_wb is
+    ~constant over 0.3 s), the already IMU-de-aliased velocities are re-checked
+    against the fused GP prediction `pred`=(v_world, omega, R_wb) sampled at the
+    previous stride's live edge, and moved to the nearest alias where they
+    disagree. When not (flip strides), the robust IMU-de-aliased velocities are
+    kept unchanged. Either way the stride is then RANSAC-filtered (the offline
+    RANSAC is skipped in causal mode, so this is the sole prefilter). No future
+    data, no motion capture. Returns (new_radar_list, n_re)."""
+    step = 2.0 * v_max
+    # pred = (v_world, omega, R_wb) at the previous live edge, optionally
+    # followed by (t_pred, imu (N,7) [t, acc, gyro], b_a, b_g): then the
+    # prediction is PROPAGATED with the IMU to each frame's own time
+    # (2026-09-27: a 0.3 s-stale velocity in a ~20 m/s^2 pull-up is several
+    # m/s off and flipped a self-consistent frame to the wrong alias;
+    # worklog/2026-09-27_spline-vertical-drift.md). Off unless the extra
+    # fields are given; RIO_CAUSAL_NO_PROP=1 forces the old stale prediction.
+    _prop = (reunwrap and pred is not None and len(pred) >= 7
+             and not os.environ.get('RIO_CAUSAL_NO_PROP'))
+    def _v_pred_at(t_f):
+        v_world, omega, R_wb = pred[:3]
+        if _prop:
+            t_p, imu, b_a, b_g = pred[3:7]
+            R = np.array(R_wb, float); v = np.array(v_world, float); tc = float(t_p)
+            m = (imu[:, 0] > t_p) & (imu[:, 0] <= t_f)
+            for row in imu[m]:
+                dt = row[0] - tc
+                if 0.0 < dt < 0.05:
+                    v = v + (R @ (row[1:4] - b_a) + np.array([0.0, 0.0, -9.81])) * dt
+                    R = R @ Rotation.from_rotvec((row[4:7] - b_g) * dt).as_matrix()
+                tc = row[0]
+            if m.any():
+                omega = imu[m][-1, 4:7] - b_g
+            v_world, R_wb = v, R
+        v_ant = R_wb.T @ v_world + np.cross(omega, t_bs)
+        return -(R_bs.T @ v_ant)   # u . v_pred = predicted radial velocity
+    if reunwrap and pred is not None:
+        v_pred = _v_pred_at(pred[3] if _prop else 0.0)
+    out, n_re = [], 0
+    for (t, pts) in radar_list:
+        if _prop:
+            v_pred = _v_pred_at(t)
+        P = pts[:, :3]
+        v_new = pts[:, 3].astype(float).copy()
+        r = np.linalg.norm(P, axis=1)
+        ok = r >= min_range
+        if reunwrap and pred is not None and ok.any():
+            U = P[ok] / r[ok, None]
+            pr = U @ v_pred
+            v0 = v_new[ok]
+            best = v0.copy()
+            for cand in (v0 - step, v0 + step):
+                bet = np.abs(cand - pr) < np.abs(best - pr)
+                best = np.where(bet, cand, best)
+            n_re += int((best != v0).sum())
+            v_new[ok] = best
+        if _ALIAS_REPAIR and pts.shape[1] >= 9:
+            # the pre-unwrap repaired every aliased return (IMU prediction or
+            # the frame's leave-one-out-validated clean consensus as reference);
+            # here only the returns whose alias order the causal re-unwrap just
+            # CHANGED are re-done from the ORIGINAL reported bearing: k -> 0
+            # restores it, k != 0 re-picks the lobe against the fused prediction
+            # with the 2-sigma margin (a joint 7-hypothesis re-decision of
+            # EVERY return was tried, rep9 of the gate, and corrupts clean
+            # returns: fast GP 0.276 -> 0.395)
+            _op = _ORIG_POS.get(t); _ov = _ORIG_VEL.get(t)
+            _v0 = pts[:, 3].astype(float)
+            _ch = np.where(np.abs(v_new - _v0) > 1e-6)[0]
+            if _op is not None and _ov is not None and len(_op) == len(pts) and len(_ch):
+                pts = pts.copy()
+                _vp = v_pred if (reunwrap and pred is not None) else None
+                for i in _ch:
+                    kk = int(np.round((v_new[i] - _ov[i]) / (2.0 * v_max)))
+                    if kk == 0:
+                        pts[i, :3] = _op[i]; pts[i, 8] = _ov[i]
+                        _ALIAS_REPAIR_STATS['unaliased'] = _ALIAS_REPAIR_STATS.get('unaliased', 0) + 1
+                        continue
+                    r_i = np.linalg.norm(_op[i]); uo = _op[i] / max(r_i, 1e-9)
+                    c1 = -uo[1] - kk * _ALIAS_LOBES[:, 0]; c2 = uo[2] + kk * _ALIAS_LOBES[:, 1]
+                    c1 = (c1 + 1.0) % 2.0 - 1.0; c2 = (c2 + 1.0) % 2.0 - 1.0; s2 = c1 ** 2 + c2 ** 2
+                    U = np.stack([np.sqrt(np.clip(1.0 - s2, 0.0, None)), -c1, c2], axis=1); ok = s2 <= 1.0
+                    if _vp is None or not ok.any():
+                        continue
+                    jj = _alias_pick(U, ok, _vp, v_new[i], uo, _ov[i])
+                    if jj is None:
+                        pts[i, :3] = _op[i]; pts[i, 8] = _ov[i]
+                        _ALIAS_REPAIR_STATS['ambiguous'] = _ALIAS_REPAIR_STATS.get('ambiguous', 0) + 1
+                        continue
+                    if jj == -1:
+                        v_new[i] = _ov[i]; pts[i, :3] = _op[i]; pts[i, 8] = _ov[i]
+                        _ALIAS_REPAIR_STATS['unaliased'] = _ALIAS_REPAIR_STATS.get('unaliased', 0) + 1
+                        continue
+                    pts[i, :3] = r_i * U[jj]; pts[i, 8] = _ov[i] if os.environ.get('RIO_ALIAS_KEEPW') == '1' else v_new[i]
+                    _ALIAS_REPAIR_STATS['doppler'] += 1
+                P = pts[:, :3]
+        if thr > 0 and len(v_new) >= 5:
+            Hn = P / np.maximum(np.linalg.norm(P, axis=1, keepdims=True), 1e-6)
+            if _RANSAC_SIGMA:   # ledger 3a gate in sigmas of the per-return law (same
+                                # test as _ransac_mask; 2026-09-16 the causal GP path honours it)
+                _s0, _coef = _BW_CONST['b']
+                _cphi = np.maximum(Hn[:, 0], _BW_COS_FLOOR)
+            bestm = None
+            for _ in range(150):
+                idx = rng.choice(len(v_new), 3, replace=False)
+                try:
+                    vc = np.linalg.solve(Hn[idx], v_new[idx])
+                except np.linalg.LinAlgError:
+                    continue
+                if _RANSAC_SIGMA:
+                    _X = np.sqrt((vc[1] - Hn[:, 1] * vc[0] / _cphi) ** 2
+                                 + (vc[2] - Hn[:, 2] * vc[0] / _cphi) ** 2)
+                    gate = (thr / _s0) * np.sqrt(_s0 ** 2 + (_coef * _X) ** 2)
+                else:
+                    gate = thr
+                inl = np.abs(Hn @ vc - v_new) < gate
+                if bestm is None or inl.sum() > bestm.sum():
+                    bestm = inl
+            mask = bestm if bestm is not None and bestm.sum() >= 5 \
+                else np.ones(len(v_new), bool)
+        else:
+            mask = np.ones(len(v_new), bool)
+        pts2 = pts[mask].copy()
+        pts2[:, 3] = v_new[mask]
+        if pts2.shape[1] >= 9:   # weight channel present: recompose after the move
+            pts2[:, 5] = _gp_point_weight_columns(pts2[:, 3], pts2[:, 5], pts2[:, 6],
+                                                  pts2[:, 7], pts2[:, 8])
+        out.append((t, pts2))
+    return out, n_re
+
+
+def _solve_cpp_gp(initial_state, solver_radar_frames, imu_data,
+                  extrinsics_cfg, solver_cfg, heading_priors=None,
+                  causal_unwrap=None, raw_vel_by_ts=None):
+    """GP/WNOA sliding-window backend (rio_gp). Feeds NON-overlapping strides;
+    the lag handles the window. Returns a _GpTrajState for the standard mocap
+    eval. See documentation/GP_MIGRATION.md.
+
+    causal_unwrap: optional dict {v_max, thr} enabling live-window sensor-only
+    Doppler de-aliasing. When set, cpp_radar_all carries RAW Doppler and each
+    stride is unwrapped against the solver's live state just before ingestion
+    (causal, no future data). See _gp_causal_unwrap_stride."""
+    import sys as _sys, os as _os
+    for d in [_os.path.join(_os.path.dirname(__file__), '..', 'rio_solver_cpp', 'build_release'),
+              _os.path.dirname(__file__)]:
+        d = _os.path.abspath(d)
+        if d not in _sys.path:
+            _sys.path.insert(0, d)
+    import rio_gp
+
+    ori_spline = initial_state.ori_spline
+    pos_bspline = initial_state.pos_bspline
+    t_ref = pos_bspline.t_ref
+    all_pos_cps = pos_bspline.control_points.copy()
+    all_ori_quats = Rotation.from_matrix(ori_spline._base_rotations).as_quat()
+    biases = np.concatenate([initial_state.acc_bias, initial_state.gyr_bias])
+
+    cfg = rio_gp.GpConfig()
+    cfg.dt_pos = solver_cfg.get('dt_pos', 0.005)
+    cfg.dt_ori = solver_cfg.get('dt_ori', 0.008)
+    cfg.qc_lin = solver_cfg.get('qc_lin', 20.0)
+    cfg.qc_ang = solver_cfg.get('qc_ang', 20.0)
+    if hasattr(cfg, 'qc_lin_sub'):
+        # linear prior PSD on the flip sub-knot gaps only (2026-09-10; < 0 =
+        # qc_lin, bit-identical); gp_sub_gap_max = what counts as a sub-gap
+        cfg.qc_lin_sub = float(solver_cfg.get('gp_qc_lin_sub', -1.0))
+        cfg.sub_gap_max = float(solver_cfg.get('gp_sub_gap_max', 0.05))
+    if hasattr(cfg, 'sub_tether'):
+        # rotation-only densification (2026-09-10): sub-knot position and
+        # linear velocity tethered to the frame-to-frame interpolation
+        cfg.sub_tether = bool(int(solver_cfg.get('gp_sub_tether', 0)))
+        cfg.tether_sigma_p = float(solver_cfg.get('gp_tether_sigma_p', 0.001))
+        cfg.tether_sigma_v = float(solver_cfg.get('gp_tether_sigma_v', 0.01))
+    if hasattr(cfg, 'record_shadow'):
+        # record stitching (2026-09-10): boundary-knot snapshot per stride so
+        # the fixed-lag record never interpolates across two solves
+        cfg.record_shadow = bool(int(solver_cfg.get('gp_record_shadow', 1)))
+    # 0.25 since 2026-09-10 (per-return law deployed; 0.5 = the pre-law flat value)
+    cfg.sigma_radar = solver_cfg.get('sigma_radar', 0.25)
+    cfg.huber = solver_cfg.get('gp_huber', 1.0)
+    cfg.gyro_sigma = solver_cfg.get('gyro_sigma', 0.02)
+    cfg.gyro_bin_hz = solver_cfg.get('gyro_bin_hz', 100.0)
+    cfg.sigma_dv = solver_cfg.get('sigma_dv', 0.05)   # 2026-09-11 NEES-gated (pose reference); was 0.1
+    # 2026-09-09 (cand5 deployment): fallbacks track the GpConfig defaults --
+    # measured omega_0 4.5, SNR weight off, measured bias-prior widths.
+    cfg.omega_soft_sigma = solver_cfg.get('gp_omega_soft_sigma', 4.5)
+    # per-return weight channel (2026-09-10 port of main's radar model):
+    # gp_point_weights=1 feeds column 5 (bearing law for clean returns, the
+    # measured alias down-weight for unwrapped ones) into the row scale;
+    # gp_frame_hetero=1 makes the per-frame whitening the exact covariance
+    # of the weighted stack (shared term along sqrt(w)).  gp_point_weights
+    # DEPLOYED 2026-09-10 (default 1, with sigma_radar 0.25); the pre-port
+    # solver is --set gp_point_weights=0 --set sigma_radar=0.5.
+    if hasattr(cfg, 'use_point_weights'):
+        cfg.use_point_weights = bool(int(solver_cfg.get('gp_point_weights', 1)))
+        cfg.radar_frame_hetero = bool(int(solver_cfg.get('gp_frame_hetero', 0)))
+    # position-level accelerometer rows (2026-09-10, gp/factors.h AccelDv):
+    # gp_accel_dp_mode 0 = off, 1 = independent Delta-p row (gp_sigma_dpos at
+    # a 0.1 s gap), 2 = the gravity- and constant-error-free "shape" row
+    # rp - (DT/2) r (gp_sigma_shape at a 0.1 s gap).
+    if hasattr(cfg, 'accel_dp_mode'):
+        cfg.accel_dp_mode = int(solver_cfg.get('gp_accel_dp_mode', 0))
+        cfg.sigma_dpos = float(solver_cfg.get('gp_sigma_dpos', 0.005))
+        cfg.sigma_shape = float(solver_cfg.get('gp_sigma_shape', 0.003))
+    cfg.gyro_scale_err = solver_cfg.get('gyro_scale_err', 0.005)
+    cfg.dv_omega_sigma = solver_cfg.get('dv_omega_sigma', 2.25)   # 2026-09-11 measured corner; was 4.0
+    if hasattr(cfg, 'radar_usz_sigma'):
+        cfg.radar_usz_sigma = solver_cfg.get('radar_usz_sigma', 0.0)
+    if hasattr(cfg, 'radar_intensity_weight'):
+        cfg.radar_intensity_weight = solver_cfg.get('radar_intensity_weight', 0.0)
+    if hasattr(cfg, 'radar_vmax'):
+        cfg.radar_vmax = solver_cfg.get('radar_vmax', 0.0)
+    if hasattr(cfg, 'radar_frame_sigma_c'):
+        # per-frame correlated-noise whitening (report Sec. V-D port),
+        # DEFAULT ON 0.4 (GP-27 adoption). gp-specific key so the SW's
+        # radar_frame_sigma_c in solver_cpp.yaml does not leak into --gp.
+        cfg.radar_frame_sigma_c = solver_cfg.get('gp_frame_sigma_c', 0.4)
+    # GP-27: heading weight pinned 0.6 (solver.yaml); fallback matches.
+    cfg.lambda_heading = solver_cfg.get('lambda_heading', 0.6)
+    # constant-bias prior widths (gp-specific keys so the SW's lambda_bias_prior_*
+    # do not leak in) = the MEASURED anchor errors of the pre-flight bias
+    # (worklog/2026-09-04_deployment-batteries.md, set A: accel rms 0.216,
+    # gyro 0.0036); deployed 2026-09-09 (was the hand-set 0.1 / 0.01).
+    cfg.sigma_ba = solver_cfg.get('gp_sigma_ba', 0.216)
+    cfg.sigma_bg = solver_cfg.get('gp_sigma_bg', 0.0036)
+    cfg.lag = solver_cfg.get('gp_lag', 1.5)   # gp-specific key: the SW's window_duration=3.0 must not leak in
+    cfg.flip_hz = solver_cfg.get('flip_hz', 50.0)   # 100 -> 50 on 2026-09-10 (sub-knot velocity spikes)
+    cfg.anchor_ori_sigma = float(solver_cfg.get('gp_anchor_ori_sigma', cfg.anchor_ori_sigma))   # probe knob, default legacy (2026-09-10 flip-attitude NEES study)
+    cfg.gyro_scale_state = int(solver_cfg.get('gp_gyro_scale_state', cfg.gyro_scale_state))   # 0 off, 1 estimated, 2 consider (covariance only)
+    cfg.gyro_scale_prior = float(solver_cfg.get('gp_gyro_scale_prior', cfg.gyro_scale_prior))
+    cfg.gyro_scale_white = float(solver_cfg.get('gp_gyro_scale_white', cfg.gyro_scale_white))
+    cfg.radar_az_state = int(solver_cfg.get('gp_radar_az_state', cfg.radar_az_state))   # EXPERIMENT 2026-09-12: radar azimuth-bias state (0 off, 1 estimate)
+    cfg.radar_az_prior = float(solver_cfg.get('gp_radar_az_prior', cfg.radar_az_prior))
+    # FLOOR-plane absolute-height rows (2026-09-17; port of the iSAM D5 rule; 0 = off)
+    for _k in ('floor_sigma', 'floor_slab', 'floor_band', 'floor_huber', 'floor_z', 'floor_dphi', 'floor_prior', 'floor_rw'):
+        if hasattr(cfg, _k) and ('gp_' + _k) in solver_cfg:
+            setattr(cfg, _k, float(solver_cfg['gp_' + _k]))
+    for _k in ('range_sigma', 'range_huber', 'range_assoc', 'range_dr_max'):   # static-scatterer range rows (2026-09-17, item 2)
+        if hasattr(cfg, _k) and ('gp_' + _k) in solver_cfg:
+            setattr(cfg, _k, float(solver_cfg['gp_' + _k]))
+    for _k in ('floor_boot_min', 'floor_pos_only', 'floor_per_frame', 'floor_state'):
+        if hasattr(cfg, _k) and ('gp_' + _k) in solver_cfg:
+            setattr(cfg, _k, int(solver_cfg['gp_' + _k]))
+    cfg.flip_omega = solver_cfg.get('flip_omega', 5.0)
+    if hasattr(cfg, 'marg_stale_phi'):
+        cfg.marg_stale_phi = solver_cfg.get('marg_stale_phi', 0.01)
+        cfg.marg_stale_phi2 = solver_cfg.get('marg_stale_phi2', 0.0)
+        cfg.ba_rw_sigma = solver_cfg.get('ba_rw_sigma', 0.0)
+        cfg.bg_rw_sigma = solver_cfg.get('bg_rw_sigma', 0.0)
+    cfg.max_gn_iters = int(solver_cfg.get('max_gn_iters', 8))
+    cfg.gn_dnorm = solver_cfg.get('gn_dnorm', 1e-4)
+    if hasattr(cfg, 'arrow_solver'):
+        cfg.arrow_solver = bool(int(solver_cfg.get('arrow_solver', 1)))
+    if hasattr(cfg, 'seed_dead_reckon'):
+        # live-node knot seeding (IMU dead-reckon from the last knot instead
+        # of the whole-run init spline); --set gp_seed_dr=1
+        cfg.seed_dead_reckon = bool(int(solver_cfg.get('gp_seed_dr', 0)))
+    if hasattr(cfg, 'prior_gs'):
+        # EXPERIMENT: G-solver prior discretization; --set gp_prior_gs=1
+        cfg.prior_gs = bool(int(solver_cfg.get('gp_prior_gs', 0)))
+
+    ext = rio_gp.ExtrinsicConfig()
+    euler = extrinsics_cfg.get('rotation_euler_deg', [180.0, 25.5, 0.0])
+    ext.roll_deg, ext.pitch_deg, ext.yaw_deg = (float(euler[0]), float(euler[1]),
+                                                float(euler[2]))
+    tr = extrinsics_cfg.get('translation_body_m', [0.08, 0.02, -0.01])
+    ext.tx, ext.ty, ext.tz = float(tr[0]), float(tr[1]), float(tr[2])
+
+    solver = rio_gp.GpSolver(cfg, ext)
+    solver.initialize(all_pos_cps, all_ori_quats,
+                      [float(b) for b in biases], float(t_ref))
+
+    cpp_radar_all = []
+    td_inject = float(_os.environ.get('GP_TD_INJECT', 0.0))   # diagnostic:
+    # synthetic radar-clock mis-calibration (shifts frame stamps AND thus knot
+    # times, leaving IMU/mocap true — the deployment failure t_d must absorb)
+    n_dup_dropped = 0
+    last_frame_t = -np.inf
+    for f in solver_radar_frames:
+        n = f.num_points()
+        if n == 0:
+            continue
+        # GP knots live at radar frame times; a repeated (stamp-frozen) frame
+        # timestamp would create a zero-dt knot pair -> division by zero in the
+        # WNOA prior -> NaN state that the marginal then carries to the end of
+        # the run (seen on icins_flight_1/3). Mirror the C++ 1e-6 knot guard
+        # and drop non-increasing frame stamps here.
+        if float(f.timestamp) <= last_frame_t + 1e-6:
+            n_dup_dropped += 1
+            continue
+        last_frame_t = float(f.timestamp)
+        pts = np.zeros((n, 9))
+        pts[:, :3] = f.positions[:n]
+        pts[:, 3] = f.velocities[:n] if f.velocities is not None else 0.0
+        pts[:, 4] = f.intensities[:n] if f.intensities is not None else 0.0
+        # weight channel: 5 = composed static weight (what the SW ingests),
+        # 6 = clean-return law weight, 7 = the frame's alias down-weight,
+        # 8 = raw Doppler (NaN when the pre-unwrap input is not aligned)
+        pts[:, 5] = _radar_point_weights(f, n)
+        pts[:, 6] = (_bearing_point_weights(f, n) if _BEARING_WEIGHT is not None
+                     else np.ones(n))
+        _wal = (_ALIAS_FRAME_W.get(f.timestamp, 1.0) if _ALIAS_WEIGHT == 'auto'
+                else (_ALIAS_WEIGHT if _ALIAS_WEIGHT is not None else 1.0))
+        pts[:, 7] = float(_wal)
+        _raw = (raw_vel_by_ts or {}).get(f.timestamp)
+        pts[:, 8] = _raw if (_raw is not None and len(_raw) == n) else np.nan
+        cpp_radar_all.append((float(f.timestamp) + td_inject, pts))
+    if n_dup_dropped:
+        print(f"  [--gp] dropped {n_dup_dropped} radar frame(s) with "
+              f"non-increasing timestamps (stamp-frozen duplicates)")
+    imu_np = np.zeros((len(imu_data), 7))
+    for i, s in enumerate(imu_data):
+        imu_np[i, 0] = s.timestamp
+        imu_np[i, 1:4] = s.linear_acceleration
+        imu_np[i, 4:7] = s.angular_velocity
+    imu_t = imu_np[:, 0]
+    all_heading = ([(float(t), float(np.arctan2(R[1, 0], R[0, 0]))) for t, R in heading_priors]
+                   if heading_priors else [])
+
+    stride = solver_cfg.get('window_stride', 0.3)
+    t_lo = cpp_radar_all[0][0] if cpp_radar_all else imu_t[0]
+    t_hi = cpp_radar_all[-1][0] if cpp_radar_all else imu_t[-1]
+    print(f"  [--gp] lag={cfg.lag:.1f}s stride={stride:.2f}s "
+          f"gn={cfg.max_gn_iters} qc={cfg.qc_lin:g}/{cfg.qc_ang:g} "
+          f"flip_hz={cfg.flip_hz:g}")
+    nees_on = bool(int(solver_cfg.get('nees', 0)))
+    global _GP_NEES_SNAPS
+    _GP_NEES_SNAPS = []
+    global _GP_LIVE_SNAPS
+    _GP_LIVE_SNAPS = []
+    _cu = causal_unwrap
+    if _cu is not None:
+        _cu_Rbs = _euler_deg_to_R_bs(euler)
+        _cu_tbs = np.array([ext.tx, ext.ty, ext.tz])
+        _cu_rng = np.random.default_rng(0)   # in-loop RANSAC (offline one off)
+        # re-unwrap gate (rad/s): refine strides below this, where the fused GP
+        # velocity beats dead-reckoning. Default 10 sits between aggressive
+        # racing turns (~10) and sustained aerobatic flips (13, where the GP
+        # orientation carries staleness residue and gyro dead-reckoning wins).
+        _cu_flip_omega = float(solver_cfg.get('gp_causal_omega', 10.0))
+        _cu_nre, _cu_nre_strides = 0, 0
+        _cu_ready = False   # becomes True after the first update() populates knots
+        print(f"  [gp-causal-unwrap] live-window sensor-only RE-unwrap ON "
+              f"(v_max={_cu['v_max']:g}, |omega|-gate<{_cu_flip_omega:g} rad/s, "
+              f"RANSAC thr={_cu['thr']:g})")
+    _last_fed_t = None   # time of the last fed knot (cov dump stitch point)
+    # --set gp_cov_dump=<path.npz>: per-stride live-edge (t, p, Sigma9) dump
+    # for the covariance-envelope figure (sample_cov = pos/ori/vel marginals)
+    _cov_dump_path = solver_cfg.get('gp_cov_dump', '')
+    _cov_dump = [] if _cov_dump_path else None
+
+    t_prev, t_now, dts, iters = t_lo, t_lo + stride, [], []
+    while t_now <= t_hi + 1e-6:
+        m = (imu_t > t_prev) & (imu_t <= t_now)
+        imu_blk = imu_np[m]
+        if imu_blk.shape[0] == 0:
+            t_prev, t_now = t_now, t_now + stride
+            continue
+        radar_list = [(t, pts) for (t, pts) in cpp_radar_all if t_prev < t <= t_now]
+        if _cu is not None and radar_list:
+            # gate: re-unwrap only strides below the flip rate, where the fused
+            # GP velocity beats dead-reckoning and R_wb is ~constant over 0.3 s;
+            # flip strides keep the robust IMU de-aliasing. Either way the
+            # stride is RANSAC-filtered in the helper (offline RANSAC is off).
+            _wmax = float(np.linalg.norm(imu_blk[:, 4:7], axis=1).max()) \
+                if imu_blk.shape[0] else 0.0
+            _pred, _reuw = None, (_cu_ready and _wmax < _cu_flip_omega)
+            if _reuw:
+                # sample the live edge (t_prev is in-window; sampling a frame
+                # time t > t_prev would extrapolate past the last knot -> segfault)
+                try:
+                    _q, _p, _vw, _om = solver.sample([float(t_prev)])
+                    _fb = np.asarray(solver.biases(), float)
+                    _pred = (np.asarray(_vw[0], float), np.asarray(_om[0], float),
+                             Rotation.from_quat(np.asarray(_q[0], float)).as_matrix(),
+                             float(t_prev), imu_blk, _fb[:3], _fb[3:])
+                    if not all(np.all(np.isfinite(x)) for x in _pred[:3]):
+                        _pred, _reuw = None, False
+                except Exception:
+                    _pred, _reuw = None, False
+            radar_list, _nre = _gp_causal_unwrap_stride(
+                radar_list, _pred, _cu_Rbs, _cu_tbs, _cu['v_max'], _cu['thr'],
+                _cu_rng, reunwrap=_reuw)
+            _cu_nre += _nre
+            _cu_nre_strides += int(_reuw)
+        heading_blk = [(t, y) for (t, y) in all_heading if t_prev < t <= t_now]
+        if _os.environ.get('RIO_FOV_MAP') and radar_list:   # DIAGNOSTIC 2026-09-27: FoV bearing-error map on the ingested bearings
+            _pm = np.array([float(x) for x in _os.environ['RIO_FOV_MAP'].split(',')]); _np_ = len(_pm) // 2
+            _rl = []
+            for (_t, _p) in radar_list:
+                _p = _p.copy(); _r = np.linalg.norm(_p[:, :3], axis=1); _u = _p[:, :3] / np.maximum(_r, 1e-9)[:, None]
+                _c1 = -_u[:, 1]; _c2 = _u[:, 2]
+                _F = np.stack([np.ones_like(_c1), _c1, _c2, _c1**2, _c1*_c2, _c2**2], 1)[:, :_np_]
+                _c1 = _c1 - _F @ _pm[:_np_]; _c2 = _c2 - _F @ _pm[_np_:]
+                _ux = np.sqrt(np.clip(1.0 - _c1**2 - _c2**2, 0.0, None))
+                _p[:, :3] = _r[:, None] * np.stack([_ux, -_c1, _c2], 1)
+                _rl.append((_t, _p))
+            radar_list = _rl
+        if _os.environ.get('RIO_GP_RADAR_DUMP'):   # DIAGNOSTIC 2026-09-27: the rows exactly as ingested (circle vertical study)
+            _GP_RADAR_DUMP.extend((float(t), np.asarray(p, float).copy()) for (t, p) in radar_list)
+        if radar_list:
+            _nef = [t for (t, pts) in radar_list if len(pts) > 0]
+            if _nef:
+                _last_fed_t = _nef[-1]
+        dts.append(solver.update(radar_list, imu_blk, heading_blk, float(t_now)))
+        # LIVE EDGE (2026-09-27; the SW's definition, `live_snapshots` in
+        # _solve_cpp_sliding_window): the newest stride [t_prev, t_now]
+        # sampled from THIS update only, i.e. what a real-time consumer reads
+        # when the update returns; capped at the last fed radar knot (the GP
+        # cannot be sampled past it).  No future data.
+        if _last_fed_t is not None and _last_fed_t > t_prev:
+            _tl = np.arange(float(t_prev), float(_last_fed_t), 0.02)[1:]
+            _tl = np.append(_tl, float(_last_fed_t) - 1e-6)
+            try:
+                _lq, _lp, _lv, _lo = solver.sample([float(x) for x in _tl])
+                _GP_LIVE_SNAPS.append({'t': _tl, 'pos': np.asarray(_lp, float), 'vel': np.asarray(_lv, float),
+                                       'ori': Rotation.from_quat(np.asarray(_lq, float)).as_matrix()})
+            except Exception:
+                pass
+        if _cu is not None:
+            _cu_ready = True
+        iters.append(solver.num_iters_last())
+        if nees_on:
+            nc = solver.nees_cov()
+            if nc is not None:
+                _GP_NEES_SNAPS.append(nc)   # (t, quat_wb, v_world, Sigma6)
+        if _cov_dump is not None and _last_fed_t is not None:
+            try:
+                sc = solver.sample_cov([float(_last_fed_t)])
+                if sc is not None:
+                    _q9, _p9, _v9, _S9 = sc
+                    _cov_dump.append((float(_last_fed_t),
+                                      np.asarray(_p9[0], float),
+                                      np.asarray(_S9[0], float)))
+            except Exception:
+                pass
+        t_prev, t_now = t_now, t_now + stride
+    if dts:
+        tail = dts[len(dts) // 3:]
+        if getattr(cfg, 'floor_sigma', 0.0) > 0.0 and hasattr(solver, 'floor_z'):
+            print(f"  [--gp] floor rows: bootstrapped floor_z = {solver.floor_z():.3f} m (sigma {cfg.floor_sigma}, slab {cfg.floor_slab}, band {cfg.floor_band})")
+        if getattr(cfg, 'range_sigma', 0.0) > 0.0 and hasattr(solver, 'range_pairs'):
+            print(f"  [--gp] range rows: {solver.range_pairs()} scatterer pairs associated (sigma {cfg.range_sigma}, assoc {cfg.range_assoc} m)")
+        print(f"  [--gp] {len(dts)} strides, {1000*np.mean(tail):.1f}ms/update mean "
+              f"({1000*np.max(tail):.1f}ms max), active knots {solver.num_active()}, "
+              f"GN iters mean {np.mean(iters):.1f}")
+
+    if _os.environ.get('RIO_GP_RADAR_DUMP') and _GP_RADAR_DUMP:
+        _orig = [(_ORIG_POS.get(t), _ORIG_VEL.get(t)) for (t, _) in _GP_RADAR_DUMP]
+        np.savez(_os.environ['RIO_GP_RADAR_DUMP'],
+                 t=np.concatenate([np.full(len(p), t) for (t, p) in _GP_RADAR_DUMP]),
+                 pts=np.concatenate([p for (_, p) in _GP_RADAR_DUMP]),
+                 R_bs=_euler_deg_to_R_bs(euler), t_bs=np.array([ext.tx, ext.ty, ext.tz]),
+                 orig_t=np.concatenate([np.full(len(o[0]), t) for (t, _), o in zip(_GP_RADAR_DUMP, _orig) if o[0] is not None] or [np.zeros(0)]),
+                 orig_pos=np.concatenate([o[0] for o in _orig if o[0] is not None] or [np.zeros((0, 3))]),
+                 orig_vel=np.concatenate([o[1] for o in _orig if o[0] is not None] or [np.zeros(0)]))
+        print(f"  [RIO_GP_RADAR_DUMP] {len(_GP_RADAR_DUMP)} frames -> {_os.environ['RIO_GP_RADAR_DUMP']}")
+    if _cu is not None:
+        print(f"  [gp-causal-unwrap] re-unwrapped {_cu_nre} returns over "
+              f"{_cu_nre_strides} strides below the |omega| gate")
+        if _ALIAS_REPAIR:
+            st = _ALIAS_REPAIR_STATS
+            print(f"  [--alias-repair, causal] aliased {st['aliased']}: multiplet groups {st['multiplet']} (collapsed {st['collapsed']}), "
+                  f"Doppler-picked {st['doppler']}, un-aliased {st.get('unaliased', 0)}, unrepaired (flip strides) {st['unrepaired']}")
+    if _cov_dump:
+        np.savez(_cov_dump_path,
+                 t=np.array([d[0] for d in _cov_dump]),
+                 p=np.array([d[1] for d in _cov_dump]),
+                 Sig9=np.array([d[2] for d in _cov_dump]))
+        print(f"  [--gp] cov dump: {len(_cov_dump)} strides -> {_cov_dump_path}")
+
+    # GP_DUMP_KNOTS=<path.npz>: diagnostic dump of every knot (time, frame
+    # flag) and a 1 kHz sample of the final record (pos, vel_world, omega)
+    # for locating velocity spikes relative to the knots (2026-09-10)
+    _kd = _os.environ.get('GP_DUMP_KNOTS', '')
+    if _kd and hasattr(solver, 'knot_list'):
+        _kl = solver.knot_list()
+        _kt = np.array([k[0] for k in _kl]); _kf = np.array([k[1] for k in _kl])
+        _ts = np.arange(_kt[0], _kt[-1], 0.001)
+        _q, _p, _v, _o = solver.sample([float(t) for t in _ts])
+        _kT, _kw = (solver.knot_states() if hasattr(solver, 'knot_states')
+                    else (np.zeros((0, 16)), np.zeros((0, 6))))
+        np.savez(_kd, knot_t=_kt, knot_frame=_kf, knot_T=np.asarray(_kT),
+                 knot_w=np.asarray(_kw), t=_ts, pos=np.asarray(_p),
+                 vel=np.asarray(_v), omega=np.asarray(_o), quat=np.asarray(_q))
+        print(f"  [--gp] knot dump: {len(_kt)} knots ({int(_kf.sum())} frame, "
+              f"{int((~_kf).sum())} sub), {len(_ts)} samples -> {_kd}")
+
+    if getattr(cfg, 'gyro_scale_state', 0):
+        _sg = solver.gyro_scale()
+        print(f"  [--gp] gyro scale-factor state ({'consider' if cfg.gyro_scale_state == 2 else 'estimated'}): [{_sg[0]:+.5f}, {_sg[1]:+.5f}, {_sg[2]:+.5f}]  (prior {cfg.gyro_scale_prior})")
+    if getattr(cfg, 'radar_az_state', 0):
+        print(f"  [--gp] radar azimuth-bias state: {np.degrees(solver.radar_az()):+.3f} deg  (prior {np.degrees(cfg.radar_az_prior):.2f} deg)")
+    fb = solver.biases()
+    return _GpTrajState(solver, np.array(fb[:3]), np.array(fb[3:]))
+
+
+def _run_gp_nees(snaps, mocap_slerp, mc_times, mc_pos):
+    """Live-edge NEES for the --gp backend. snaps: (t, quat_wb, v_world,
+    Sigma6 over (v_world, ori-right-tangent)) directly from GpSolver.nees_cov
+    (no spline propagation needed — the covariance is native)."""
+    try:
+        from scipy.stats import chi2 as _chi2
+    except Exception:
+        _chi2 = None
+    mc_vel = np.gradient(mc_pos, mc_times, axis=0)
+    # 10 Hz Butterworth like the driver's velocity eval (vls:2584): the raw
+    # 300 Hz position gradient carries ~0.4 m/s differentiation noise, which
+    # a well-calibrated (tight) velocity covariance would wrongly "fail".
+    try:
+        from scipy.signal import butter as _butter, filtfilt as _filtfilt
+        _fs = 1.0 / np.median(np.diff(mc_times))
+        _fc = min(10.0, _fs * 0.4)
+        _b, _a = _butter(4, _fc / (_fs / 2), btype='low')
+        if len(mc_vel) > 27:
+            for dim in range(3):
+                mc_vel[:, dim] = _filtfilt(_b, _a, mc_vel[:, dim])
+    except Exception:
+        pass
+    nees_v, nees_r = [], []
+    _dump = []   # GP_NEES_DUMP=<npz>: per-snapshot errors, sigmas, GT body rate
+    for t, q, v_est, Sig in snaps:
+        if t < mc_times[0] or t > mc_times[-1]:
+            continue
+        v_gt = np.array([np.interp(t, mc_times, mc_vel[:, i]) for i in range(3)])
+        R_gt = mocap_slerp(np.clip(t, mc_times[0], mc_times[-1])).as_matrix()
+        R_est = Rotation.from_quat(np.asarray(q)).as_matrix()
+        e_v = np.asarray(v_est) - v_gt
+        e_r = Rotation.from_matrix(R_est.T @ R_gt).as_rotvec()
+        Sig = np.asarray(Sig)
+        Sv = Sig[:3, :3] + 1e-12 * np.eye(3)
+        Sr = Sig[3:, 3:] + 1e-12 * np.eye(3)
+        try:
+            nees_v.append(float(e_v @ np.linalg.solve(Sv, e_v)))
+            nees_r.append(float(e_r @ np.linalg.solve(Sr, e_r)))
+        except np.linalg.LinAlgError:
+            continue
+        if os.environ.get('GP_NEES_DUMP'):
+            _h = 0.01
+            _t0, _t1 = np.clip([t - _h, t + _h], mc_times[0], mc_times[-1])
+            _R0, _R1 = mocap_slerp(_t0).as_matrix(), mocap_slerp(_t1).as_matrix()
+            _om = Rotation.from_matrix(_R0.T @ _R1).as_rotvec() / (_t1 - _t0)
+            _dump.append(np.concatenate([[t], e_v, e_r, np.sqrt(np.diag(Sv)),
+                                         np.sqrt(np.diag(Sr)), _om,
+                                         [nees_v[-1], nees_r[-1]]]))
+    if _dump and os.environ.get('GP_NEES_DUMP'):
+        np.savez(os.environ['GP_NEES_DUMP'], rows=np.array(_dump),
+                 cols='t ev0 ev1 ev2 er0 er1 er2 sv0 sv1 sv2 sr0 sr1 sr2 om0 om1 om2 nees_v nees_r')
+    if not nees_v:
+        print("  [NEES] no valid snapshots")
+        return
+    nv, nr = np.array(nees_v), np.array(nees_r)
+    lo, hi = (_chi2.ppf(0.025, 3), _chi2.ppf(0.975, 3)) if _chi2 else (0.216, 9.348)
+    print(f"  [NEES] {len(nv)} live-edge snapshots (3-DOF each, consistent ANEES=3.0, "
+          f"single-sample 95% chi2 in [{lo:.2f},{hi:.2f}])")
+    for name, arr in (("velocity", nv), ("orientation", nr)):
+        inb = float(np.mean((arr >= lo) & (arr <= hi)))
+        verdict = ("CONSISTENT" if 2.0 <= arr.mean() <= 4.5 else
+                   "OVERCONFIDENT" if arr.mean() > 4.5 else "conservative")
+        print(f"    {name:11s}: ANEES {arr.mean():6.2f}  median {np.median(arr):6.2f}  "
+              f"in-95% {100*inb:3.0f}%  -> {verdict}")
+
+
+_GP_NEES_SNAPS = []   # live-edge covariance snapshots from the --gp path
+_GP_RADAR_DUMP = []   # DIAGNOSTIC (RIO_GP_RADAR_DUMP): (t, pts) as ingested by the GP
+_SW_RADAR_DUMP = []   # DIAGNOSTIC (RIO_SW_RADAR_DUMP): the SW's rows as built
+_GP_LIVE_SNAPS = []   # GP live edge (2026-09-27): per stride, the newest stride sampled from that update only
+
+
 _cfg = load_config()
 BAGS = _cfg['bags']['bags']
 FLIPPED_BAGS = set(_cfg['bags']['flipped'])
@@ -737,11 +1519,18 @@ def integrate_gyro_orientation(
     t_start: float,
     t_end: float,
     noise_sigma_rad_per_sqrts: float = 0.0,
+    comp_gain: float = 0.0,
+    g_mag: float = 9.81,
 ) -> tuple:
     """
     Forward-integrate gyroscope measurements to produce a dense rotation array.
 
     Model: R(t + dt) = R(t) @ exp((z_gyro - b_g + noise) * dt)
+
+    comp_gain > 0 adds a Mahony-style complementary correction: during near-1g
+    (low linear-accel) samples, nudge roll/pitch so the predicted gravity direction
+    tracks the accelerometer, killing the pure-gyro roll/pitch drift (yaw untouched).
+    This gives the iSAM live edge a much better entering-knot init -> fewer extra_iters.
 
     Args:
         imu_data     : list of IMU messages with .timestamp and .angular_velocity
@@ -774,6 +1563,13 @@ def integrate_gyro_orientation(
         omega = msgs[i].angular_velocity - b_g
         if noise_sigma_rad_per_sqrts > 0:
             omega = omega + rng.normal(0.0, noise_sigma_rad_per_sqrts * np.sqrt(dt), 3)
+        if comp_gain > 0.0:
+            acc = np.asarray(msgs[i].linear_acceleration, dtype=float)
+            an = np.linalg.norm(acc)
+            if an > 1e-6 and abs(an - g_mag) < 0.3 * g_mag:   # gate: near-1g only
+                v_meas = acc / an                              # measured up in body
+                v_pred = R_cur.T @ np.array([0.0, 0.0, 1.0])   # predicted up in body
+                omega = omega + comp_gain * np.cross(v_meas, v_pred)
         dR = so3_exp(omega * dt)
         R_cur = R_cur @ dR
         times.append(msgs[i].timestamp)
@@ -963,6 +1759,52 @@ def integrate_radar_velocity(
 # aliased (their on-chip DoA is degraded; measured w* = (sigma_clean/sigma_aliased)^2
 # ~ 0.02-0.04 racing / 0.28 backflips).  Masks keyed by frame timestamp.
 _ALIAS_MASKS = {}
+# Per-point metadata written by the pre-unwrap (index-aligned with the frame's
+# points at that stage) and REMAPPED by every later front-end stage that
+# changes the point set (RANSAC prefilter, cluster collapse, --max-returns,
+# --drop-aliased).  Before 2026-09-10 nothing remapped them: after a RANSAC
+# rejection _radar_point_weights read am[:n], i.e. the mask shifted by one
+# for every point after the rejected one, so the alias down-weight landed on
+# the wrong returns in every frame with a rejection (the SW on all flights,
+# the GP on fast2 through the collapse; worklog/2026-09-10_alias-mask-alignment.md).
+_RAW_VEL = {}                 # timestamp -> raw (pre-unwrap) Doppler per point
+_ORIG_POS = {}                # timestamp -> reported positions BEFORE the alias repair (--alias-repair)
+_ORIG_VEL = {}                # timestamp -> reported Doppler BEFORE the alias repair (true raw)
+_PT_META_MISMATCH = [0]       # frames whose metadata length did not match (diagnostic)
+
+
+def _remap_point_meta(ts, sel):
+    """Subset the per-point metadata of frame `ts` by a boolean mask or an
+    index array (the same selection applied to the frame's arrays)."""
+    sel = np.asarray(sel)
+    for d in (_ALIAS_MASKS, _RAW_VEL, _ORIG_POS, _ORIG_VEL):
+        v = d.get(ts)
+        if v is None:
+            continue
+        v = np.asarray(v)
+        ok = (len(v) == len(sel)) if sel.dtype == bool else (sel.size == 0 or sel.max() < len(v))
+        if ok:
+            d[ts] = v[sel]
+        else:
+            _PT_META_MISMATCH[0] += 1
+
+
+def _collapse_point_meta(ts, labels, n_clusters):
+    """Collapse the per-point metadata of frame `ts` over cluster labels: a
+    cluster is aliased if ANY member was (members are within 0.3 m/s, so they
+    share the alias branch); the raw Doppler is the member mean."""
+    am = _ALIAS_MASKS.get(ts)
+    if am is not None and len(am) == len(labels):
+        _ALIAS_MASKS[ts] = np.array([np.asarray(am)[labels == k].any()
+                                     for k in range(n_clusters)])
+    rv = _RAW_VEL.get(ts)
+    if rv is not None and len(rv) == len(labels):
+        _RAW_VEL[ts] = np.array([np.asarray(rv)[labels == k].mean()
+                                 for k in range(n_clusters)])
+    for d in (_ORIG_POS, _ORIG_VEL):
+        v = d.get(ts)
+        if v is not None and len(v) == len(labels):
+            d[ts] = np.array([np.asarray(v)[labels == k].mean(axis=0) for k in range(n_clusters)])
 # DEFAULT 'auto' (adopted 2026-07-19): causal rate-linked down-weight
 # w = clip(sigma0^2 (1+(|w_gyro|/omega0)^2) / sigma_al^2, 0.01, 1) for returns
 # the unwrapper aliased.  Override with --alias-weight X; disable with
@@ -1068,7 +1910,12 @@ _BW_COS_FLOOR = 0.15         # = 81.4 deg; numerical guard, not a fit.  Binds on
                              # 1.5% / 1.9% / 0.5% of returns (slow/fast/flips).
 _BW_CONST = {                # (s0, coef) -- see the note above
     'a': (0.0811, 0.02618),  # array law, sin(theta) -> 1
-    'b': (0.0827, 0.03291),  # DIRCOS, the derived form
+    # DIRCOS, the derived form. SPLINE (DEPLOYED 2026-09-30): the ML fit of the
+    # spline's OWN frame model (worklog/2026-09-28_weight-rederivation.md sec. 2,
+    # radar_rate_fit.txt). GP (--gp): unchanged 2026-09-11 values (re-measured
+    # against the pose reference at the measured clocks; was 0.0827, 0.03291):
+    # the GP's weight channel scales its linear radar rows and was gated at these.
+    'b': (0.0829, 0.03392) if '--gp' in sys.argv else (0.0572, 0.02328),
 }
 # RIO_BW_S0_SCALE (env, default 1): multiplies s0 ONLY, coef untouched -- the
 # end-to-end sigma_0 sensitivity ladder (worklog/2026-09-03_joint-sigma0-fit.md:
@@ -1078,6 +1925,12 @@ _BW_CONST = {                # (s0, coef) -- see the note above
 _BW_S0_SCALE = float(os.environ.get('RIO_BW_S0_SCALE', '1.0'))
 if _BW_S0_SCALE != 1.0:
     _BW_CONST = {k: (s0 * _BW_S0_SCALE, cf) for k, (s0, cf) in _BW_CONST.items()}
+# RIO_BW_S0 / RIO_BW_COEF (env): absolute overrides of the 'b' constants for
+# re-derivation gates (2026-09-11 pose-reference re-measurement).
+if os.environ.get('RIO_BW_S0') or os.environ.get('RIO_BW_COEF'):
+    _s0b, _cfb = _BW_CONST['b']
+    _BW_CONST['b'] = (float(os.environ.get('RIO_BW_S0', _s0b)),
+                      float(os.environ.get('RIO_BW_COEF', _cfb)))
     print(f"  [bearing-weight] RIO_BW_S0_SCALE={_BW_S0_SCALE:g}: s0 -> "
           + ', '.join(f"{k}={s0:.4f}" for k, (s0, _) in _BW_CONST.items()))
 _BW_STATS = {'frames': 0, 'no_velocity': 0, 'w_sum': 0.0, 'w_n': 0}
@@ -1173,13 +2026,20 @@ def _radar_point_weights(frame, n):
         infl = 1.0 + (_SPEED_FRAME_V.get(ts, 0.0) / _SPEED_V0) ** 4
         w_al = float(np.clip(_SPEED_S0 ** 2 / _ALIAS_SIGMA_AL ** 2, 0.01, 1.0))
         am = _ALIAS_MASKS.get(ts)
-        if am is not None and len(am) >= n:
-            return np.where(am[:n], w_al, 1.0 / infl)
+        if am is not None and len(am) == n:      # exact length (see the note below)
+            return np.where(np.asarray(am, bool), w_al, 1.0 / infl)
+        if am is not None:
+            _PT_META_MISMATCH[0] += 1
         return np.full(n, 1.0 / infl)
 
     w = np.ones(n)
     am = _ALIAS_MASKS.get(ts)
-    aliased = am[:n] if (am is not None and len(am) >= n) else None
+    # exact length only: the mask is remapped through every front-end stage
+    # since 2026-09-10; a mismatch means a stage forgot to, and the old
+    # am[:n] truncation would apply the alias weight to the wrong returns
+    if am is not None and len(am) != n:
+        _PT_META_MISMATCH[0] += 1
+    aliased = np.asarray(am, bool) if (am is not None and len(am) == n) else None
     if _ALIAS_WEIGHT is not None and aliased is not None:
         w_al = (_ALIAS_FRAME_W.get(ts, 1.0) if _ALIAS_WEIGHT == 'auto'
                 else _ALIAS_WEIGHT)
@@ -1205,7 +2065,10 @@ def _bearing_weight_report(where):
     mean_w = st['w_sum'] / max(st['w_n'], 1)
     print(f"\n  [--bearing-weight {_BEARING_WEIGHT}] {where}: applied to "
           f"{st['frames'] - st['no_velocity']}/{st['frames']} frames "
-          f"({100 - miss:.1f}%), mean clean-return weight {mean_w:.3f}")
+          f"({100 - miss:.1f}%), mean clean-return weight {mean_w:.3f}"
+          + (f"; WARNING: {_PT_META_MISMATCH[0]} frames with a per-point "
+             f"metadata length mismatch (alias weight not applied there)"
+             if _PT_META_MISMATCH[0] else "; per-point metadata aligned in every frame"))
     if st['no_velocity'] == st['frames']:
         raise SystemExit(
             "--bearing-weight is ON but no frame had a consensus velocity: the "
@@ -1213,6 +2076,130 @@ def _bearing_weight_report(where):
             "no-op.  preunwrap_radar_frames did not run (needs unwrapping "
             "enabled and a v_max for this bag).")
     st.update(frames=0, no_velocity=0, w_sum=0.0, w_n=0)
+
+
+# ---- ALIASED-BEARING REPAIR (EXPERIMENT 2026-09-16, opt-in --alias-repair) ----
+# worklog/2026-09-16_alias-three-lobes.md: with the wrapped Doppler used for
+# the on-chip TDM compensation, an aliased return of order k is reported at
+# the true bearing plus k times ONE of three fixed direction-cosine offsets of
+# the AOP virtual array (simulate_aop_alias_bearing.py; sensor-frame sign
+# variant (+1,-1) measured on all five bags: c1 = -u_y - k*Dx, c2 = u_z + k*Dz).
+# The chip's multiObjBeamForming also emits the competing lobes as extra
+# points at the same range and Doppler.  Repair: (a) same-range-same-Doppler
+# multiplets -> the lobe assignment whose corrected bearings coincide, one
+# point kept (velocity-free); (b) singletons -> the lobe whose corrected
+# bearing best matches the unwrapper's own predicted radial velocity.
+# Repaired returns are then CLEAN (raw Doppler := unwrapped, alias mask off).
+_ALIAS_REPAIR = ('--no-alias-repair' not in sys.argv)   # DEFAULT ON since 2026-09-17 (Timo); --alias-repair kept as a no-op for old commands
+_ALIAS_LOBES = np.array([(-0.271, 0.271), (-0.177, -0.448), (0.448, 0.177)])   # MEASURED from the multiplet separations (worklog/artifacts/2026-09-16_alias-bearing-wrap/measured_lobes.txt, se 0.002); simulated (-0.28,0.28),(-0.17,-0.45),(0.45,0.18)
+_ALIAS_LOBES = _ALIAS_LOBES + np.array([float(os.environ.get('RIO_ALIAS_LOBE_DX', 0)), float(os.environ.get('RIO_ALIAS_LOBE_DZ', 0))])   # DIAGNOSTIC: common shift of the lobe set
+_ALIAS_REPAIR_STATS = {'aliased': 0, 'multiplet': 0, 'collapsed': 0, 'doppler': 0, 'unrepaired': 0}
+
+
+def _alias_pick(U, ok, vp, v_unw, u_raw, v_raw):
+    """Choose among the k = 0 hypothesis (reported bearing, raw Doppler) and the
+    three lobe hypotheses (corrected bearings, unwrapped Doppler) by the
+    Doppler residual against the reference velocity vp (u . vp = predicted
+    Doppler).  Returns (lobe index, or -1 for k = 0, or None when the runner-up
+    is within the noise margin): the margin is 2 sigma_j of the per-return
+    bearing-noise law at the reference velocity (dircos form, _BW_CONST['b']),
+    the same law the sigma-gate prefilter uses, so an ambiguous pick (typically
+    when the flight velocity is along the boresight and the azimuth lobes
+    predict the same Doppler) leaves the return unrepaired and down-weighted."""
+    vp = np.asarray(vp, float)
+    s0, coef = _BW_CONST['b']
+    cphi = max(float(u_raw[0]), _BW_COS_FLOOR)
+    X = np.sqrt((vp[1] - u_raw[1] * vp[0] / cphi) ** 2 + (vp[2] - u_raw[2] * vp[0] / cphi) ** 2)
+    sig = np.sqrt(s0 ** 2 + (coef * X) ** 2)
+    err = np.abs(U @ vp - v_unw); err[~ok] = np.inf
+    err0 = abs(float(u_raw @ vp) - v_raw)
+    cand = np.concatenate([[err0], err])
+    order = np.argsort(cand)
+    if cand[order[1]] - cand[order[0]] < 2.0 * sig:
+        return None
+    return -1 if order[0] == 0 else int(order[0] - 1)
+
+
+def _alias_repair_frame(P, v_new, v_raw, v_max, v_pred, min_range, stage='both'):
+    """Return (P_repaired, v_repaired, keep_mask, repaired_mask) for one frame.
+    v_pred: sensor-frame reference velocity in the measurement convention
+    (u . v_pred = predicted Doppler), or None (multiplets only).  Singletons
+    are a FOUR-hypothesis test against it: k = 0 with the reported bearing
+    (the unwrapper was wrong: un-alias) vs the three lobes at the unwrapped
+    Doppler; multiplets are decided by geometry alone."""
+    import itertools
+    n = len(P); rng = np.linalg.norm(P, axis=1)
+    k = np.round((v_new - v_raw) / (2.0 * v_max)).astype(int)
+    keep = np.ones(n, bool); rep = np.zeros(n, bool); P2 = P.copy(); v2 = v_new.copy()
+    al = [i for i in range(n) if k[i] != 0 and rng[i] >= min_range]
+    _ALIAS_REPAIR_STATS['aliased'] += len(al)
+    if not al:
+        return P2, v2, keep, rep
+    u = P / np.maximum(rng, 1e-9)[:, None]
+
+    def cands(i):
+        c1 = -u[i, 1] - k[i] * _ALIAS_LOBES[:, 0]; c2 = u[i, 2] + k[i] * _ALIAS_LOBES[:, 1]
+        c1 = (c1 + 1.0) % 2.0 - 1.0; c2 = (c2 + 1.0) % 2.0 - 1.0
+        s2 = c1 ** 2 + c2 ** 2
+        U = np.stack([np.sqrt(np.clip(1.0 - s2, 0.0, None)), -c1, c2], axis=1)
+        U[s2 > 1.0] = np.nan
+        return U
+    C = {i: cands(i) for i in al}
+    done = np.zeros(n, bool)
+    for a in al:                                   # (a) multiplets
+        if done[a] or stage == 'single':
+            continue
+        grp = [b for b in al if not done[b] and abs(rng[b] - rng[a]) < 0.03
+               and abs(v_raw[b] - v_raw[a]) < 0.01 and k[b] == k[a]]
+        if len(grp) < 2:
+            continue
+        best = None
+        for combo in itertools.product(range(3), repeat=len(grp)):
+            if len(set(combo)) < len(combo):
+                continue          # a scatterer's lobes are DISTINCT: a same-lobe combo is a cluster of one bearing, not a multiplet
+            V = np.array([C[g][c] for g, c in zip(grp, combo)])
+            if np.isnan(V).any():
+                continue
+            spread = max(np.linalg.norm(V[p] - V[q]) for p in range(len(grp)) for q in range(p + 1, len(grp)))
+            if best is None or spread < best[0]:
+                best = (spread, V.mean(axis=0))
+        if best is not None and best[0] < 0.15:
+            um = best[1] / np.linalg.norm(best[1])
+            P2[grp[0]] = rng[grp[0]] * um; rep[grp[0]] = True
+            for g in grp[1:]:
+                keep[g] = False
+                if os.environ.get('RIO_ALIAS_NOCOLLAPSE') == '1':      # DIAGNOSTIC: keep the duplicates, all repaired
+                    keep[g] = True; P2[g] = rng[g] * um; rep[g] = True
+            for g in grp:
+                done[g] = True
+            _ALIAS_REPAIR_STATS['multiplet'] += 1; _ALIAS_REPAIR_STATS['collapsed'] += len(grp) - 1
+    for a in al:                                   # (b) singletons: four hypotheses vs the reference Doppler
+        if done[a] or stage == 'mult':
+            continue
+        done[a] = True
+        if os.environ.get('RIO_ALIAS_MULTONLY') == '1':                 # DIAGNOSTIC: multiplets only, singletons untouched
+            _ALIAS_REPAIR_STATS['unrepaired'] += 1
+            continue
+        U = C[a]; ok = np.isfinite(U[:, 0])
+        if v_pred is None or not ok.any():
+            _ALIAS_REPAIR_STATS['unrepaired'] += 1
+            continue
+        vp = np.asarray(v_pred, float)
+        err = np.abs(U @ vp - v_new[a]); err[~ok] = np.inf
+        err0 = abs(float(u[a] @ vp) - v_raw[a])          # k = 0: reported bearing, raw Doppler
+        j = int(np.argmin(err))
+        if err0 <= err[j]:
+            j = -1
+        # (a 2-sigma margin gate here was tried, rep8 of the gate: flips lose
+        #  0.726 -> 0.851 because the margin discards the returns the flip
+        #  strides have; the margin is applied only in the causal re-pick)
+        if j == -1:
+            v2[a] = v_raw[a]                              # un-alias: the unwrapper was wrong here
+            _ALIAS_REPAIR_STATS['unaliased'] = _ALIAS_REPAIR_STATS.get('unaliased', 0) + 1
+            continue
+        P2[a] = rng[a] * U[j]; rep[a] = True
+        _ALIAS_REPAIR_STATS['doppler'] += 1
+    return P2, v2, keep, rep
 
 
 def preunwrap_radar_frames(
@@ -1313,6 +2300,14 @@ def preunwrap_radar_frames(
         else:
             v_unwrap_pred = v_prev_wls
 
+        if os.environ.get('RIO_UNWRAP_TRACE'):   # DIAGNOSTIC 2026-09-27: per-frame unwrap trace
+            _Pn = np.asarray(frame.positions, float); _rn = np.linalg.norm(_Pn, axis=1); _okn = _rn >= min_range
+            _vraw_w = solve_ego_velocity_weighted(frame.positions, frame.velocities, frame.intensities, min_range=min_range, min_points=3)
+            _res_raw = (np.sqrt(np.mean(((_Pn[_okn] / _rn[_okn, None]) @ _vraw_w - np.asarray(frame.velocities)[_okn]) ** 2))
+                        if _vraw_w is not None and _okn.sum() else np.nan)
+            print(f"  [unwrap-trace] t {t:.3f} n {int(_okn.sum())} |v_pred| {np.linalg.norm(v_unwrap_pred) if v_unwrap_pred is not None else np.nan:.2f} "
+                  f"|v_raw_wls| {np.linalg.norm(_vraw_w) if _vraw_w is not None else np.nan:.2f} raw-fit rms {_res_raw:.3f} "
+                  f"since reset {t - _t_imu_prev if use_imu else np.nan:.3f} s raw {np.round(np.asarray(frame.velocities)[_okn], 2).tolist()}")
         # Per-point unwrapping: pick alias closest to prediction
         new_velocities = frame.velocities.copy()
         if v_unwrap_pred is not None:
@@ -1335,6 +2330,80 @@ def preunwrap_radar_frames(
                     n_unwrapped_pts += 1
                 new_velocities[i] = best
 
+        # --alias-repair: recover the bearings of the aliased returns (see
+        # _alias_repair_frame) and collapse the chip's lobe duplicates; the
+        # repaired returns become CLEAN (raw := unwrapped -> alias mask off)
+        if _ALIAS_REPAIR:
+            _P0 = np.asarray(frame.positions, float); _vn = np.asarray(new_velocities, float)
+            _vr = np.asarray(frame.velocities, float)
+            _ORIG_POS[frame.timestamp] = _P0.copy(); _ORIG_VEL[frame.timestamp] = _vr.copy()
+            _two = os.environ.get('RIO_ALIAS_TWOSTAGE') == '1'
+            _rep_m = np.zeros(len(_P0), bool); _keep_m = np.ones(len(_P0), bool)
+            if _two:
+                # stage 1: multiplets by geometry (velocity-free); the survivors
+                # become clean returns (raw := unwrapped) for the consensus below
+                _P0, _v2, _keep_m, _rep_m = _alias_repair_frame(_P0, _vn, _vr, v_max, None, min_range, stage='mult')
+                _vn = _v2; _vr = np.where(_rep_m, _vn, _vr)
+                _P0, _vn, _vr, _rep_m = _P0[_keep_m], _vn[_keep_m], _vr[_keep_m], _rep_m[_keep_m]
+                _orig_p = _ORIG_POS[frame.timestamp][_keep_m]; _orig_v = _ORIG_VEL[frame.timestamp][_keep_m]
+                _I = np.asarray(frame.intensities)[_keep_m]
+            else:
+                _orig_p = _ORIG_POS[frame.timestamp]; _orig_v = _ORIG_VEL[frame.timestamp]; _I = np.asarray(frame.intensities)
+            # reference for the singleton lobe pick: the frame's clean-return
+            # consensus (WLS over the non-aliased returns, incl. the repaired
+            # multiplets in two-stage mode) or the unwrapper's IMU prediction,
+            # whichever explains the frame's clean returns better OUT OF SAMPLE
+            # (leave-one-out; an in-sample residual always favours the fit)
+            _cl = (_vn == _vr) & (np.linalg.norm(_P0, axis=1) >= min_range)
+            _vref = v_unwrap_pred
+            _vw = None
+            if _cl.sum() >= 5:
+                _vw = solve_ego_velocity_weighted(_P0[_cl], _vn[_cl], _I[_cl], min_range=min_range, min_points=min_points)
+                if _vw is not None:
+                    _Uc = _P0[_cl] / np.linalg.norm(_P0[_cl], axis=1, keepdims=True)
+                    _Pc, _vc, _Ic = _P0[_cl], _vn[_cl], _I[_cl]
+                    _loo = []
+                    for _j in range(len(_vc)):
+                        _m = np.ones(len(_vc), bool); _m[_j] = False
+                        _vj = solve_ego_velocity_weighted(_Pc[_m], _vc[_m], _Ic[_m], min_range=min_range, min_points=4)
+                        _loo.append((_Uc[_j] @ _vj - _vc[_j]) if _vj is not None else np.nan)
+                    _loo = np.array(_loo, float)
+                    _e_w = np.sqrt(np.nanmean(_loo ** 2)) if np.isfinite(_loo).sum() >= 4 else np.inf
+                    _e_i = np.sqrt(np.mean((_Uc @ v_unwrap_pred - _vn[_cl]) ** 2)) if v_unwrap_pred is not None else np.inf
+                    if _e_w < _e_i:
+                        _vref = _vw
+                        _ALIAS_REPAIR_STATS['ref_wls'] = _ALIAS_REPAIR_STATS.get('ref_wls', 0) + 1
+                    else:
+                        _ALIAS_REPAIR_STATS['ref_imu'] = _ALIAS_REPAIR_STATS.get('ref_imu', 0) + 1
+            # kinematic guard (two-stage mode): no return can alias when the
+            # antenna speed is below v_max by both references -> un-alias the
+            # remaining flags of this frame instead of moving their bearings
+            _guard = False
+            if _two:
+                _spd = [np.linalg.norm(v) for v in (v_unwrap_pred, _vw) if v is not None]
+                _guard = bool(_spd) and max(_spd) < v_max
+            if _guard:
+                _flag = (_vn != _vr)
+                _ALIAS_REPAIR_STATS['guarded'] = _ALIAS_REPAIR_STATS.get('guarded', 0) + int(_flag.sum())
+                _vn = np.where(_flag, _vr, _vn); _v2 = _vn; _P2 = _P0; _keep = np.ones(len(_P0), bool); _rep = _rep_m
+            else:
+                _P2, _v2, _keep, _rep = _alias_repair_frame(_P0, _vn, _vr, v_max, _vref, min_range, stage=('single' if _two else 'both'))
+                _rep = _rep | _rep_m
+            if _rep.any() or (~_keep).any() or (_v2 != _vn).any() or (not _keep_m.all()):
+                _vn = _v2
+                # DIAGNOSTIC (env RIO_ALIAS_KEEPW=1): repaired bearing but the
+                # alias weight kept (raw stays raw -> mask on -> w_al)
+                _raw2 = (np.asarray(frame.velocities, float)[_keep_m] if _two else _vr).copy() if os.environ.get('RIO_ALIAS_KEEPW') == '1' else np.where(_rep, _vn, _vr)
+                kw = {}
+                for _a in ('intensities', 'ranges', 'noise', 'frame_number', 'time_cpu_cycles'):
+                    _val = getattr(frame, _a, None)
+                    if _val is not None and np.ndim(_val) >= 1 and len(_val) == len(_keep_m):
+                        kw[_a] = np.asarray(_val)[_keep_m][_keep]
+                kw['positions'] = _P2[_keep]; kw['velocities'] = _raw2[_keep]
+                frame = dataclasses.replace(frame, **kw)
+                new_velocities = _vn[_keep]
+                _ORIG_POS[frame.timestamp] = _orig_p[_keep]; _ORIG_VEL[frame.timestamp] = _orig_v[_keep]
+
         # Run WLS on the (now unwrapped) velocities and reset IMU velocity
         v_wls = solve_ego_velocity_weighted(
             frame.positions, new_velocities, frame.intensities,
@@ -1356,6 +2425,7 @@ def preunwrap_radar_frames(
         _SPEED_FRAME_VVEC[frame.timestamp] = np.asarray(_v_cons, dtype=float)
         _ALIAS_MASKS[frame.timestamp] = (np.asarray(new_velocities)
                                          != np.asarray(frame.velocities))
+        _RAW_VEL[frame.timestamp] = np.asarray(frame.velocities, float).copy()
         if _ALIAS_WEIGHT == 'auto' and imu_data_full is not None:
             _gi = min(range(len(imu_data_full)),
                       key=lambda _j: abs(imu_data_full[_j].timestamp - frame.timestamp))
@@ -1379,11 +2449,16 @@ def preunwrap_radar_frames(
                     if _val is not None and np.ndim(_val) >= 1 and len(_val) == len(keep_m):
                         kw[_a] = np.asarray(_val)[keep_m]
                 kw['velocities'] = np.asarray(new_velocities)[keep_m]
+                _remap_point_meta(frame.timestamp, keep_m)   # all kept are clean
                 unwrapped_frames.append(dataclasses.replace(frame, **kw))
                 continue
 
         unwrapped_frames.append(dataclasses.replace(frame, velocities=new_velocities))
 
+    if _ALIAS_REPAIR:
+        st = _ALIAS_REPAIR_STATS
+        print(f"  [--alias-repair] aliased {st['aliased']}: multiplet-repaired groups {st['multiplet']} "
+              f"(duplicates collapsed {st['collapsed']}), Doppler-picked singletons {st['doppler']}, un-aliased {st.get('unaliased', 0)}, ambiguous (left down-weighted) {st.get('ambiguous', 0)}, guarded (speed < v_max) {st.get('guarded', 0)}, unrepaired {st['unrepaired']}; reference per frame: consensus {st.get('ref_wls', 0)} / IMU {st.get('ref_imu', 0)}")
     return unwrapped_frames, n_total_pts, n_unwrapped_pts
 
 
@@ -1541,6 +2616,13 @@ def main():
             noise_deg_per_sqrts = float(sys.argv[idx_n + 1])
     noise_rad_per_sqrts = np.radians(noise_deg_per_sqrts)
 
+    # Complementary-filter gain for the gyro init (roll/pitch accel correction; 0=off)
+    comp_filter_gain = 0.0
+    if '--comp-filter' in sys.argv:
+        _idx_cf = sys.argv.index('--comp-filter')
+        if _idx_cf + 1 < len(sys.argv):
+            comp_filter_gain = float(sys.argv[_idx_cf + 1])
+
     # MoCap usage flags (decoupled):
     #   --mocap-init    : use MoCap position + orientation at t=0 only
     #   --mocap-heading : build continuous heading priors from MoCap (pseudo-magnetometer)
@@ -1570,10 +2652,14 @@ def main():
     USE_GNC = '--gnc' in sys.argv
     USE_CPP = '--cpp' in sys.argv
     USE_SLIDING_WINDOW = '--sliding-window' in sys.argv
+    USE_GP = '--gp' in sys.argv       # GP/WNOA sliding-window backend (rio_gp)
+    if USE_GP and not (Path(__file__).parent.parent / 'rio_solver_cpp' / 'src' / 'gp_solver.cpp').exists():
+        raise SystemExit('--gp: the GP backend is not included in this release (spline-only tree)')
     # Accel-bias init is SENSOR-ONLY by default (gravity-aligned scalar
     # correction during the stationary segment; no external attitude).
     # --mocap-accel-bias re-enables the legacy MoCap-attitude full-3D seed
-    # (which changes headline live-edge metrics by <=5%; see REVIEW_RESPONSE).
+    # (which changes headline live-edge metrics by <=5%; see
+    # documentation/report_notes/REVIEW_RESPONSE.md).
     MOCAP_ACCEL_BIAS = '--mocap-accel-bias' in sys.argv
     # Whole-trajectory Umeyama SE(3) alignment for the settled metrics instead of
     # the default causal start-anchored SE(3). Reported alongside the causal numbers
@@ -1766,6 +2852,8 @@ def main():
 
     _rc = _RADAR_CFG.get('best_velocity' if 'best_velocity' in bag_key else 'default', {})
     V_MAX = _rc.get('v_max', 4.99)
+    if os.environ.get('RIO_VMAX'):          # EXPERIMENT 2026-09-17: the chirp-spec value (radar_config_spec.py: 3.148) vs the empirical 3.136
+        V_MAX = float(os.environ['RIO_VMAX']); print(f"  [RIO_VMAX] v_max override {V_MAX}")
     USE_UNWRAP = not NO_UNWRAP
 
     print(f"\n{'Configuration':-^80}")
@@ -1780,6 +2868,91 @@ def main():
     print(f"\n{'Loading Data':-^80}")
 
     bag_data = load_bag_topics(BAG_PATH, verbose=True)
+
+    # Gyro per-axis scale correction (extrinsics.yaml `gyro_scale`, EXPERIMENT
+    # 2026-09-16, BACKFLIPS_PLAN item 4): omega = (1 + s) * z_raw, s measured
+    # estimator-free from the swept angle against MoCap
+    # (analysis/characterize_gyro_scale_integral.py). Default [0, 0, 0].
+    _gs = np.asarray(_EXTRINSICS_CFG.get('gyro_scale', [0.0, 0.0, 0.0]), float)
+    # IMU-to-body misalignment (extrinsics.yaml `imu_misalign_deg`, DEPLOYED
+    # 2026-09-27, worklog/2026-09-27_circle-vertical-imu-misalignment.md): the
+    # whole IMU stream (gyro AND accel) is rotated into the MoCap-body frame in
+    # which the radar extrinsic, heading priors and initial attitude live,
+    # z_body = Exp(c) z_imu, BEFORE the gyro scale (the fit's model omega =
+    # (1 + s) Exp(c) z). Other platforms pass [0, 0, 0] (bags.yaml overrides).
+    _imc = np.asarray(_EXTRINSICS_CFG.get('imu_misalign_deg', [0.0, 0.0, 0.0]), float)
+    # optional separate accelerometer rotation (EXPERIMENT 2026-09-27, spline
+    # vertical study): `accel_misalign_deg` defaults to imu_misalign_deg
+    _amc = np.asarray(_EXTRINSICS_CFG.get('accel_misalign_deg', _imc), float)
+    if np.any(_imc != 0.0) or np.any(_amc != 0.0):
+        _Rc = Rotation.from_rotvec(np.radians(_imc)).as_matrix()
+        _Ra = Rotation.from_rotvec(np.radians(_amc)).as_matrix()
+        for _d in bag_data.imu_data:
+            _d.angular_velocity = _Rc @ np.asarray(_d.angular_velocity, float)
+            _d.linear_acceleration = _Ra @ np.asarray(_d.linear_acceleration, float)
+        print(f"  [imu_misalign] gyro rotated by Exp(c), c = {_imc.tolist()} deg; accel by Exp(c_a), c_a = {_amc.tolist()} deg; {len(bag_data.imu_data)} IMU samples")
+    # accelerometer-only lag (EXPERIMENT 2026-09-29, worklog/2026-09-29_accel-lag.md):
+    # imu_mocap_offset_sec was fitted on the gyro; the accelerometer measures ~20 ms
+    # later (thrust axis). `accel_lag_sec` L > 0 re-samples acc(t) <- acc(t + L).
+    # DEPLOYED 2026-09-30 for the spline only: the GP's lag package was a trade
+    # (sec. 4), so --gp ignores it unless `gp_accel_lag: 1` (--set) asks for it.
+    _alag = float(_EXTRINSICS_CFG.get('accel_lag_sec', 0.0))
+    if USE_GP and not int(_SOLVER_CFG.get('gp_accel_lag', 0)):
+        _alag = 0.0
+    if _alag != 0.0:
+        _ti = np.array([_d.timestamp for _d in bag_data.imu_data], float)
+        _ai = np.array([_d.linear_acceleration for _d in bag_data.imu_data], float)
+        _as = np.column_stack([np.interp(_ti + _alag, _ti, _ai[:, k]) for k in range(3)])
+        for _d, _a in zip(bag_data.imu_data, _as):
+            _d.linear_acceleration = _a
+        print(f"  [accel_lag] accelerometer re-sampled at t + {_alag*1e3:.1f} ms ({len(_ti)} samples)")
+    # DIAGNOSTIC 2026-09-29 (worklog/2026-09-29_accel-lag.md sec. 5): MoCap world
+    # frame tilted against true gravity by eps (measured estimator-free,
+    # world_tilt.py: g_true = Exp(eps) g in MoCap axes). RIO_MOCAP_TILT_DEG="ex,ey"
+    # rotates the whole reference into the gravity-aligned frame, p' = Exp(-eps) p,
+    # R' = Exp(-eps) R (velocity, acceleration likewise), before anything uses it.
+    if os.environ.get('RIO_MOCAP_TILT_DEG'):
+        _e = [float(x) for x in os.environ['RIO_MOCAP_TILT_DEG'].split(',')]
+        _Rt = Rotation.from_rotvec(-np.radians([_e[0], _e[1], 0.0]))
+        _Rtm = _Rt.as_matrix()
+        for _s in bag_data.agiros_state:
+            _s.position = _Rtm @ np.asarray(_s.position, float)
+            _s.velocity = _Rtm @ np.asarray(_s.velocity, float)
+            if _s.acceleration is not None:
+                _s.acceleration = _Rtm @ np.asarray(_s.acceleration, float)
+            _s.orientation = (_Rt * Rotation.from_quat(_s.orientation)).as_quat()
+        print(f"  [mocap_tilt] reference rotated into the gravity-aligned frame, eps = {_e} deg")
+    # DIAGNOSTIC 2026-09-29 (worklog/2026-09-29_accel-lag.md sec. 5): oracle
+    # accelerometer. RIO_ACCEL_ORACLE = xyz | xy | z replaces those body axes of
+    # every sample by the MoCap specific force R_mocap^T (a_ref - g) (pose-derived
+    # reference, loader cut-off) plus the sample-mean real-minus-oracle offset (so
+    # the bias states see the same constant). Splits sensor-side from estimator-side.
+    _orc = os.environ.get('RIO_ACCEL_ORACLE', '')
+    if _orc:
+        _st = bag_data.agiros_state
+        _stt = np.array([s.timestamp for s in _st]); _k = np.r_[True, np.diff(_stt) > 1e-4]
+        _stt = _stt[_k]; _st = [s for s, k in zip(_st, _k) if k]
+        _sq = np.array([s.orientation for s in _st]); _sa = np.array([s.acceleration for s in _st])
+        _sl = Slerp(_stt, Rotation.from_quat(_sq))
+        _ti = np.array([_d.timestamp for _d in bag_data.imu_data], float) + _EXTRINSICS_CFG['imu_mocap_offset_sec']
+        _in = (_ti > _stt[0]) & (_ti < _stt[-1])
+        _Rm = _sl(np.clip(_ti, _stt[0], _stt[-1])).as_matrix()
+        _aw = np.column_stack([np.interp(_ti, _stt, _sa[:, k]) for k in range(3)])
+        _fo = np.einsum('nji,nj->ni', _Rm, _aw - np.array([0.0, 0.0, -9.81]))
+        _ar = np.array([_d.linear_acceleration for _d in bag_data.imu_data], float)
+        _ax = [i for i, c in enumerate('xyz') if c in _orc]
+        _off = np.mean((_ar - _fo)[_in], axis=0)
+        if os.environ.get('RIO_ACCEL_ORACLE_NOOFF'):
+            _off = np.zeros(3)
+        for _j, _d in enumerate(bag_data.imu_data):
+            if _in[_j]:
+                _a = np.array(_d.linear_acceleration, float); _a[_ax] = _fo[_j, _ax] + _off[_ax]
+                _d.linear_acceleration = _a
+        print(f"  [accel_oracle] axes {_orc}: MoCap specific force (+ offset {np.round(_off[_ax], 3).tolist()}) on {int(_in.sum())} samples")
+    if np.any(_gs != 0.0):
+        for _d in bag_data.imu_data:
+            _d.angular_velocity = np.asarray(_d.angular_velocity, float) * (1.0 + _gs)
+        print(f"  [gyro_scale] applied (1 + s) with s = {_gs.tolist()} to {len(bag_data.imu_data)} IMU samples")
 
     t_bag_start = bag_data.start_time + START_TIME_OFFSET
     t_bag_end   = t_bag_start + DURATION
@@ -1924,6 +3097,10 @@ def main():
     if USE_MOCAP_INIT and mocap_slerp is not None:
         t_ref_clamped = np.clip(t_ref, _mc_times[0], _mc_times[-1])
         R_init = mocap_slerp(t_ref_clamped).as_matrix()
+        if os.environ.get('RIO_INIT_MISALIGN_DEG'):   # DIAGNOSTIC 2026-09-27: MoCap body -> IMU axes, R_w,imu = R_w,mocap Exp(c)
+            _c = np.radians([float(x) for x in os.environ['RIO_INIT_MISALIGN_DEG'].split(',')])
+            R_init = R_init @ Rotation.from_rotvec(_c).as_matrix()
+            print(f"  [RIO_INIT_MISALIGN_DEG] initial attitude rotated by c = {np.degrees(_c).round(3)} deg")
         mocap_euler_init = np.degrees(Rotation.from_matrix(R_init).as_euler('xyz'))
         print(f"  [--mocap-init] Using MoCap orientation at t_ref:")
         print(f"    Euler xyz: [{mocap_euler_init[0]:.2f}, {mocap_euler_init[1]:.2f}, {mocap_euler_init[2]:.2f}] deg")
@@ -1946,7 +3123,10 @@ def main():
         t_start=t_ref,
         t_end=imu_data[-1].timestamp,
         noise_sigma_rad_per_sqrts=noise_rad_per_sqrts,
+        comp_gain=comp_filter_gain,
     )
+    if comp_filter_gain > 0.0:
+        print(f"  [--comp-filter {comp_filter_gain}] complementary roll/pitch correction ON")
 
     gyro_euler = np.degrees(np.array(
         [Rotation.from_matrix(R).as_euler('xyz') for R in gyro_Rs]))
@@ -2140,6 +3320,8 @@ def main():
 
     # ==================== Heading priors (--mocap-heading pseudo-magnetometer) ====================
     heading_priors = []
+    _HEADING_MIS = (Rotation.from_rotvec(np.radians([float(x) for x in os.environ['RIO_HEADING_MISALIGN_DEG'].split(',')])).as_matrix()
+                    if os.environ.get('RIO_HEADING_MISALIGN_DEG') else None)
     if USE_MOCAP_HEADING and LAMBDA_HEADING > 0 and mocap_slerp is not None:
         print(f"\n{'Heading Priors (MoCap pseudo-magnetometer)':-^80}")
         heading_dt = 0.01   # 100 Hz, matches raw MoCap rate (/mocap/angrybird2/pose @ 100 Hz)
@@ -2149,6 +3331,8 @@ def main():
             t_abs = t_rel + t_ref
             t_clamped = np.clip(t_abs, _mc_times[0], _mc_times[-1])
             R_gt = mocap_slerp(t_clamped).as_matrix()
+            if _HEADING_MIS is not None:   # DIAGNOSTIC 2026-09-27: heading of the IMU axes, R_w,imu = R_w,mocap Exp(c)
+                R_gt = R_gt @ _HEADING_MIS
             heading_priors.append((t_abs, R_gt))
         print(f"  Built {len(heading_priors)} heading priors at {1/heading_dt:.0f} Hz  "
               f"lambda_heading={LAMBDA_HEADING}")
@@ -2238,6 +3422,17 @@ def main():
     # dependency where alias selection requires an accurate trajectory and the
     # trajectory requires correct alias selection.  The solver's in-loop
     # unwrapping (via v_max) remains as a safety net for residual errors.
+    # Causal live-window re-unwrapper is the DEFAULT deployable front end for
+    # --gp (GP-22): causal + sensor-only, fast -29%, slow/backflips unchanged.
+    # Disable with --set gp_causal_unwrap=0 (falls back to the static
+    # sensor-only pre-unwrap; MoCap-aided only via --mocap-unwrap opt-in).
+    _GP_CAUSAL = (USE_GP and bool(int(_SOLVER_CFG.get('gp_causal_unwrap', 1)))
+                  and V_MAX is not None)
+    # SW port of the same re-unwrapper (EXPERIMENT 2026-09-13; --set sw_causal_unwrap=1)
+    _SW_CAUSAL = (USE_CPP and USE_SLIDING_WINDOW and not USE_GP
+                  and bool(int(_SOLVER_CFG.get('sw_causal_unwrap', 0)))
+                  and V_MAX is not None)
+    globals()['_CAUSAL_FRONT_END'] = bool(_GP_CAUSAL or _SW_CAUSAL)   # the alias repair then runs in the causal stride, not in the pre-unwrap
     if NO_RADAR:
         solver_radar_frames = []
     elif USE_UNWRAP and V_MAX is not None:
@@ -2246,9 +3441,10 @@ def main():
         # backflip speeds exceed v_max where IMU integration and WLS both break
         # down) is engaged only by the explicit --mocap-unwrap / RIO_MOCAP_UNWRAP
         # opt-in, and never under two-pass. It is a diagnostic aid, not used for any
-        # reported number.
+        # reported number.  GP causal-unwrap mode additionally forces the
+        # sensor-only base preunwrap (the live-window re-unwrap refines in-loop).
         _mocap_vel_fn = None
-        if (MOCAP_UNWRAP_OPT_IN and not TWO_PASS_UNWRAP
+        if (MOCAP_UNWRAP_OPT_IN and not TWO_PASS_UNWRAP and not _GP_CAUSAL
                 and mocap_pos_arr is not None and _mc_times is not None
                 and len(_mc_times) > 1):
             _mc_vels = np.gradient(mocap_pos_arr, _mc_times, axis=0)
@@ -2348,6 +3544,7 @@ def main():
                     _arr = np.asarray(_val, float)
                     _kw[_a] = np.array([_arr[_lab == _k2].mean(axis=0)
                                         for _k2 in range(_c)])
+            _collapse_point_meta(_f.timestamp, _lab, _c)   # alias mask + raw v per cluster
             _cc.append(_dcc.replace(_f, **_kw))
         solver_radar_frames = _cc
         _nf = max(1, len(solver_radar_frames))
@@ -2370,7 +3567,7 @@ def main():
                 pass
     if '--no-radar-ransac' in sys.argv:
         _thr = 0.0
-    if _thr > 0:
+    if _thr > 0 and not (_GP_CAUSAL or _SW_CAUSAL):   # causal mode RANSACs per-stride in-loop
         import dataclasses as _dc
         _rng = np.random.default_rng(0)
 
@@ -2387,6 +3584,7 @@ def main():
                 _val = getattr(_f, _a, None)
                 if _val is not None and np.ndim(_val) >= 1 and len(_val) == len(_m):
                     _kw[_a] = np.asarray(_val)[_m]
+            _remap_point_meta(_f.timestamp, _m)   # keep the alias mask aligned
             _filt.append(_dc.replace(_f, **_kw))
         solver_radar_frames = _filt
         print(f"\n  [--radar-ransac {_thr}] kept {_kept}/{_tot} radar points "
@@ -2430,6 +3628,7 @@ def main():
                 _val = getattr(_f, _a, None)
                 if _val is not None and np.ndim(_val) >= 1 and len(_val) == _n:
                     _kw[_a] = np.asarray(_val)[_keep]
+            _remap_point_meta(_f.timestamp, _keep)
             _sub.append(_dc2.replace(_f, **_kw))
         solver_radar_frames = _sub
         _nf = max(1, len(solver_radar_frames))
@@ -2466,7 +3665,148 @@ def main():
     solver_lambda_accel = 0.0 if USE_PREINTEGRATE else LAMBDA_ACCEL
 
     live_snapshots = []  # populated only for --sliding-window; used in live RMSE eval below
-    if USE_CPP and USE_SLIDING_WINDOW:
+    if USE_GP:
+        # alias-corruption gate (GP-17) is OPT-IN: --set radar_vmax=4.99.
+        # Universal-default rejected: backflips' real |v_r| (~4.2) sits just
+        # under fast's wrap threshold (4.99) - no robust universal knee.
+        optimized_state = _solve_cpp_gp(
+            initial_state=initial_state,
+            solver_radar_frames=solver_radar_frames,
+            imu_data=imu_data,
+            extrinsics_cfg=_EXTRINSICS_CFG,
+            solver_cfg=_SOLVER_CFG,
+            heading_priors=heading_priors if heading_priors else None,
+            causal_unwrap=({'v_max': V_MAX, 'thr': _thr} if _GP_CAUSAL else None),
+            raw_vel_by_ts=_RAW_VEL,   # pre-unwrap Doppler, remapped through every front-end stage
+        )
+        # ========= GP two-pass sensor-only re-unwrapping (GP-18 v4) =========
+        # Pass-1's VELOCITY is as accurate sensor-only as mocap-aided (fast:
+        # 0.378 vs 0.380 m/s) even when its position suffers from imperfect
+        # front-end unwrapping. Alias selection needs ONLY velocity (+-v_max
+        # tolerance), so pass 2 re-unwraps the RAW Doppler against pass-1's
+        # own trajectory and re-solves. Fully sensor-only, and no feedback
+        # loop: pass 1 is finished before any alias decision is made.
+        for _extra_pass in range(int(_SOLVER_CFG.get('gp_two_pass', 0))
+                                  if V_MAX is not None and radar_frames else 0):
+            import dataclasses as _dc4
+            _ts1 = [float(_f.timestamp) for _f in radar_frames]
+            _Q1, _P1s, _V1, _O1 = optimized_state._s.sample(_ts1)
+            _step4 = 2.0 * V_MAX
+            _n_re = 0
+            _rf2 = []
+            for _i, _f in enumerate(radar_frames):
+                if _f.velocities is None or _f.num_points() == 0:
+                    _rf2.append(_f)
+                    continue
+                _Rwb = Rotation.from_quat(_Q1[_i]).as_matrix()
+                # preunwrap convention + lever arm:
+                # u . v_pred = v_meas,  v_pred = -(R_bs^T v_ant_body)
+                _vant = _Rwb.T @ np.asarray(_V1[_i]) + np.cross(
+                    np.asarray(_O1[_i]), TRANSLATION)
+                _vpred = -(SENSOR_ROTATION.T @ _vant)
+                _P = np.asarray(_f.positions, float)
+                _r = np.linalg.norm(_P, axis=1)
+                _ok = _r >= MIN_RANGE
+                if not _ok.any():
+                    _rf2.append(_f)
+                    continue
+                _v_new = np.asarray(_f.velocities, float).copy()
+                _U = _P[_ok] / _r[_ok, None]
+                _pr = _U @ _vpred
+                _v0 = _v_new[_ok]
+                # unconditional nearest-alias (preunwrap parity): with the
+                # pass-1 velocity accurate to ~0.4 m/s, a false unwrap needs
+                # >v_max/2 along-ray prediction error (>4 sigma) - a
+                # physicality gate only suppresses real wraps here
+                _best = _v0.copy()
+                for _cand in (_v0 - _step4, _v0 + _step4):
+                    _bet = np.abs(_cand - _pr) < np.abs(_best - _pr)
+                    _best = np.where(_bet, _cand, _best)
+                _n_re += int((_best != _v0).sum())
+                _v_new[_ok] = _best
+                _rf2.append(_dc4.replace(_f, velocities=_v_new))
+            # pass-2 RANSAC uses a FRESH seeded rng so its draw sequence
+            # aligns with pass-1's (the shared _rng has advanced; misaligned
+            # draws change consensus membership on borderline points, which
+            # alone cost slow 2-3 cm)
+            _rng_p2 = np.random.default_rng(0)
+
+            def _ransac_mask_p2(P, v, thresh, iters=150):
+                n = len(v)
+                if n < 5:
+                    return np.ones(n, dtype=bool)
+                Hn = P / np.maximum(np.linalg.norm(P, axis=1, keepdims=True), 1e-6)
+                best = None
+                for _ in range(iters):
+                    idx = _rng_p2.choice(n, 3, replace=False)
+                    try:
+                        vc = np.linalg.solve(Hn[idx], v[idx])
+                    except np.linalg.LinAlgError:
+                        continue
+                    inl = np.abs(Hn @ vc - v) < thresh
+                    if best is None or inl.sum() > best.sum():
+                        best = inl
+                return best if best is not None and best.sum() >= 5 else np.ones(n, dtype=bool)
+
+            _gpf2, _k2, _t2 = [], 0, 0
+            for _f in _rf2:
+                if _thr > 0 and _f.velocities is not None and _f.num_points() >= 5:
+                    _P = np.asarray(_f.positions, float)
+                    _m = _ransac_mask_p2(_P, np.asarray(_f.velocities, float), _thr)
+                    _t2 += len(_m)
+                    _k2 += int(_m.sum())
+                    _kw = {}
+                    for _a in ('positions', 'velocities', 'intensities', 'ranges',
+                               'noise', 'frame_number', 'time_cpu_cycles'):
+                        _val = getattr(_f, _a, None)
+                        if _val is not None and np.ndim(_val) >= 1 and len(_val) == len(_m):
+                            _kw[_a] = np.asarray(_val)[_m]
+                    _gpf2.append(_dc4.replace(_f, **_kw))
+                else:
+                    _gpf2.append(_f)
+            print(f"  [gp-two-pass] re-unwrapped {_n_re} raw pts against pass-1 "
+                  f"velocity (v_max={V_MAX:g}); RANSAC kept {_k2}/{max(1, _t2)}; "
+                  f"solving pass 2")
+            optimized_state = _solve_cpp_gp(
+                initial_state=initial_state,
+                solver_radar_frames=_gpf2,
+                imu_data=imu_data,
+                extrinsics_cfg=_EXTRINSICS_CFG,
+                solver_cfg=_SOLVER_CFG,
+                heading_priors=heading_priors if heading_priors else None,
+            )
+        live_snapshots = list(_GP_LIVE_SNAPS)   # GP live edge -> the same live-edge eval as the SW
+        if _GP_NEES_SNAPS and mocap_slerp is not None and _mc_times is not None:
+            _run_gp_nees(_GP_NEES_SNAPS, mocap_slerp, _mc_times, mocap_pos_arr)
+    elif USE_CPP and USE_SLIDING_WINDOW:
+        if os.environ.get('RIO_DUMP_NODE_PROFILE'):
+            # 2026-10-13: the live ROS spline node's profile, EXPORTED from the
+            # resolved harness config (analysis/export_spline_node_config.py)
+            import json as _json
+            for _d in [os.path.join(os.path.dirname(__file__), '..', 'rio_solver_cpp', 'build_release')]:
+                if os.path.abspath(_d) not in sys.path:
+                    sys.path.insert(0, os.path.abspath(_d))
+            import rio_solver as _rs
+            _c = _sw_solver_config(_rs, _SOLVER_CFG)
+            _fields = {k: getattr(_c, k) for k in dir(_c)
+                       if not k.startswith('_') and isinstance(getattr(_c, k), (bool, int, float))}
+            _ext = {k: _EXTRINSICS_CFG.get(k) for k in (
+                'rotation_euler_deg', 'translation_body_m', 'radar_imu_offset_sec',
+                'imu_mocap_offset_sec', 'imu_misalign_deg', 'gyro_scale', 'accel_lag_sec')}
+            _prof = {'solver_config': _fields, 'extrinsics': _ext,
+                     'window_duration': float(_SOLVER_CFG.get('window_duration', 3.0)),
+                     'window_stride': float(_SOLVER_CFG.get('window_stride', 0.3)),
+                     'radar_frame_sc_a': float(_SOLVER_CFG.get('radar_frame_sc_a', 0.0)),
+                     'radar_frame_sc_b': float(_SOLVER_CFG.get('radar_frame_sc_b', 0.0)),
+                     'bearing_law': list(_BW_CONST['b']), 'bearing_cos_floor': _BW_COS_FLOOR,
+                     'alias_weight': [_ALIAS_SIGMA0, _ALIAS_OMEGA0, _ALIAS_SIGMA_AL],
+                     'alias_repair': bool(_ALIAS_REPAIR), 'doppler_v_max': float(V_MAX),
+                     'radar_ransac_threshold': float(_SOLVER_CFG.get('radar_ransac_threshold', 0.0) or 0.0),
+                     'min_range': float(_SOLVER_CFG.get('min_range', 0.2))}
+            with open(os.environ['RIO_DUMP_NODE_PROFILE'], 'w') as _fh:
+                _json.dump(_prof, _fh, indent=1, default=float)
+            print(f"  [RIO_DUMP_NODE_PROFILE] -> {os.environ['RIO_DUMP_NODE_PROFILE']}")
+            sys.exit(0)
         optimized_state, live_snapshots = _solve_cpp_sliding_window(
             initial_state=initial_state,
             solver_radar_frames=solver_radar_frames,
@@ -2474,6 +3814,8 @@ def main():
             extrinsics_cfg=_EXTRINSICS_CFG,
             solver_cfg=_SOLVER_CFG,
             heading_priors=heading_priors if heading_priors else None,
+            causal_unwrap=({'v_max': V_MAX, 'thr': _thr} if _SW_CAUSAL else None),
+            raw_vel_by_ts=_RAW_VEL,
         )
     elif USE_CPP:
         optimized_state = _solve_cpp(
@@ -2741,6 +4083,24 @@ def main():
         rot_errors = np.array(rot_errors)
         rot_rmse   = np.sqrt(np.mean(rot_errors**2))
 
+        # GT-aware orientation RMSE: exclude GLITCHED MoCap samples. The backflips
+        # GT has 52 dropout gaps (<=126ms) + FD angular-velocity spikes to ~88000
+        # rad/s (physical flip max ~14), concentrated at flip peaks -> the raw RMSE
+        # is inflated by GT garbage, not estimator error. Mask any sample adjacent
+        # to an unphysical FD rate or a dropout gap, report RMSE over clean GT.
+        _dtev = np.diff(eval_times)
+        _meddt = float(np.median(_dtev)) if len(_dtev) else 1.0
+        _wmoc = np.array([np.linalg.norm(
+            Rotation.from_matrix(mocap_rot_eval[i].T @ mocap_rot_eval[i + 1]).as_rotvec())
+            / max(_dtev[i], 1e-6) for i in range(len(_dtev))]) if len(_dtev) else np.zeros(0)
+        _bad_edge = (_wmoc > 30.0) | (_dtev > 3.0 * _meddt) if len(_dtev) else np.zeros(0, bool)
+        _gt_clean = np.ones(len(eval_times), bool)
+        if len(_dtev):
+            _gt_clean[:-1] &= ~_bad_edge
+            _gt_clean[1:] &= ~_bad_edge
+        rot_rmse_clean = float(np.sqrt(np.mean(rot_errors[_gt_clean] ** 2))) if _gt_clean.any() else rot_rmse
+        n_gt_excl = int((~_gt_clean).sum())
+
         # Euler per-axis errors (unwrapped, branch-snapped to MoCap)
         mocap_euler_raw = Rotation.from_matrix(mocap_rot_eval).as_euler('xyz')
         est_euler_raw   = Rotation.from_matrix(estimated_rotations_aligned).as_euler('xyz')
@@ -2887,6 +4247,9 @@ def main():
         print(f"  Per-axis ori RMSE: roll={np.sqrt(np.mean(euler_diff[:,0]**2)):.3f}  "
               f"pitch={np.sqrt(np.mean(euler_diff[:,1]**2)):.3f}  "
               f"yaw={np.sqrt(np.mean(euler_diff[:,2]**2)):.3f} deg")
+        if n_gt_excl > 0:
+            print(f"  Orientation RMSE (clean GT): {rot_rmse_clean:.4f} deg  "
+                  f"(excluded {n_gt_excl}/{len(eval_times)} = {100*n_gt_excl/len(eval_times):.1f}% glitched MoCap samples)")
 
         if WHOLE_TRAJ_ALIGN:
             # EXTRA report: whole-trajectory Umeyama SE(3) (no scale) alignment of the
@@ -3017,7 +4380,8 @@ def main():
         # ==================== Save arrays (before NO_PLOT check) ====================
         if SAVE_ARRAYS:
             _mocap_tag = ("_mocap-init" if USE_MOCAP_INIT else "") + ("_mocap-heading" if USE_MOCAP_HEADING else "")
-            _sw_tag    = '_sw' if USE_SLIDING_WINDOW else '_batch'
+            _sw_tag    = ('_gp' if USE_GP else
+                          ('_sw' if USE_SLIDING_WINDOW else '_batch'))
             _arr_dir   = Path(__file__).parent.parent / 'plots' / bag_key / 'live_solver'
             _arr_dir.mkdir(parents=True, exist_ok=True)
             _arr_out   = _arr_dir / f'traj_arrays_{bag_key}{_mocap_tag}{_sw_tag}.npz'

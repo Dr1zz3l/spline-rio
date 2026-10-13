@@ -84,13 +84,22 @@ Cross-correlation originally identified:
 - Per-axis breakdown: X=−20 ms, Y=−25 ms, Z=−20 ms (median=−20 ms)
 
 **Current values** (see `analysis/config/extrinsics.yaml` — single source of truth):
-- `imu_mocap_offset_sec: 0.0150` (IMU clock behind MoCap by 15 ms)
-- `radar_imu_offset_sec: 0.1350` (radar processing latency behind IMU)
+- `imu_mocap_offset_sec: 0.0050` (IMU clock behind MoCap by 5 ms; MEASURED 2026-09-10
+  with `analysis/characterize_time_offsets.py` on the Mar-2026 headline bags, 4.7-5.1 ms;
+  the earlier 0.015 was an empirical retune and cost every own-platform orientation
+  number a ~10 ms clock error: `worklog/2026-09-10_time-offset-recalibration.md`)
+- `radar_imu_offset_sec: 0.1270` (radar total -122 ms; MEASURED 2026-09-11 on the
+  high-acceleration frames of the three racing-configuration bags, plain-rms Doppler
+  fit, sensor-clock frame stamps: -122 / -122 / -123, one pooled value; the earlier
+  0.135 came from a robust-width fit over all frames that is flat to +-10 ms.
+  Radar frames are stamped with the radar's 200 MHz counter mapped to host time by a
+  lower-envelope fit (`sensor_clock_timestamps`), not with the host receive time.
+  `worklog/2026-09-11_radar-clock.md`)
 
 **Convention:** positive `imu_mocap_offset_sec` means we ADD this to IMU timestamps
 before MoCap interpolation (IMU is behind MoCap).  Radar total offset =
-`imu_mocap_offset - radar_imu_offset = 0.015 − 0.135 = −0.120 s`
-(radar data arrives ~120 ms late relative to MoCap).
+`imu_mocap_offset - radar_imu_offset = 0.005 − 0.127 = −0.122 s`
+(radar data arrives ~122 ms late relative to MoCap).
 
 ---
 

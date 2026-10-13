@@ -237,9 +237,9 @@ lam_r_cap = gm(rows['slow_racing_best_velocity']['radar']['lam_cap'],
                rows['fast_racing_best_velocity']['radar']['lam_cap'])
 lam_r_cap2 = gm(rows['slow_racing_best_velocity']['radar']['lam_cap_tau_raw'],
                 rows['fast_racing_best_velocity']['radar']['lam_cap_tau_raw'])
-print(f'lambda_gyro*  = {lam_g:.3g}      (deployed 3.13)')
+print(f'lambda_gyro*  = {lam_g:.3g}      (deployed 2.57)')
 print(f'lambda_accel* = {lam_a:.3g}   (deployed 0.00392)')
-print(f'radar_weight* = {lam_r_cap:.3g}      (deployed 2.11)   '
+print(f'radar_weight* = {lam_r_cap:.3g}      (deployed 2.48)   '
       f'<- capped moment, the deployed protocol')
 print(f'  variants: core-sigma {lam_r:.3g} (per-bag spread '
       f"{rows['fast_racing_best_velocity']['radar']['lam']/rows['slow_racing_best_velocity']['radar']['lam']:.1f}x), "
